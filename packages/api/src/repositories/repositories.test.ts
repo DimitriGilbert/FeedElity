@@ -393,14 +393,68 @@ describe("catalog and overlay repositories", () => {
       status: "succeeded",
     });
 
-    const refreshRuns = await listRefreshRuns(testDatabase.db);
-    const refreshFeedResults = await listRefreshFeedResultsForRun(testDatabase.db, refreshRun.id);
+    const refreshRuns = await listRefreshRuns(testDatabase.db, { limit: 10 });
+    const refreshFeedResults = await listRefreshFeedResultsForRun(testDatabase.db, { refreshRunId: refreshRun.id, limit: 10 });
 
     expect(refreshRuns).toHaveLength(1);
     expect(refreshRuns[0]).toMatchObject({ id: refreshRun.id, force: true, status: "partial", feedsSkippedCount: 0 });
     expect(duplicateRefreshFeedResult).toEqual(refreshFeedResult);
     expect(refreshFeedResults).toHaveLength(1);
     expect(refreshFeedResults[0]).toMatchObject({ refreshRunId: refreshRun.id, feedId: feed.id, status: "failed" });
+  });
+
+  test("refresh run and feed result listing applies repository limits", async () => {
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "bounded-refresh-creator",
+      displayName: "Bounded Refresh Creator",
+    });
+    const feedOne = await findOrCreateFeed(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "bounded-refresh-feed-one",
+      url: "https://youtube.example.test/feeds/one",
+    });
+    const feedTwo = await findOrCreateFeed(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "bounded-refresh-feed-two",
+      url: "https://youtube.example.test/feeds/two",
+    });
+    const feedThree = await findOrCreateFeed(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "bounded-refresh-feed-three",
+      url: "https://youtube.example.test/feeds/three",
+    });
+    await createRefreshRun(testDatabase.db, {
+      scope: "all",
+      force: false,
+      status: "succeeded",
+      startedAt: new Date("2026-05-16T10:00:00.000Z"),
+    });
+    const secondRun = await createRefreshRun(testDatabase.db, {
+      scope: "all",
+      force: false,
+      status: "succeeded",
+      startedAt: new Date("2026-05-16T11:00:00.000Z"),
+    });
+    const latestRun = await createRefreshRun(testDatabase.db, {
+      scope: "all",
+      force: false,
+      status: "succeeded",
+      startedAt: new Date("2026-05-16T12:00:00.000Z"),
+    });
+
+    await recordRefreshFeedResult(testDatabase.db, { refreshRunId: latestRun.id, feedId: feedOne.id, status: "succeeded" });
+    await recordRefreshFeedResult(testDatabase.db, { refreshRunId: latestRun.id, feedId: feedTwo.id, status: "succeeded" });
+    await recordRefreshFeedResult(testDatabase.db, { refreshRunId: latestRun.id, feedId: feedThree.id, status: "succeeded" });
+
+    const refreshRuns = await listRefreshRuns(testDatabase.db, { limit: 2 });
+    const refreshFeedResults = await listRefreshFeedResultsForRun(testDatabase.db, { refreshRunId: latestRun.id, limit: 2 });
+
+    expect(refreshRuns.map((run) => run.id)).toEqual([latestRun.id, secondRun.id]);
+    expect(refreshFeedResults).toHaveLength(2);
   });
 });
 

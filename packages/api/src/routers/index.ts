@@ -12,6 +12,8 @@ import {
   listCatalogContentItems,
   listCatalogCreators,
   listCatalogFeedsForBrowsing,
+  listRefreshFeedResultsForRun,
+  listRefreshRuns,
 } from "../repositories/catalog";
 import {
   addPlaylistItem,
@@ -36,6 +38,8 @@ import {
   unsubscribeFromCreatorForUser,
   updatePlaylistForUser,
 } from "../repositories/overlays";
+import { refreshAll, refreshCreator } from "../services/refresh";
+import { createSourceAdapterRegistry } from "../sources";
 
 const playlistItemsInput = z.object({
   playlistId: z.string().min(1),
@@ -144,6 +148,22 @@ const migrationImportInput = z.object({
   sourceFilename: z.string().trim().min(1).max(255).nullable().optional(),
 });
 
+const refreshRunInput = z.object({
+  force: z.boolean().optional(),
+});
+
+const refreshCreatorInput = z.object({
+  creatorId: z.string().min(1),
+  force: z.boolean().optional(),
+});
+
+const refreshStatusInput = z
+  .object({
+    limit: z.number().int().min(1).max(20).default(5),
+    feedResultsLimit: z.number().int().min(1).max(50).default(3),
+  })
+  .optional();
+
 const deleteSettingInput = z.object({
   key: settingKeyInput,
 });
@@ -208,6 +228,46 @@ export const appRouter = {
         throw new ORPCError("NOT_FOUND");
       }
       return detail;
+    }),
+  },
+  refresh: {
+    status: publicProcedure.input(refreshStatusInput).handler(async ({ input, context }) => {
+      const runLimit = input?.limit ?? 5;
+      const feedResultsLimit = input?.feedResultsLimit ?? 3;
+      const runs = await listRefreshRuns(context.db, { limit: runLimit });
+      const latestRun = runs.at(0) ?? null;
+      return {
+        latestRun,
+        recentRuns: runs,
+        latestFeedResults:
+          latestRun === null
+            ? []
+            : await listRefreshFeedResultsForRun(context.db, { refreshRunId: latestRun.id, limit: feedResultsLimit }),
+      };
+    }),
+    runAll: protectedProcedure.input(refreshRunInput).handler(({ input, context }) => {
+      return refreshAll(
+        {
+          db: context.db,
+          sourceRegistry: context.sourceRegistry ?? createSourceAdapterRegistry(),
+          now: () => new Date(),
+        },
+        { force: input.force ?? false },
+      );
+    }),
+    runCreator: protectedProcedure.input(refreshCreatorInput).handler(async ({ input, context }) => {
+      if ((await getCatalogCreatorSummaryById(context.db, input.creatorId)) === null) {
+        throw new ORPCError("NOT_FOUND");
+      }
+
+      return refreshCreator(
+        {
+          db: context.db,
+          sourceRegistry: context.sourceRegistry ?? createSourceAdapterRegistry(),
+          now: () => new Date(),
+        },
+        { creatorId: input.creatorId, force: input.force ?? false },
+      );
     }),
   },
   overlays: {

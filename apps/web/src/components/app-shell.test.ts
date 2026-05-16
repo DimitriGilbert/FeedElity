@@ -3,17 +3,29 @@ import type { CatalogContentSource } from "@FeedElity/api";
 
 import {
   contentListLimit,
+  contentCatalogFiltersLabel,
   contentSearchInputId,
   contentSourceFilterId,
+  contentViewModeAllId,
+  contentViewModeFavoritesId,
   creatorListLimit,
   creatorSearchInputId,
   desktopShellGridClass,
+  formatSettingValue,
   getShellColumnCount,
   hasInternalAppHeader,
+  playlistDescriptionInputId,
+  playlistNameInputId,
+  playlistSortInputId,
+  refreshStatusRegionId,
+  settingKeyInputId,
+  settingKeyPattern,
+  settingValueInputId,
   shellGridClass,
   shellColumns,
   shellPaneIds,
   shellRootClass,
+  showsCatalogFilters,
   toContentListInput,
   toPlayableSources,
   toSafePlaybackUrl,
@@ -93,9 +105,20 @@ test("creator selection exposes middle-pane filtering state", () => {
 });
 
 test("content list builds bounded public catalog input", () => {
+  expect(contentCatalogFiltersLabel).toBe("Catalog filters");
   expect(contentSearchInputId).toBe("content-list-search");
   expect(contentSourceFilterId).toBe("content-source-filter");
   expect(toContentListInput("   ", null, null)).toEqual({ limit: contentListLimit });
+  expect(toContentListInput(" livestream ", null, "peertube")).toEqual({
+    search: "livestream",
+    sourceType: "peertube",
+    limit: contentListLimit,
+  });
+  expect(toContentListInput(" documentary ", "creator-2", null)).toEqual({
+    search: "documentary",
+    creatorId: "creator-2",
+    limit: contentListLimit,
+  });
   expect(toContentListInput("  matrix  ", "creator-1", "youtube")).toEqual({
     search: "matrix",
     creatorId: "creator-1",
@@ -125,12 +148,66 @@ test("creator pane is wired to anonymous catalog creators and feeds", async () =
 test("content pane is wired to anonymous catalog content items", async () => {
   const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
 
-  expect(source).toContain("client.catalog.contentItems(input)");
+  expect(showsCatalogFilters("all")).toBe(true);
+  expect(showsCatalogFilters("favorites")).toBe(false);
+  expect(source).toContain("client.catalog.contentItems(input.input)");
   expect(source).toContain("toContentListInput(search(), props.selectedCreator()?.id ?? null, sourceType())");
   expect(source).toContain("type=\"search\"");
   expect(source).toContain("id={contentSourceFilterId}");
-  expect(source).toContain("aria-pressed={props.selectedContentItemId() === contentItem.id}");
+  expect(source).toContain("<Show when={showsCatalogFilters(viewMode())}>");
+  expect(source).toContain("aria-label={contentCatalogFiltersLabel}");
+  expect(source).toContain("onInput={(event) => setSearch(event.currentTarget.value)}");
+  expect(source).toContain("onChange={(event) => setSourceType(toSourceFilterValue(event.currentTarget.value))}");
+  expect(source).toContain("selected={props.selectedContentItemId() === contentItem.id}");
   expect(source).toContain("data-selected-content-item-id={selectedContentItemId() ?? \"\"}");
+});
+
+test("content filters are Solid state backed and avoid class-name filtering", async () => {
+  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const forbiddenDomFilteringSnippets = [
+    "querySelector",
+    "getElementsByClassName",
+    "classList",
+    "dataset.sourceType",
+    "data-source-type",
+    "hidden =",
+  ];
+
+  expect(source).toContain("const [search, setSearch] = createSignal(\"\")");
+  expect(source).toContain("const [sourceType, setSourceType] = createSignal<SourceType | null>(null)");
+  expect(source).toContain("const contentListInput = createMemo(() => toContentListInput(search(), props.selectedCreator()?.id ?? null, sourceType()))");
+
+  for (const snippet of forbiddenDomFilteringSnippets) {
+    expect(source).not.toContain(snippet);
+  }
+});
+
+test("content list exposes no no-op filter controls", async () => {
+  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const filtersIndex = source.indexOf("aria-label={contentCatalogFiltersLabel}");
+  const favoritesBranchIndex = source.indexOf("return client.overlays.favoriteContentItems()");
+
+  expect(filtersIndex).toBeGreaterThan(-1);
+  expect(favoritesBranchIndex).toBeGreaterThan(-1);
+  expect(source).toContain("<Show when={showsCatalogFilters(viewMode())}>");
+  expect(source).not.toContain(`Hide ${"played"}`);
+  expect(source).not.toContain(`${"played"} only`);
+});
+
+test("refresh UI is wired to real API procedures without background polling", async () => {
+  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  expect(refreshStatusRegionId).toBe("refresh-status-history");
+  expect(source).toContain("client.refresh.status({ limit: 5, feedResultsLimit: 3 })");
+  expect(source).not.toContain("props.results.slice");
+  expect(source).toContain("client.refresh.runAll({ force })");
+  expect(source).toContain("client.refresh.runCreator({ creatorId: creator.id, force })");
+  expect(source).toContain("Manual only");
+  expect(source).toContain("Sign in to run manual refreshes.");
+  expect(source).toContain("disabled={busyAction() !== null || props.selectedCreator() === null}");
+  expect(source).not.toContain("setInterval");
+  expect(source).not.toContain("setTimeout");
+  expect(source).not.toContain("poll");
 });
 
 test("selected viewer is wired to anonymous catalog content detail", async () => {
@@ -247,11 +324,120 @@ test("selected viewer supports source switching and real playback render contrac
   expect(source).toContain("<video class=\"h-full w-full\" src={props.source?.url ?? \"\"} controls preload=\"metadata\">");
 });
 
-test("creator pane does not expose unwired refresh or subscription actions", async () => {
+test("playlist controls are protected behind authenticated session state", async () => {
   const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
 
-  expect(source).not.toContain("refreshCreator");
-  expect(source).not.toContain("Refresh");
+  expect(source).toContain("const session = authClient.useSession()");
+  expect(source).toContain("const isAuthenticated = createMemo(() => !session().isPending && session().data !== null)");
+  expect(source).toContain("<Show when={props.isAuthenticated()}>");
+  expect(source).not.toContain("Sign in to create playlists");
+  expect(source).not.toContain("Login to save playlists");
+});
+
+test("playlist UI uses real protected API procedures for full playlist flow", async () => {
+  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  expect(playlistNameInputId).toBe("playlist-name");
+  expect(playlistDescriptionInputId).toBe("playlist-description");
+  expect(playlistSortInputId).toBe("playlist-sort");
+  expect(source).toContain("client.overlays.playlists()");
+  expect(source).toContain("client.overlays.createPlaylist({");
+  expect(source).toContain("client.overlays.updatePlaylist({");
+  expect(source).toContain("client.overlays.deletePlaylist({ playlistId })");
+  expect(source).toContain("client.overlays.playlistItems({ playlistId })");
+  expect(source).toContain("client.overlays.addPlaylistItem({ playlistId, contentItemId })");
+  expect(source).toContain("client.overlays.removePlaylistItem({ playlistId: item.playlistId, playlistItemId: item.id })");
+  expect(source).toContain("client.overlays.reorderPlaylistItems({ playlistId: item.playlistId, playlistItemIds: orderedItemIds })");
+});
+
+test("playlist UI remains inside the approved three-pane shell", async () => {
+  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  expect(source).toContain("<PlaylistColumnSection");
+  expect(source).toContain("<PlaylistAddControls");
+  expect(source).not.toContain("data-shell-column=\"playlists\"");
+  expect(source).not.toContain("grid-cols-[1fr_3fr_8fr_");
+  expect(source).not.toContain("<dialog");
+  expect(source).not.toContain("role=\"dialog\"");
+});
+
+test("settings UI uses real protected API procedures for list save and delete", async () => {
+  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  expect(settingKeyInputId).toBe("setting-key");
+  expect(settingValueInputId).toBe("setting-value");
+  expect(settingKeyPattern).toBe("^[a-z][a-z0-9._-]*$");
+  expect(source).toContain("client.overlays.settings()");
+  expect(source).toContain("client.overlays.saveSetting({ key, value: settingValue() })");
+  expect(source).toContain("client.overlays.deleteSetting({ key })");
+  expect(source).toContain("await refetchSettings()");
+});
+
+test("settings UI is authenticated-only and remains in the source column", async () => {
+  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  expect(source).toContain("<Show when={props.isAuthenticated()}>\n        <SettingsColumnSection />");
+  expect(source).not.toContain('data-shell-column="settings"');
+  expect(source).not.toContain("grid-cols-[1fr_3fr_8fr_");
+  expect(source).not.toContain("Sign in to manage settings");
+  expect(source).not.toContain("Login to manage settings");
+  expect(source).not.toContain("<dialog");
+  expect(source).not.toContain("role=\"dialog\"");
+});
+
+test("settings UI has no fake defaults and displays only stored API values", async () => {
+  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  expect(formatSettingValue(JSON.stringify("compact"))).toBe("compact");
+  expect(formatSettingValue("not-json")).toBe("not-json");
+  expect(source).toContain("No settings have been saved.");
+  expect(source).toContain("formatSettingValue(setting.valueJson)");
+  expect(source).not.toContain("reader.layout");
+  expect(source).not.toContain("player.autoplay");
+  expect(source).not.toContain("defaultSettings");
+});
+
+test("favorites view is an authenticated content-pane filter using protected procedures", async () => {
+  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  expect(contentViewModeAllId).toBe("content-view-all");
+  expect(contentViewModeFavoritesId).toBe("content-view-favorites");
+  expect(source).toContain("const [viewMode, setViewMode] = createSignal<ContentViewMode>(\"all\")");
+  expect(source).toContain("<Show when={props.isAuthenticated()}>\n          <div class=\"mt-2 grid grid-cols-2 gap-2\" aria-label=\"Content view\">");
+  expect(source).toContain("return client.overlays.favoriteContentItems()");
+  expect(source).toContain("return client.catalog.contentItems(input.input)");
+  expect(source).toContain("setViewMode(\"favorites\")");
+  expect(source).not.toContain('data-shell-column="favorites"');
+});
+
+test("favorite toggles are real authenticated actions in list rows and viewer", async () => {
+  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  expect(source).toContain("client.overlays.toggleContentFavorite({ contentItemId })");
+  expect(source).toContain("<ContentListItemRow");
+  expect(source).toContain("<FavoriteActionControls");
+  expect(source).toContain("Favorite action for selected video");
+  expect(source).toContain("onFavoriteChanged={() => setFavoritesReloadKey((key) => key + 1)}");
+  expect(source).toContain("props.onFavoriteChanged()");
+});
+
+test("anonymous users do not see favorite controls or protected favorite calls", async () => {
+  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  expect(source).toContain("if (props.isAuthenticated() && viewMode() === \"favorites\")");
+  expect(source).toContain("if (!props.isAuthenticated()) {\n      return null;\n    }");
+  expect(source).toContain("if (!props.isAuthenticated() && viewMode() === \"favorites\")");
+  expect(source).toContain("<Show when={props.isAuthenticated}>\n        <div class=\"mt-2 flex items-center justify-end gap-2\">");
+  expect(source).not.toContain("Sign in to favorite");
+  expect(source).not.toContain("Login to favorite");
+});
+
+test("creator pane exposes only API-wired refresh actions and no subscription actions", async () => {
+  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  expect(source).toContain("client.refresh.runCreator({ creatorId: creator.id, force })");
+  expect(source).toContain("client.refresh.runAll({ force })");
+  expect(source).toContain("Refresh");
   expect(source).not.toContain("subscribeToCreator");
   expect(source).not.toContain("Subscribe");
 });

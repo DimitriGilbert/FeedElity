@@ -142,6 +142,15 @@ export interface ListCatalogFeedsInput {
   readonly limit: number;
 }
 
+export interface ListRefreshRunsInput {
+  readonly limit: number;
+}
+
+export interface ListRefreshFeedResultsForRunInput {
+  readonly refreshRunId: string;
+  readonly limit: number;
+}
+
 export async function findOrCreateCreator(db: RepositoryDb, input: SaveCreatorInput): Promise<CatalogCreator> {
   const id = crypto.randomUUID();
 
@@ -496,9 +505,10 @@ export async function createRefreshRun(db: RepositoryDb, input: CreateRefreshRun
   return toRefreshRun(row);
 }
 
-export async function listRefreshRuns(db: RepositoryDb): Promise<readonly RefreshRun[]> {
+export async function listRefreshRuns(db: RepositoryDb, input: ListRefreshRunsInput): Promise<readonly RefreshRun[]> {
   const rows = await db.query.refreshRun.findMany({
     orderBy: (refreshRun, { desc }) => [desc(refreshRun.startedAt)],
+    limit: input.limit,
   });
 
   return rows.map(toRefreshRun);
@@ -583,11 +593,12 @@ export async function recordRefreshFeedResult(
 
 export async function listRefreshFeedResultsForRun(
   db: RepositoryDb,
-  refreshRunId: string,
+  input: ListRefreshFeedResultsForRunInput,
 ): Promise<readonly RefreshFeedResult[]> {
   const rows = await db.query.refreshFeedResult.findMany({
-    where: eq(schema.refreshFeedResult.refreshRunId, refreshRunId),
+    where: eq(schema.refreshFeedResult.refreshRunId, input.refreshRunId),
     orderBy: (refreshFeedResult, { asc }) => [asc(refreshFeedResult.startedAt)],
+    limit: input.limit,
   });
 
   return rows.map(toRefreshFeedResult);

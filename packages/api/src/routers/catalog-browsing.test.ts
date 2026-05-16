@@ -13,9 +13,12 @@ import {
   findOrCreateContentSource,
   findOrCreateCreator,
   findOrCreateFeed,
+  createRefreshRun,
   linkFeedContent,
+  recordRefreshFeedResult,
 } from "../repositories/catalog";
 import { findOrCreateContentStatus, findOrCreateSubscription } from "../repositories/overlays";
+import { createSourceAdapterRegistry } from "../sources";
 import { appRouter } from "./index";
 
 interface TestDatabase {
@@ -81,6 +84,102 @@ describe("catalog browsing router", () => {
     expect(contentItems).toHaveLength(1);
     expect(contentItems[0]).toMatchObject({ id: newerItem.id, title: "Alpha Newer Update" });
     expect(contentItems[0]?.creator).toMatchObject({ id: firstCreator.id, displayName: "Alpha Creator" });
+  });
+
+  test("refresh status is public and manual refresh procedures are protected", async () => {
+    const run = await createRefreshRun(testDatabase.db, {
+      scope: "all",
+      force: false,
+      status: "succeeded",
+      feedsRequestedCount: 1,
+      feedsSucceededCount: 1,
+      startedAt: new Date("2026-05-16T12:00:00.000Z"),
+      completedAt: new Date("2026-05-16T12:01:00.000Z"),
+    });
+
+    const status = await call(appRouter.refresh.status, { limit: 5 }, { context: anonymousContext(testDatabase.db) });
+
+    expect(status.latestRun?.id).toBe(run.id);
+    expect(status.recentRuns).toHaveLength(1);
+    await expect(
+      call(appRouter.refresh.runAll, { force: false }, { context: anonymousContext(testDatabase.db) }),
+    ).rejects.toBeDefined();
+  });
+
+  test("refresh status loads bounded runs and latest feed results at the API boundary", async () => {
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "refresh-status-bounds-creator",
+      displayName: "Refresh Status Bounds Creator",
+    });
+    const firstFeed = await findOrCreateFeed(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "refresh-status-bounds-feed-one",
+      url: "https://youtube.example.test/status/feed-one",
+    });
+    const secondFeed = await findOrCreateFeed(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "refresh-status-bounds-feed-two",
+      url: "https://youtube.example.test/status/feed-two",
+    });
+    const thirdFeed = await findOrCreateFeed(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "refresh-status-bounds-feed-three",
+      url: "https://youtube.example.test/status/feed-three",
+    });
+    await createRefreshRun(testDatabase.db, {
+      scope: "all",
+      force: false,
+      status: "succeeded",
+      startedAt: new Date("2026-05-16T10:00:00.000Z"),
+    });
+    const secondRun = await createRefreshRun(testDatabase.db, {
+      scope: "all",
+      force: false,
+      status: "succeeded",
+      startedAt: new Date("2026-05-16T11:00:00.000Z"),
+    });
+    const latestRun = await createRefreshRun(testDatabase.db, {
+      scope: "all",
+      force: false,
+      status: "succeeded",
+      startedAt: new Date("2026-05-16T12:00:00.000Z"),
+    });
+
+    await recordRefreshFeedResult(testDatabase.db, { refreshRunId: latestRun.id, feedId: firstFeed.id, status: "succeeded" });
+    await recordRefreshFeedResult(testDatabase.db, { refreshRunId: latestRun.id, feedId: secondFeed.id, status: "failed" });
+    await recordRefreshFeedResult(testDatabase.db, { refreshRunId: latestRun.id, feedId: thirdFeed.id, status: "partial" });
+
+    const status = await call(
+      appRouter.refresh.status,
+      { limit: 2, feedResultsLimit: 2 },
+      { context: anonymousContext(testDatabase.db) },
+    );
+
+    expect(status.latestRun?.id).toBe(latestRun.id);
+    expect(status.recentRuns.map((run) => run.id)).toEqual([latestRun.id, secondRun.id]);
+    expect(status.latestFeedResults).toHaveLength(2);
+  });
+
+  test("authenticated callers can run a per-creator normal or force refresh through the router", async () => {
+    await insertUser(testDatabase.db, "active-user", "active-user@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "refresh-creator",
+      displayName: "Refresh Creator",
+    });
+
+    const result = await call(
+      appRouter.refresh.runCreator,
+      { creatorId: creator.id, force: true },
+      { context: authenticatedContext(testDatabase.db, "active-user") },
+    );
+
+    expect(result.report).toMatchObject({ scope: "creator", force: true, status: "succeeded" });
+    expect(result.selectedFeeds).toHaveLength(0);
   });
 
   test("anonymous content detail includes creator, feeds, and playable sources without overlay leakage", async () => {
@@ -157,6 +256,35 @@ function anonymousContext(db: RepositoryDb): Context {
   return {
     db,
     session: null,
+    sourceRegistry: createSourceAdapterRegistry(),
+  };
+}
+
+function authenticatedContext(db: RepositoryDb, userId: string): Context {
+  return {
+    db,
+    sourceRegistry: createSourceAdapterRegistry(),
+    session: {
+      session: {
+        id: `session-${userId}`,
+        userId,
+        expiresAt: new Date("2027-01-01T00:00:00.000Z"),
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+        ipAddress: null,
+        userAgent: null,
+      },
+      user: {
+        id: userId,
+        name: userId,
+        email: `${userId}@example.test`,
+        emailVerified: true,
+        image: null,
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+        accountState: "active",
+      },
+    },
   };
 }
 
@@ -282,4 +410,35 @@ const schemaStatements = [
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
   )`,
   "CREATE UNIQUE INDEX content_status_user_item_status_uidx ON content_status (user_id, content_item_id, status)",
+  `CREATE TABLE refresh_run (
+    id TEXT PRIMARY KEY NOT NULL,
+    scope TEXT NOT NULL,
+    force INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    requested_creator_id TEXT REFERENCES creator(id) ON DELETE SET NULL,
+    requested_feed_id TEXT REFERENCES feed(id) ON DELETE SET NULL,
+    feeds_requested_count INTEGER NOT NULL DEFAULT 0,
+    feeds_skipped_count INTEGER NOT NULL DEFAULT 0,
+    feeds_succeeded_count INTEGER NOT NULL DEFAULT 0,
+    feeds_failed_count INTEGER NOT NULL DEFAULT 0,
+    items_discovered_count INTEGER NOT NULL DEFAULT 0,
+    items_created_count INTEGER NOT NULL DEFAULT 0,
+    items_updated_count INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
+    completed_at INTEGER,
+    error_summary_json TEXT
+  )`,
+  `CREATE TABLE refresh_feed_result (
+    id TEXT PRIMARY KEY NOT NULL,
+    refresh_run_id TEXT NOT NULL REFERENCES refresh_run(id) ON DELETE CASCADE,
+    feed_id TEXT NOT NULL REFERENCES feed(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    items_discovered_count INTEGER NOT NULL DEFAULT 0,
+    items_created_count INTEGER NOT NULL DEFAULT 0,
+    items_updated_count INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
+    completed_at INTEGER,
+    error_summary_json TEXT
+  )`,
+  "CREATE UNIQUE INDEX refresh_feed_result_run_feed_uidx ON refresh_feed_result (refresh_run_id, feed_id)",
 ];

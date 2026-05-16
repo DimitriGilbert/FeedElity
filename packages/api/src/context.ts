@@ -5,6 +5,10 @@ import { eq } from "drizzle-orm";
 import type { Context as HonoContext } from "hono";
 
 import type { RepositoryDb } from "./repositories/catalog";
+import { createSourceAdapterRegistry, odyseeAdapter, peertubeAdapter, youtubeAdapter } from "./sources";
+import type { SourceAdapterRegistry } from "./sources";
+
+const defaultSourceRegistry = createSourceAdapterRegistry([youtubeAdapter, odyseeAdapter, peertubeAdapter]);
 
 export type AccountState = (typeof schema.accountStateValues)[number];
 
@@ -37,6 +41,7 @@ export interface AuthenticatedSession {
 export interface Context {
   readonly db: RepositoryDb;
   readonly session: AuthenticatedSession | null;
+  readonly sourceRegistry?: SourceAdapterRegistry;
 }
 
 export type CreateContextOptions = {
@@ -53,6 +58,7 @@ export async function createContext({ context, db = appDb }: CreateContextOption
     return {
       db,
       session: null,
+      sourceRegistry: defaultSourceRegistry,
     };
   }
 
@@ -64,11 +70,13 @@ export async function createContext({ context, db = appDb }: CreateContextOption
     return {
       db,
       session: null,
+      sourceRegistry: defaultSourceRegistry,
     };
   }
 
   return {
     db,
+    sourceRegistry: defaultSourceRegistry,
     session: {
       session: {
         id: rawSession.session.id,

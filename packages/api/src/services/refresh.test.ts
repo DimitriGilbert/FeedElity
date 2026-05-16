@@ -84,7 +84,7 @@ describe("manual refresh orchestration", () => {
       ]),
     );
     expect(result.feedResults).toHaveLength(2);
-    expect(await listRefreshFeedResultsForRun(testDatabase.db, result.run.id)).toHaveLength(2);
+    expect(await listRefreshFeedResultsForRun(testDatabase.db, { refreshRunId: result.run.id, limit: 10 })).toHaveLength(2);
   });
 
   test("normal refresh updates cadence metadata after successful feed refresh", async () => {
