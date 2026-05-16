@@ -66,6 +66,7 @@ import {
 const changedUiSourceFiles = [
   "./app-shell.contract.ts",
   "./app-shell.tsx",
+  "./source-indicator.tsx",
   "./header.tsx",
   "./user-menu.tsx",
   "./sign-in-form.tsx",
@@ -1124,14 +1125,15 @@ test("content rows expose opened and played state with semantic attributes", asy
 
 test("content rows expose concise icon source indicators and avoid fake thumbnails", async () => {
   const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const sourceIndicator = await Bun.file(new URL("./source-indicator.tsx", import.meta.url)).text();
 
   expect(source).toContain("const rowImageUrl = createMemo(() => props.contentItem.thumbnailUrl ?? props.contentItem.creator.imageUrl)");
   expect(source).toContain("data-thumbnail-source={rowImageSource() ?? \"\"}");
-  expect(source).toContain("function SourceIconBadge(props: { readonly sourceType: SourceType; readonly context: SourceIndicatorContext; readonly sourceCount?: number })");
-  expect(source).toContain("formatSourceIndicatorLabel(props.sourceType, props.context, props.sourceCount)");
+  expect(sourceIndicator).toContain("function SourceIconBadge(props: { readonly sourceType: SourceType; readonly context: SourceIndicatorContext; readonly sourceCount?: number })");
+  expect(sourceIndicator).toContain("formatSourceIndicatorLabel(props.sourceType, props.context, props.sourceCount)");
   expect(source).toContain("<SourceIconBadge sourceType={props.contentItem.sourceType} context=\"content\" sourceCount={props.contentItem.sourceCount} />");
-  expect(source).toContain("source records available");
-  expect(source).toContain("×{props.sourceCount}");
+  expect(sourceIndicator).toContain("source records available");
+  expect(sourceIndicator).toContain("×{props.sourceCount}");
   expect(source).toContain("data-content-source-chip");
   expect(source).toContain("data-content-source-indicator");
   expect(source).toContain("id=\"viewer-source-switcher\"");
@@ -1148,16 +1150,18 @@ test("content rows expose concise icon source indicators and avoid fake thumbnai
 
 test("row-level source affordances use icons instead of visible source-name chips", async () => {
   const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const sourceIndicator = await Bun.file(new URL("./source-indicator.tsx", import.meta.url)).text();
 
-  expect(source).toContain('import CirclePlay from "lucide-solid/icons/circle-play";');
-  expect(source).toContain('import RadioTower from "lucide-solid/icons/radio-tower";');
-  expect(source).toContain('import SquarePlay from "lucide-solid/icons/square-play";');
+  expect(sourceIndicator).toContain('import CirclePlay from "lucide-solid/icons/circle-play";');
+  expect(sourceIndicator).toContain('import RadioTower from "lucide-solid/icons/radio-tower";');
+  expect(sourceIndicator).toContain('import SquarePlay from "lucide-solid/icons/square-play";');
   expect(source).not.toContain('from "lucide-solid";');
+  expect(sourceIndicator).not.toContain('from "lucide-solid";');
   expect(source).not.toContain("<SourceIconBadge sourceType={props.creator.sourceType}");
   expect(source).toContain("<SourceIconBadge sourceType={props.feed.sourceType} context=\"feed\" />");
   expect(source).toContain("<SourceIconBadge sourceType={props.contentItem.sourceType} context=\"content\" sourceCount={props.contentItem.sourceCount} />");
-  expect(source).toContain("aria-label={label()}");
-  expect(source).toContain("title={label()}");
+  expect(sourceIndicator).toContain("aria-label={label()}");
+  expect(sourceIndicator).toContain("title={label()}");
   expect(source).not.toContain("<span class=\"truncate\">{formatSourceLabel(props.creator.sourceType)}</span>");
   expect(source).not.toContain("{formatSourceLabel(props.feed.sourceType)}\n          </span>");
   expect(source).not.toContain("{formatSourceLabel(props.contentItem.sourceType)}\n            </span>");
