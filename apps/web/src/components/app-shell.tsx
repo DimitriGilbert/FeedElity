@@ -17,7 +17,9 @@ import type {
   UserSetting,
   UserSubscriptionWithCreator,
 } from "@FeedElity/api";
-import { CirclePlay, RadioTower, SquarePlay } from "lucide-solid";
+import CirclePlay from "lucide-solid/icons/circle-play";
+import RadioTower from "lucide-solid/icons/radio-tower";
+import SquarePlay from "lucide-solid/icons/square-play";
 import { For, Match, Show, Switch, createMemo, createResource, createSignal, untrack } from "solid-js";
 
 import { authClient } from "@/lib/auth-client";

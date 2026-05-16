@@ -1149,7 +1149,10 @@ test("content rows expose concise icon source indicators and avoid fake thumbnai
 test("row-level source affordances use icons instead of visible source-name chips", async () => {
   const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
 
-  expect(source).toContain('import { CirclePlay, RadioTower, SquarePlay } from "lucide-solid";');
+  expect(source).toContain('import CirclePlay from "lucide-solid/icons/circle-play";');
+  expect(source).toContain('import RadioTower from "lucide-solid/icons/radio-tower";');
+  expect(source).toContain('import SquarePlay from "lucide-solid/icons/square-play";');
+  expect(source).not.toContain('from "lucide-solid";');
   expect(source).not.toContain("<SourceIconBadge sourceType={props.creator.sourceType}");
   expect(source).toContain("<SourceIconBadge sourceType={props.feed.sourceType} context=\"feed\" />");
   expect(source).toContain("<SourceIconBadge sourceType={props.contentItem.sourceType} context=\"content\" sourceCount={props.contentItem.sourceCount} />");
