@@ -1,5 +1,6 @@
 import { createFileRoute, redirect } from "@tanstack/solid-router";
 
+import AppShell from "@/components/app-shell";
 import { authClient } from "@/lib/auth-client";
 
 export const Route = createFileRoute("/dashboard")({
@@ -17,15 +18,5 @@ export const Route = createFileRoute("/dashboard")({
 });
 
 function RouteComponent() {
-  const context = Route.useRouteContext();
-
-  const session = context().session;
-
-  return (
-    <div>
-      <h1>Dashboard</h1>
-      <p>Welcome {session.data?.user.name}</p>
-      <p>Your FeedElity workspace is ready.</p>
-    </div>
-  );
+  return <AppShell />;
 }

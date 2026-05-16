@@ -19,7 +19,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 function RootComponent() {
   return (
     <>
-      <div class="grid grid-rows-[auto_1fr] h-svh">
+      <div class="grid min-h-dvh w-dvw grid-rows-[auto_1fr] overflow-hidden lg:h-dvh">
         <Header />
         <Outlet />
       </div>

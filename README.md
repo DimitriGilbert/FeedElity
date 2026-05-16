@@ -28,7 +28,7 @@ bun install
 
 This project uses SQLite with Drizzle ORM.
 
-1. Start the local SQLite database (optional):
+1. Start the local SQLite/libSQL database (optional). This uses the root `local.db` file that `apps/server/.env.example` points at with `DATABASE_URL=file:../../local.db`:
 
 ```bash
 bun run db:local
@@ -36,11 +36,13 @@ bun run db:local
 
 2. Update your `.env` file in the `apps/server` directory with the appropriate connection details if needed.
 
-3. Apply the schema to your database:
+3. Apply the schema to your database before starting the server. Re-run this after pulling or making schema changes so the ignored local runtime database has the catalog and overlay tables expected by the app:
 
 ```bash
 bun run db:push
 ```
+
+For committed schema changes, generate a Drizzle migration with `bun run db:generate` and apply migrations with `bun run db:migrate`. Use `db:push` for local development databases that need to be brought in sync without resetting data.
 
 Then, run the development server:
 
@@ -71,9 +73,9 @@ FeedElity/
 - `bun run dev:web`: Start only the web application
 - `bun run dev:server`: Start only the server
 - `bun run check-types`: Check TypeScript types across all apps
-- `bun run db:push`: Push schema changes to database
-- `bun run db:generate`: Generate database client/types
-- `bun run db:migrate`: Run database migrations
+- `bun run db:push`: Push schema changes to the configured local development database
+- `bun run db:generate`: Generate Drizzle migration files for committed schema changes
+- `bun run db:migrate`: Run committed Drizzle migrations against the configured database
 - `bun run db:studio`: Open database studio UI
 - `bun run db:local`: Start the local SQLite database
 - `bun run dev:desktop`: Start the Electrobun desktop app with HMR

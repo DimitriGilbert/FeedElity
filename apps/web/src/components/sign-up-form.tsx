@@ -1,11 +1,12 @@
 import { createForm } from "@tanstack/solid-form";
 import { useNavigate } from "@tanstack/solid-router";
-import { For } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 import z from "zod";
 
 import { authClient } from "@/lib/auth-client";
 
 export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () => void }) {
+  const [submitError, setSubmitError] = createSignal<string | null>(null);
   const navigate = useNavigate({
     from: "/",
   });
@@ -17,6 +18,7 @@ export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () 
       name: "",
     },
     onSubmit: async ({ value }) => {
+      setSubmitError(null);
       await authClient.signUp.email(
         {
           email: value.email,
@@ -28,10 +30,9 @@ export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () 
             navigate({
               to: "/dashboard",
             });
-            console.log("Sign up successful");
           },
           onError: (error) => {
-            console.error(error.error.message);
+            setSubmitError(error.error.message);
           },
         },
       );
@@ -46,8 +47,8 @@ export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () 
   }));
 
   return (
-    <div class="mx-auto w-full mt-10 max-w-md p-6">
-      <h1 class="mb-6 text-center text-3xl font-bold">Create Account</h1>
+    <div class="mx-auto mt-10 w-full max-w-md p-6 text-foreground">
+      <h1 class="mb-6 text-center text-2xl font-semibold tracking-tight">Create account</h1>
 
       <form
         onSubmit={(e) => {
@@ -61,17 +62,17 @@ export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () 
           <form.Field name="name">
             {(field) => (
               <div class="space-y-2">
-                <label for={field().name}>Name</label>
+                <label for={field().name} class="text-sm font-medium text-muted-foreground">Name</label>
                 <input
                   id={field().name}
                   name={field().name}
                   value={field().state.value}
                   onBlur={field().handleBlur}
                   onInput={(e) => field().handleChange(e.currentTarget.value)}
-                  class="w-full rounded border p-2"
+                  class="w-full border border-input bg-background p-2 text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                 />
                 <For each={field().state.meta.errors}>
-                  {(error) => <p class="text-sm text-red-600">{error?.message}</p>}
+                  {(error) => <p class="text-sm text-destructive">{error?.message}</p>}
                 </For>
               </div>
             )}
@@ -82,7 +83,7 @@ export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () 
           <form.Field name="email">
             {(field) => (
               <div class="space-y-2">
-                <label for={field().name}>Email</label>
+                <label for={field().name} class="text-sm font-medium text-muted-foreground">Email</label>
                 <input
                   id={field().name}
                   name={field().name}
@@ -90,10 +91,10 @@ export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () 
                   value={field().state.value}
                   onBlur={field().handleBlur}
                   onInput={(e) => field().handleChange(e.currentTarget.value)}
-                  class="w-full rounded border p-2"
+                  class="w-full border border-input bg-background p-2 text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                 />
                 <For each={field().state.meta.errors}>
-                  {(error) => <p class="text-sm text-red-600">{error?.message}</p>}
+                  {(error) => <p class="text-sm text-destructive">{error?.message}</p>}
                 </For>
               </div>
             )}
@@ -104,7 +105,7 @@ export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () 
           <form.Field name="password">
             {(field) => (
               <div class="space-y-2">
-                <label for={field().name}>Password</label>
+                <label for={field().name} class="text-sm font-medium text-muted-foreground">Password</label>
                 <input
                   id={field().name}
                   name={field().name}
@@ -112,10 +113,10 @@ export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () 
                   value={field().state.value}
                   onBlur={field().handleBlur}
                   onInput={(e) => field().handleChange(e.currentTarget.value)}
-                  class="w-full rounded border p-2"
+                  class="w-full border border-input bg-background p-2 text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                 />
                 <For each={field().state.meta.errors}>
-                  {(error) => <p class="text-sm text-red-600">{error?.message}</p>}
+                  {(error) => <p class="text-sm text-destructive">{error?.message}</p>}
                 </For>
               </div>
             )}
@@ -126,22 +127,25 @@ export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () 
           {(state) => (
             <button
               type="submit"
-              class="w-full rounded bg-indigo-600 p-2 text-white hover:bg-indigo-700 disabled:opacity-50"
+              class="w-full border border-border bg-primary p-2 font-semibold text-primary-foreground hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
               disabled={!state().canSubmit || state().isSubmitting}
             >
               {state().isSubmitting ? "Submitting..." : "Sign Up"}
             </button>
           )}
         </form.Subscribe>
+        <Show when={submitError()}>
+          {(message) => <p class="text-sm text-destructive" role="alert">{message()}</p>}
+        </Show>
       </form>
 
       <div class="mt-4 text-center">
         <button
           type="button"
           onClick={onSwitchToSignIn}
-          class="text-sm text-indigo-600 hover:text-indigo-800 hover:underline"
+          class="text-sm text-muted-foreground hover:text-foreground hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         >
-          Already have an account? Sign In
+          Already have an account? Sign in
         </button>
       </div>
     </div>
