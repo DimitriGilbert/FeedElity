@@ -2,6 +2,7 @@
   "extends": "@FeedElity/config/tsconfig.base.json",
   "compilerOptions": {
     "composite": true,
+    "lib": ["ESNext", "DOM"],
     "outDir": "dist",
     "paths": {
       "@/*": ["./src/*"]

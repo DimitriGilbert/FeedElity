@@ -20,15 +20,15 @@ export default {
     },
     watchIgnore: [`${webBuildDir}/**`],
     mac: {
-      bundleCEF: true,
+      bundleCEF: false,
       defaultRenderer: "cef",
     },
     linux: {
-      bundleCEF: true,
+      bundleCEF: false,
       defaultRenderer: "cef",
     },
     win: {
-      bundleCEF: true,
+      bundleCEF: false,
       defaultRenderer: "cef",
     },
   },

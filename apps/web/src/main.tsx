@@ -6,13 +6,17 @@ import "./styles.css";
 import { routeTree } from "./routeTree.gen";
 import { orpc, queryClient } from "./utils/orpc";
 
-const router = createRouter({
-  routeTree,
-  defaultPreload: "intent",
-  scrollRestoration: true,
-  defaultPreloadStaleTime: 0,
-  context: { orpc, queryClient },
-});
+export function createAppRouter() {
+  return createRouter({
+    routeTree,
+    defaultPreload: "intent",
+    scrollRestoration: true,
+    defaultPreloadStaleTime: 0,
+    context: { orpc, queryClient },
+  });
+}
+
+const router = createAppRouter();
 
 declare module "@tanstack/solid-router" {
   interface Register {
@@ -20,7 +24,7 @@ declare module "@tanstack/solid-router" {
   }
 }
 
-function App() {
+export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
@@ -28,7 +32,7 @@ function App() {
   );
 }
 
-const rootElement = document.getElementById("app");
-if (rootElement) {
+const rootElement = globalThis.document?.getElementById("app");
+if (rootElement !== undefined && rootElement !== null) {
   render(() => <App />, rootElement);
 }

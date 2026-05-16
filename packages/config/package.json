@@ -1,5 +1,8 @@
 {
   "name": "@FeedElity/config",
   "version": "0.0.0",
-  "private": true
+  "private": true,
+  "scripts": {
+    "check-types": "tsc -p tsconfig.base.json --noEmit"
+  }
 }

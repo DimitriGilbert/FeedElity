@@ -72,6 +72,7 @@
         "@FeedElity/config": "workspace:*",
         "@tanstack/solid-query-devtools": "^5.99.1",
         "@tanstack/solid-router-devtools": "^1.166.13",
+        "@types/bun": "catalog:",
         "typescript": "catalog:",
         "vite": "^8.0.8",
         "vite-plugin-solid": "^2.11.12",

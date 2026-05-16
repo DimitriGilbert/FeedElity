@@ -44,6 +44,14 @@ lerna-debug.log*
 coverage
 .nyc_output
 
+# Local SQLite/libSQL runtime databases
+local.db
+local.db-*
+/*.sqlite
+/*.sqlite-*
+/*.sqlite3
+/*.sqlite3-*
+
 # Misc
 *.tgz
 .cache
