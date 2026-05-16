@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createClient } from "@libsql/client";
 import type { Client } from "@libsql/client";
 import { call } from "@orpc/server";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/libsql";
 
 import * as schema from "@FeedElity/db/schema";
@@ -203,6 +204,66 @@ describe("playlist API", () => {
       }),
     ).rejects.toHaveProperty("code", "NOT_FOUND");
   });
+
+  test("playlist item listing honors each playlist sort mode", async () => {
+    await insertUser(testDatabase.db, "user-a", "sort-owner@example.test", "active");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "playlist-sort-channel",
+      displayName: "Playlist Sort Creator",
+    });
+    const olderContentItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "playlist-sort-video-older",
+      title: "Older playlist sort video",
+      publishedAt: new Date("2025-01-01T00:00:00.000Z"),
+    });
+    const newerContentItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "playlist-sort-video-newer",
+      title: "Newer playlist sort video",
+      publishedAt: new Date("2025-02-01T00:00:00.000Z"),
+    });
+
+    const modes = ["manual", "published_at_desc", "published_at_asc", "added_at_desc", "added_at_asc"] as const;
+    const listedOrders = new Map<(typeof modes)[number], readonly string[]>();
+
+    for (const sortMode of modes) {
+      const playlist = await call(appRouter.overlays.createPlaylist, { name: `Queue ${sortMode}`, sortMode }, {
+        context: authenticatedContext(testDatabase.db, "user-a", "active"),
+      });
+      const firstItem = await call(appRouter.overlays.addPlaylistItem, {
+        playlistId: playlist.id,
+        contentItemId: olderContentItem.id,
+      }, { context: authenticatedContext(testDatabase.db, "user-a", "active") });
+      const secondItem = await call(appRouter.overlays.addPlaylistItem, {
+        playlistId: playlist.id,
+        contentItemId: newerContentItem.id,
+      }, { context: authenticatedContext(testDatabase.db, "user-a", "active") });
+
+      await testDatabase.db
+        .update(schema.playlistItem)
+        .set({ addedAt: new Date("2025-03-01T00:00:00.000Z") })
+        .where(eq(schema.playlistItem.id, firstItem.id));
+      await testDatabase.db
+        .update(schema.playlistItem)
+        .set({ addedAt: new Date("2025-04-01T00:00:00.000Z") })
+        .where(eq(schema.playlistItem.id, secondItem.id));
+
+      const listedItems = await call(appRouter.overlays.playlistItems, { playlistId: playlist.id }, {
+        context: authenticatedContext(testDatabase.db, "user-a", "active"),
+      });
+      listedOrders.set(sortMode, listedItems.map((item) => item.contentItemId));
+    }
+
+    expect(listedOrders.get("manual")).toEqual([olderContentItem.id, newerContentItem.id]);
+    expect(listedOrders.get("published_at_desc")).toEqual([newerContentItem.id, olderContentItem.id]);
+    expect(listedOrders.get("published_at_asc")).toEqual([olderContentItem.id, newerContentItem.id]);
+    expect(listedOrders.get("added_at_desc")).toEqual([newerContentItem.id, olderContentItem.id]);
+    expect(listedOrders.get("added_at_asc")).toEqual([olderContentItem.id, newerContentItem.id]);
+  });
 });
 
 function anonymousContext(db: RepositoryDb): Context {
@@ -312,6 +373,19 @@ const schemaStatements = [
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
   )`,
   "CREATE UNIQUE INDEX playlist_id_user_uidx ON playlist (id, user_id)",
+  `CREATE TABLE content_source (
+    id TEXT PRIMARY KEY NOT NULL,
+    content_item_id TEXT NOT NULL REFERENCES content_item(id) ON DELETE CASCADE,
+    source_type TEXT NOT NULL,
+    source_external_id TEXT,
+    embed_url TEXT,
+    native_media_url TEXT,
+    canonical_url TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    metadata_json TEXT,
+    created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
+    updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
+  )`,
   `CREATE TABLE playlist_item (
     id TEXT PRIMARY KEY NOT NULL,
     user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,

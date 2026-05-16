@@ -12,6 +12,7 @@ import type {
   CatalogCreatorSummary,
   CatalogFeed,
   RefreshFeedResult,
+  RefreshFeedResultWithFeed,
   RefreshRun,
   RefreshScope,
   RefreshStatus,
@@ -132,6 +133,7 @@ export interface ListCatalogCreatorsInput {
 export interface ListCatalogContentItemsInput {
   readonly search?: string;
   readonly creatorId?: string;
+  readonly feedId?: string;
   readonly sourceType?: SourceType;
   readonly limit: number;
 }
@@ -231,6 +233,14 @@ export async function findFeedBySourceIdentity(
 ): Promise<CatalogFeed | null> {
   const row = await db.query.feed.findFirst({
     where: and(eq(schema.feed.sourceType, identity.sourceType), eq(schema.feed.sourceExternalId, identity.sourceExternalId)),
+  });
+
+  return row === undefined ? null : toCatalogFeed(row);
+}
+
+export async function getCatalogFeedById(db: RepositoryDb, feedId: string): Promise<CatalogFeed | null> {
+  const row = await db.query.feed.findFirst({
+    where: eq(schema.feed.id, feedId),
   });
 
   return row === undefined ? null : toCatalogFeed(row);
@@ -384,17 +394,27 @@ export async function listCatalogContentItems(
 ): Promise<readonly CatalogContentListItem[]> {
   const conditions = [
     input.creatorId === undefined ? undefined : eq(schema.contentItem.creatorId, input.creatorId),
+    input.feedId === undefined ? undefined : eq(schema.feedContent.feedId, input.feedId),
     input.sourceType === undefined ? undefined : eq(schema.contentItem.sourceType, input.sourceType),
     input.search === undefined ? undefined : containsNormalized(schema.contentItem.title, input.search),
   ].filter(isDefined);
 
-  const rows = await db
+  const contentQuery = db
     .select({
       contentItem: schema.contentItem,
       creator: schema.creator,
+      sourceCount: sql<number>`(
+        select count(*)
+        from ${schema.contentSource}
+        where ${schema.contentSource.contentItemId} = ${schema.contentItem.id}
+      )`,
     })
     .from(schema.contentItem)
-    .innerJoin(schema.creator, eq(schema.contentItem.creatorId, schema.creator.id))
+    .innerJoin(schema.creator, eq(schema.contentItem.creatorId, schema.creator.id));
+
+  const rows = await (input.feedId === undefined
+    ? contentQuery
+    : contentQuery.innerJoin(schema.feedContent, eq(schema.feedContent.contentItemId, schema.contentItem.id)))
     .where(conditions.length === 0 ? undefined : and(...conditions))
     .orderBy(desc(schema.contentItem.publishedAt), desc(schema.contentItem.createdAt))
     .limit(input.limit);
@@ -402,6 +422,7 @@ export async function listCatalogContentItems(
   return rows.map((row) => ({
     ...toCatalogContentItem(row.contentItem),
     creator: toCatalogCreatorSummary(row.creator),
+    sourceCount: row.sourceCount,
   }));
 }
 
@@ -474,6 +495,12 @@ export async function listCatalogFeedsForCreator(db: RepositoryDb, creatorId: st
   });
 
   return rows.map(toCatalogFeed);
+}
+
+export async function listCatalogFeedById(db: RepositoryDb, feedId: string): Promise<readonly CatalogFeed[]> {
+  const feed = await getCatalogFeedById(db, feedId);
+
+  return feed === null ? [] : [feed];
 }
 
 export async function createRefreshRun(db: RepositoryDb, input: CreateRefreshRunInput): Promise<RefreshRun> {
@@ -602,6 +629,25 @@ export async function listRefreshFeedResultsForRun(
   });
 
   return rows.map(toRefreshFeedResult);
+}
+
+export async function listRefreshFeedResultsWithFeedsForRun(
+  db: RepositoryDb,
+  input: ListRefreshFeedResultsForRunInput,
+): Promise<readonly RefreshFeedResultWithFeed[]> {
+  const rows = await db.query.refreshFeedResult.findMany({
+    where: eq(schema.refreshFeedResult.refreshRunId, input.refreshRunId),
+    orderBy: (refreshFeedResult, { asc }) => [asc(refreshFeedResult.startedAt)],
+    limit: input.limit,
+    with: {
+      feed: true,
+    },
+  });
+
+  return rows.map((row) => ({
+    ...toRefreshFeedResult(row),
+    feed: toCatalogFeed(row.feed),
+  }));
 }
 
 function toCatalogCreator(row: typeof schema.creator.$inferSelect): CatalogCreator {

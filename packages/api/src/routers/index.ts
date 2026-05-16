@@ -9,10 +9,11 @@ import {
   getCatalogContentDetail,
   getCatalogContentItemById,
   getCatalogCreatorSummaryById,
+  getCatalogFeedById,
   listCatalogContentItems,
   listCatalogCreators,
   listCatalogFeedsForBrowsing,
-  listRefreshFeedResultsForRun,
+  listRefreshFeedResultsWithFeedsForRun,
   listRefreshRuns,
 } from "../repositories/catalog";
 import {
@@ -38,7 +39,8 @@ import {
   unsubscribeFromCreatorForUser,
   updatePlaylistForUser,
 } from "../repositories/overlays";
-import { refreshAll, refreshCreator } from "../services/refresh";
+import { addSource, batchAddSources } from "../services/ingestion";
+import { refreshAll, refreshCreator, refreshFeed } from "../services/refresh";
 import { createSourceAdapterRegistry } from "../sources";
 
 const playlistItemsInput = z.object({
@@ -113,6 +115,7 @@ const contentListInput = z
   .object({
     search: boundedSearchInput.optional(),
     creatorId: z.string().min(1).optional(),
+    feedId: z.string().min(1).optional(),
     sourceType: sourceTypeInput.optional(),
     limit: catalogLimitInput,
   })
@@ -148,12 +151,27 @@ const migrationImportInput = z.object({
   sourceFilename: z.string().trim().min(1).max(255).nullable().optional(),
 });
 
+const addSourceInputValue = z.string().trim().min(1).max(2_048);
+
+const addSourceInput = z.object({
+  sourceInput: addSourceInputValue,
+});
+
+const batchAddSourcesInput = z.object({
+  sourceInputs: z.array(addSourceInputValue).min(1).max(100),
+});
+
 const refreshRunInput = z.object({
   force: z.boolean().optional(),
 });
 
 const refreshCreatorInput = z.object({
   creatorId: z.string().min(1),
+  force: z.boolean().optional(),
+});
+
+const refreshFeedInput = z.object({
+  feedId: z.string().min(1),
   force: z.boolean().optional(),
 });
 
@@ -242,7 +260,7 @@ export const appRouter = {
         latestFeedResults:
           latestRun === null
             ? []
-            : await listRefreshFeedResultsForRun(context.db, { refreshRunId: latestRun.id, limit: feedResultsLimit }),
+            : await listRefreshFeedResultsWithFeedsForRun(context.db, { refreshRunId: latestRun.id, limit: feedResultsLimit }),
       };
     }),
     runAll: protectedProcedure.input(refreshRunInput).handler(({ input, context }) => {
@@ -267,6 +285,46 @@ export const appRouter = {
           now: () => new Date(),
         },
         { creatorId: input.creatorId, force: input.force ?? false },
+      );
+    }),
+    runFeed: protectedProcedure.input(refreshFeedInput).handler(async ({ input, context }) => {
+      if ((await getCatalogFeedById(context.db, input.feedId)) === null) {
+        throw new ORPCError("NOT_FOUND");
+      }
+
+      return refreshFeed(
+        {
+          db: context.db,
+          sourceRegistry: context.sourceRegistry ?? createSourceAdapterRegistry(),
+          now: () => new Date(),
+        },
+        { feedId: input.feedId, force: input.force ?? false },
+      );
+    }),
+  },
+  ingestion: {
+    addSource: protectedProcedure.input(addSourceInput).handler(({ input, context }) => {
+      return addSource(
+        {
+          db: context.db,
+          sourceRegistry: context.sourceRegistry ?? createSourceAdapterRegistry(),
+        },
+        {
+          sourceInput: input.sourceInput,
+          userId: context.session.user.id,
+        },
+      );
+    }),
+    batchAddSources: protectedProcedure.input(batchAddSourcesInput).handler(({ input, context }) => {
+      return batchAddSources(
+        {
+          db: context.db,
+          sourceRegistry: context.sourceRegistry ?? createSourceAdapterRegistry(),
+        },
+        {
+          sourceInputs: input.sourceInputs,
+          userId: context.session.user.id,
+        },
       );
     }),
   },

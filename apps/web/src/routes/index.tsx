@@ -7,5 +7,5 @@ export const Route = createFileRoute("/")({
 });
 
 function App() {
-  return <AppShell />;
+  return <AppShell mode="catalog" />;
 }

@@ -1,8 +1,8 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 
 import * as schema from "@FeedElity/db/schema";
 
-import type { ContentStatusKind } from "../domain/catalog";
+import type { CatalogContentItem, ContentStatusKind } from "../domain/catalog";
 import type {
   MigrationMapping,
   MigrationRun,
@@ -326,6 +326,11 @@ export async function listContentStatusWithContentForUser(
       contentStatus: schema.contentStatus,
       contentItem: schema.contentItem,
       creator: schema.creator,
+      sourceCount: sql<number>`(
+        select count(*)
+        from ${schema.contentSource}
+        where ${schema.contentSource.contentItemId} = ${schema.contentItem.id}
+      )`,
     })
     .from(schema.contentStatus)
     .innerJoin(schema.contentItem, eq(schema.contentStatus.contentItemId, schema.contentItem.id))
@@ -338,6 +343,7 @@ export async function listContentStatusWithContentForUser(
     content: {
       ...toCatalogContentItem(row.contentItem),
       creator: toCatalogCreatorSummary(row.creator),
+      sourceCount: row.sourceCount,
     },
   }));
 }
@@ -473,23 +479,49 @@ export async function listPlaylistItemsWithContentForUserPlaylist(
   userId: string,
   playlistId: string,
 ): Promise<readonly PlaylistItemWithContent[]> {
+  const playlist = await getPlaylistForUser(db, userId, playlistId);
+  if (playlist === null) {
+    return [];
+  }
+
+  const orderBy = (() => {
+    switch (playlist.sortMode) {
+      case "published_at_desc":
+        return [desc(schema.contentItem.publishedAt), asc(schema.playlistItem.position), asc(schema.playlistItem.addedAt)];
+      case "published_at_asc":
+        return [asc(schema.contentItem.publishedAt), asc(schema.playlistItem.position), asc(schema.playlistItem.addedAt)];
+      case "added_at_desc":
+        return [desc(schema.playlistItem.addedAt), asc(schema.playlistItem.position)];
+      case "added_at_asc":
+        return [asc(schema.playlistItem.addedAt), asc(schema.playlistItem.position)];
+      case "manual":
+        return [asc(schema.playlistItem.position), asc(schema.playlistItem.addedAt)];
+    }
+  })();
+
   const rows = await db
     .select({
       playlistItem: schema.playlistItem,
       contentItem: schema.contentItem,
       creator: schema.creator,
+      sourceCount: sql<number>`(
+        select count(*)
+        from ${schema.contentSource}
+        where ${schema.contentSource.contentItemId} = ${schema.contentItem.id}
+      )`,
     })
     .from(schema.playlistItem)
     .innerJoin(schema.contentItem, eq(schema.playlistItem.contentItemId, schema.contentItem.id))
     .innerJoin(schema.creator, eq(schema.contentItem.creatorId, schema.creator.id))
     .where(and(eq(schema.playlistItem.userId, userId), eq(schema.playlistItem.playlistId, playlistId)))
-    .orderBy(asc(schema.playlistItem.position), asc(schema.playlistItem.addedAt));
+    .orderBy(...orderBy);
 
   return rows.map((row) => ({
     ...toPlaylistItem(row.playlistItem),
     content: {
       ...toCatalogContentItem(row.contentItem),
       creator: toCatalogCreatorSummary(row.creator),
+      sourceCount: row.sourceCount,
     },
   }));
 }
@@ -770,9 +802,7 @@ function toUserContentStatus(row: typeof schema.contentStatus.$inferSelect): Use
   };
 }
 
-function toCatalogContentItem(
-  row: typeof schema.contentItem.$inferSelect,
-): Omit<UserContentStatusWithContent["content"], "creator"> {
+function toCatalogContentItem(row: typeof schema.contentItem.$inferSelect): CatalogContentItem {
   return {
     id: row.id,
     creatorId: row.creatorId,

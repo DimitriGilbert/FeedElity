@@ -86,6 +86,58 @@ describe("catalog browsing router", () => {
     expect(contentItems[0]?.creator).toMatchObject({ id: firstCreator.id, displayName: "Alpha Creator" });
   });
 
+  test("anonymous callers can filter catalog content by selected feed", async () => {
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "feed-filter-creator",
+      displayName: "Feed Filter Creator",
+    });
+    const selectedFeed = await findOrCreateFeed(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "feed-filter-selected",
+      url: "https://youtube.example.test/selected.xml",
+    });
+    const otherFeed = await findOrCreateFeed(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "feed-filter-other",
+      url: "https://youtube.example.test/other.xml",
+    });
+    const selectedFeedItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "feed-filter-selected-video",
+      title: "Selected feed video",
+      publishedAt: new Date("2026-02-02T00:00:00.000Z"),
+    });
+    const otherFeedItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "feed-filter-other-video",
+      title: "Other feed video",
+      publishedAt: new Date("2026-02-03T00:00:00.000Z"),
+    });
+    await linkFeedContent(testDatabase.db, {
+      feedId: selectedFeed.id,
+      contentItemId: selectedFeedItem.id,
+      sourceExternalId: "feed-filter-selected-video",
+    });
+    await linkFeedContent(testDatabase.db, {
+      feedId: otherFeed.id,
+      contentItemId: otherFeedItem.id,
+      sourceExternalId: "feed-filter-other-video",
+    });
+
+    const contentItems = await call(
+      appRouter.catalog.contentItems,
+      { creatorId: creator.id, feedId: selectedFeed.id, limit: 10 },
+      { context: anonymousContext(testDatabase.db) },
+    );
+
+    expect(contentItems.map((contentItem) => contentItem.id)).toEqual([selectedFeedItem.id]);
+  });
+
   test("refresh status is public and manual refresh procedures are protected", async () => {
     const run = await createRefreshRun(testDatabase.db, {
       scope: "all",
@@ -104,6 +156,9 @@ describe("catalog browsing router", () => {
     await expect(
       call(appRouter.refresh.runAll, { force: false }, { context: anonymousContext(testDatabase.db) }),
     ).rejects.toBeDefined();
+    await expect(
+      call(appRouter.refresh.runFeed, { feedId: "feed-id", force: false }, { context: anonymousContext(testDatabase.db) }),
+    ).rejects.toBeDefined();
   });
 
   test("refresh status loads bounded runs and latest feed results at the API boundary", async () => {
@@ -117,6 +172,7 @@ describe("catalog browsing router", () => {
       sourceType: "youtube",
       sourceExternalId: "refresh-status-bounds-feed-one",
       url: "https://youtube.example.test/status/feed-one",
+      title: "Status Feed One",
     });
     const secondFeed = await findOrCreateFeed(testDatabase.db, {
       creatorId: creator.id,
@@ -162,6 +218,7 @@ describe("catalog browsing router", () => {
     expect(status.latestRun?.id).toBe(latestRun.id);
     expect(status.recentRuns.map((run) => run.id)).toEqual([latestRun.id, secondRun.id]);
     expect(status.latestFeedResults).toHaveLength(2);
+    expect(status.latestFeedResults.at(0)?.feed.title).toBe("Status Feed One");
   });
 
   test("authenticated callers can run a per-creator normal or force refresh through the router", async () => {
@@ -180,6 +237,41 @@ describe("catalog browsing router", () => {
 
     expect(result.report).toMatchObject({ scope: "creator", force: true, status: "succeeded" });
     expect(result.selectedFeeds).toHaveLength(0);
+  });
+
+  test("authenticated callers can run a feed-scoped refresh through the router", async () => {
+    await insertUser(testDatabase.db, "active-user", "active-user@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "refresh-feed-creator",
+      displayName: "Refresh Feed Creator",
+    });
+    const feed = await findOrCreateFeed(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "refresh-feed",
+      url: "https://youtube.example.test/refresh-feed.xml",
+    });
+
+    const result = await call(
+      appRouter.refresh.runFeed,
+      { feedId: feed.id, force: true },
+      { context: authenticatedContext(testDatabase.db, "active-user") },
+    );
+
+    expect(result.run).toMatchObject({ scope: "feed", requestedCreatorId: null, requestedFeedId: feed.id });
+    expect(result.selectedFeeds.map((selectedFeed) => selectedFeed.id)).toEqual([feed.id]);
+    expect(result.report).toMatchObject({ scope: "feed", force: true, selectedFeedCount: 1 });
+  });
+
+  test("feed-scoped refresh rejects unknown feed ids", async () => {
+    await insertUser(testDatabase.db, "active-user", "active-user@example.test");
+
+    await expect(
+      call(appRouter.refresh.runFeed, { feedId: "missing-feed", force: false }, {
+        context: authenticatedContext(testDatabase.db, "active-user"),
+      }),
+    ).rejects.toBeDefined();
   });
 
   test("anonymous content detail includes creator, feeds, and playable sources without overlay leakage", async () => {

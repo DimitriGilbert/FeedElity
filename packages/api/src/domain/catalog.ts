@@ -65,6 +65,7 @@ export interface CatalogContentSource {
 
 export interface CatalogContentListItem extends CatalogContentItem {
   readonly creator: CatalogCreatorSummary;
+  readonly sourceCount: number;
 }
 
 export interface CatalogCreatorSummary {
@@ -116,6 +117,9 @@ export interface RefreshFeedErrorSummary {
 
 export interface RefreshFeedReport {
   readonly feedId: string;
+  readonly feedTitle: string | null;
+  readonly feedUrl: string;
+  readonly sourceType: SourceType;
   readonly status: RefreshFeedReportStatus;
   readonly skipReason: RefreshFeedSkipReason | null;
   readonly itemsDiscoveredCount: number;
@@ -154,4 +158,8 @@ export interface RefreshFeedResult {
   readonly startedAt: Date;
   readonly completedAt: Date | null;
   readonly errorSummaryJson: string | null;
+}
+
+export interface RefreshFeedResultWithFeed extends RefreshFeedResult {
+  readonly feed: CatalogFeed;
 }

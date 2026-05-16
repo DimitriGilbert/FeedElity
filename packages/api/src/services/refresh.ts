@@ -12,6 +12,7 @@ import type {
 import {
   completeRefreshRun,
   createRefreshRun,
+  listCatalogFeedById,
   listCatalogFeeds,
   listCatalogFeedsForCreator,
   recordRefreshFeedResult,
@@ -34,6 +35,11 @@ export interface RefreshAllInput {
 
 export interface RefreshCreatorInput {
   readonly creatorId: string;
+  readonly force?: boolean;
+}
+
+export interface RefreshFeedInput {
+  readonly feedId: string;
   readonly force?: boolean;
 }
 
@@ -75,6 +81,7 @@ export async function refreshAll(
     scope: "all",
     force: input.force ?? false,
     requestedCreatorId: null,
+    requestedFeedId: null,
     feeds,
   });
 }
@@ -88,6 +95,21 @@ export async function refreshCreator(
     scope: "creator",
     force: input.force ?? false,
     requestedCreatorId: input.creatorId,
+    requestedFeedId: null,
+    feeds,
+  });
+}
+
+export async function refreshFeed(
+  dependencies: RefreshServiceDependencies,
+  input: RefreshFeedInput,
+): Promise<RefreshServiceResult> {
+  const feeds = await listCatalogFeedById(dependencies.db, input.feedId);
+  return runRefresh(dependencies, {
+    scope: "feed",
+    force: input.force ?? false,
+    requestedCreatorId: null,
+    requestedFeedId: input.feedId,
     feeds,
   });
 }
@@ -96,6 +118,7 @@ interface RunRefreshInput {
   readonly scope: RefreshScope;
   readonly force: boolean;
   readonly requestedCreatorId: string | null;
+  readonly requestedFeedId: string | null;
   readonly feeds: readonly CatalogFeed[];
 }
 
@@ -111,6 +134,7 @@ async function runRefresh(
     force: input.force,
     status: "running",
     requestedCreatorId: input.requestedCreatorId,
+    requestedFeedId: input.requestedFeedId,
     feedsRequestedCount: selectedFeeds.length,
     feedsSkippedCount: selection.skipped.length,
     startedAt,
@@ -143,7 +167,7 @@ async function runRefresh(
 
   return {
     run: completedRun,
-    report: buildRefreshReport(completedRun, feedResults, selection.skipped),
+    report: buildRefreshReport(completedRun, feedResults, selectedFeeds, selection.skipped),
     feedResults,
     selectedFeeds,
     skippedFeeds: selection.skipped,
@@ -287,8 +311,11 @@ function statusForCounts(successCount: number, failureCount: number): RefreshSta
 function buildRefreshReport(
   run: RefreshRun,
   feedResults: readonly RefreshFeedResult[],
+  selectedFeeds: readonly CatalogFeed[],
   skippedFeeds: readonly SkippedFeed[],
 ): RefreshRunReport {
+  const feedById = new Map(selectedFeeds.map((feed) => [feed.id, feed]));
+
   return {
     runId: run.id,
     scope: run.scope,
@@ -304,9 +331,18 @@ function buildRefreshReport(
     startedAt: run.startedAt,
     completedAt: run.completedAt,
     feeds: [
-      ...feedResults.map(toCompletedFeedReport),
+      ...feedResults.map((feedResult) => {
+        const feed = feedById.get(feedResult.feedId);
+        if (feed === undefined) {
+          throw new Error("Refresh feed result references an unknown selected feed.");
+        }
+        return toCompletedFeedReport(feedResult, feed);
+      }),
       ...skippedFeeds.map((skippedFeed): RefreshFeedReport => ({
         feedId: skippedFeed.feed.id,
+        feedTitle: skippedFeed.feed.title,
+        feedUrl: skippedFeed.feed.url,
+        sourceType: skippedFeed.feed.sourceType,
         status: "skipped",
         skipReason: skippedFeed.reason,
         itemsDiscoveredCount: 0,
@@ -320,9 +356,12 @@ function buildRefreshReport(
   };
 }
 
-function toCompletedFeedReport(result: RefreshFeedResult): RefreshFeedReport {
+function toCompletedFeedReport(result: RefreshFeedResult, feed: CatalogFeed): RefreshFeedReport {
   return {
     feedId: result.feedId,
+    feedTitle: feed.title,
+    feedUrl: feed.url,
+    sourceType: feed.sourceType,
     status: result.status,
     skipReason: null,
     itemsDiscoveredCount: result.itemsDiscoveredCount,

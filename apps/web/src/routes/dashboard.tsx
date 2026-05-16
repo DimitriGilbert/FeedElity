@@ -18,5 +18,5 @@ export const Route = createFileRoute("/dashboard")({
 });
 
 function RouteComponent() {
-  return <AppShell />;
+  return <AppShell mode="library" />;
 }

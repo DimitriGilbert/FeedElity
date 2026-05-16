@@ -22,7 +22,7 @@ import type {
   SourceDetectionFailure,
   SourceDetectionSuccess,
 } from "../sources";
-import { refreshAll, refreshCreator } from "./refresh";
+import { refreshAll, refreshCreator, refreshFeed } from "./refresh";
 
 interface TestDatabase {
   readonly client: Client;
@@ -83,6 +83,15 @@ describe("manual refresh orchestration", () => {
         `${feeds.noCadenceFeedId}:skipped`,
       ]),
     );
+    expect(result.report.feeds.find((feedReport) => feedReport.feedId === feeds.dueFeedId)).toMatchObject({
+      feedTitle: "Due Feed",
+      feedUrl: "https://refresh.example.test/due-feed",
+      sourceType: "youtube",
+    });
+    expect(result.report.feeds.find((feedReport) => feedReport.feedId === feeds.notDueFeedId)).toMatchObject({
+      feedTitle: "Not Due Feed",
+      skipReason: "not-due",
+    });
     expect(result.feedResults).toHaveLength(2);
     expect(await listRefreshFeedResultsForRun(testDatabase.db, { refreshRunId: result.run.id, limit: 10 })).toHaveLength(2);
   });
@@ -154,6 +163,49 @@ describe("manual refresh orchestration", () => {
     ]));
   });
 
+  test("per-feed refresh targets only the requested feed and records feed scope", async () => {
+    const feeds = await seedFeeds(testDatabase.db);
+    const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
+
+    const result = await refreshFeed(
+      { db: testDatabase.db, sourceRegistry: registry, now: fixedNow },
+      { feedId: feeds.notDueFeedId, force: true },
+    );
+
+    expect(result.run).toMatchObject({ scope: "feed", requestedCreatorId: null, requestedFeedId: feeds.notDueFeedId });
+    expect(result.selectedFeeds.map((feed) => feed.id)).toEqual([feeds.notDueFeedId]);
+    expect(result.report).toMatchObject({ scope: "feed", selectedFeedCount: 1, skippedFeedCount: 0 });
+  });
+
+  test("per-feed normal refresh applies existing cadence skip behavior to the requested feed", async () => {
+    const feeds = await seedFeeds(testDatabase.db);
+    const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
+
+    const result = await refreshFeed(
+      { db: testDatabase.db, sourceRegistry: registry, now: fixedNow },
+      { feedId: feeds.notDueFeedId, force: false },
+    );
+
+    expect(result.run).toMatchObject({ scope: "feed", requestedFeedId: feeds.notDueFeedId, feedsRequestedCount: 0, feedsSkippedCount: 1 });
+    expect(result.selectedFeeds).toHaveLength(0);
+    expect(result.report.feeds).toEqual([
+      {
+        feedId: feeds.notDueFeedId,
+        feedTitle: "Not Due Feed",
+        feedUrl: "https://refresh.example.test/not-due-feed",
+        sourceType: "youtube",
+        status: "skipped",
+        skipReason: "not-due",
+        itemsDiscoveredCount: 0,
+        itemsCreatedCount: 0,
+        itemsUpdatedCount: 0,
+        error: null,
+        startedAt: null,
+        completedAt: null,
+      },
+    ]);
+  });
+
   test("per-feed failures are persisted without hiding successes", async () => {
     const feeds = await seedFeeds(testDatabase.db);
     const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: ["not-due-feed"] })]);
@@ -223,6 +275,7 @@ async function seedFeeds(db: RepositoryDb): Promise<TestFeedSet> {
     sourceType: "youtube",
     sourceExternalId: "due-feed",
     url: "https://refresh.example.test/due-feed",
+    title: "Due Feed",
     refreshCadenceSeconds: 900,
   });
   const notDueFeed = await findOrCreateFeed(db, {
@@ -230,6 +283,7 @@ async function seedFeeds(db: RepositoryDb): Promise<TestFeedSet> {
     sourceType: "youtube",
     sourceExternalId: "not-due-feed",
     url: "https://refresh.example.test/not-due-feed",
+    title: "Not Due Feed",
     refreshCadenceSeconds: 900,
   });
   const noCadenceFeed = await findOrCreateFeed(db, {

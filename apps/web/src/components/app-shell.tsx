@@ -1,96 +1,184 @@
 import type {
+  AddSourceResult,
+  AddSourceValue,
   CatalogContentDetail,
   CatalogContentListItem,
   CatalogContentSource,
   CatalogCreator,
   CatalogFeed,
+  IngestionError,
   Playlist,
   PlaylistItemWithContent,
   PlaylistSortMode,
-  RefreshFeedResult,
-  RefreshRun,
+  RefreshFeedResultWithFeed,
   RefreshRunReport,
   SourceType,
+  UserContentStatus,
   UserSetting,
+  UserSubscriptionWithCreator,
 } from "@FeedElity/api";
-import { For, Match, Show, Switch, createEffect, createMemo, createResource, createSignal } from "solid-js";
+import { CirclePlay, RadioTower, SquarePlay } from "lucide-solid";
+import { For, Match, Show, Switch, createEffect, createMemo, createResource, createSignal, untrack } from "solid-js";
 
 import { authClient } from "@/lib/auth-client";
 import { client } from "@/utils/orpc";
 
-export interface ShellColumnDefinition {
-  readonly id: "creators" | "content" | "viewer";
-  readonly title: string;
-  readonly description: string;
-}
+import {
+  addSourceHelpId,
+  addSourceInputId,
+  contentCatalogFiltersLabel,
+  contentColumnClass,
+  contentHeaderRegionClass,
+  contentHidePlayedInputId,
+  contentLibraryFiltersLabel,
+  contentListLimit,
+  contentScrollRegionClass,
+  contentSearchInputId,
+  contentSourceFilterId,
+  contentViewModeAllId,
+  contentViewModeFavoritesId,
+  contentViewModeHistoryId,
+  contentViewModePlayedId,
+  contentViewModeSubscribedId,
+  creatorSearchInputId,
+  creatorSourceFilterId,
+  formatRefreshReportSummary,
+  formatRefreshRunSummary,
+  formatSettingValue,
+  formatSourceLabel,
+  playlistDescriptionInputId,
+  playlistNameInputId,
+  playlistSortInputId,
+  readerDensityInputId,
+  readerDensitySettingKey,
+  readerDensityValues,
+  refreshStatusRegionId,
+  settingKeyInputId,
+  settingKeyPattern,
+  settingValueInputId,
+  shellGridClass,
+  shellRootClass,
+  showsCatalogFilters,
+  sourceActionsRegionClass,
+  sourceCatalogRegionClass,
+  sourceColumnClass,
+  sourceCreatorListRegionClass,
+  sourceFeedListRegionClass,
+  sourceHeaderRegionClass,
+  toContentListInput,
+  toCreatorListInput,
+  toReaderDensityFromSettings,
+  toRefreshStatusResourceKey,
+  toPlayableSources,
+  viewerColumnClass,
+  viewerScrollRegionClass,
+  type ContentViewMode,
+  type CreatorListInput,
+  type ContentListInput,
+  type PlayableSource,
+  type ReaderDensity,
+  type ShellMode,
+} from "./app-shell.contract";
 
-interface CreatorListInput {
-  readonly search?: string;
-  readonly limit: number;
-}
-
-interface ContentListInput {
-  readonly search?: string;
-  readonly creatorId?: string;
-  readonly sourceType?: SourceType;
-  readonly limit: number;
-}
-
-export interface ShellSelectionState {
-  readonly selectedCreatorId: string | null;
-}
-
-export interface ShellContentSelectionState extends ShellSelectionState {
-  readonly selectedContentItemId: string | null;
-}
-
-export const creatorSearchInputId = "creator-source-search";
-
-export const creatorListLimit = 50;
-
-export const contentListLimit = 50;
-
-export const contentSearchInputId = "content-list-search";
-
-export const contentSourceFilterId = "content-source-filter";
-
-export const contentViewModeAllId = "content-view-all";
-
-export const contentViewModeFavoritesId = "content-view-favorites";
-
-export const contentCatalogFiltersLabel = "Catalog filters";
-
-export const playlistNameInputId = "playlist-name";
-
-export const playlistDescriptionInputId = "playlist-description";
-
-export const playlistSortInputId = "playlist-sort";
-
-export const settingKeyInputId = "setting-key";
-
-export const settingValueInputId = "setting-value";
-
-export const refreshStatusRegionId = "refresh-status-history";
-
-export const settingKeyPattern = "^[a-z][a-z0-9._-]*$";
+export {
+  contentCatalogFiltersLabel,
+  addSourceHelpId,
+  addSourceInputId,
+  contentColumnClass,
+  contentHeaderRegionClass,
+  contentHidePlayedInputId,
+  contentListLimit,
+  contentScrollRegionClass,
+  contentSearchInputId,
+  contentSourceFilterId,
+  contentViewModeAllId,
+  contentViewModeFavoritesId,
+  contentViewModeHistoryId,
+  contentViewModePlayedId,
+  contentViewModeSubscribedId,
+  creatorListLimit,
+  creatorSearchInputId,
+  creatorSourceFilterId,
+  desktopShellGridClass,
+  formatRefreshReportSummary,
+  formatRefreshRunSummary,
+  formatSettingValue,
+  getShellColumnCount,
+  hasInternalAppHeader,
+  playlistDescriptionInputId,
+  playlistNameInputId,
+  playlistSortInputId,
+  readerDensityInputId,
+  readerDensitySettingKey,
+  readerDensityValues,
+  refreshStatusRegionId,
+  settingKeyInputId,
+  settingKeyPattern,
+  settingValueInputId,
+  shellColumns,
+  shellGridClass,
+  shellPaneIds,
+  shellRootClass,
+  showsCatalogFilters,
+  sourceActionsRegionClass,
+  sourceCatalogRegionClass,
+  sourceColumnClass,
+  sourceCreatorListRegionClass,
+  sourceFeedListRegionClass,
+  sourceHeaderRegionClass,
+  toContentListInput,
+  toCreatorListInput,
+  toReaderDensityFromSettings,
+  toRefreshStatusResourceKey,
+  toPlayableSources,
+  toSafePlaybackUrl,
+  toShellContentSelectionState,
+  toShellSelectionState,
+  viewerColumnClass,
+  viewerScrollRegionClass,
+  type ContentViewMode,
+  type PlayableSource,
+  type ReaderDensity,
+  type ShellMode,
+  type ShellColumnDefinition,
+  type ShellContentSelectionState,
+  type ShellSelectionState,
+} from "./app-shell.contract";
 
 const allContentSourceFilterValue = "all";
 
+const allCreatorSourceFilterValue = "all";
+
 const sourceFilterOptions: readonly SourceType[] = ["youtube", "odysee", "peertube"];
 
-export type ContentViewMode = "all" | "favorites";
+type ContentItemsResourceMode = "catalog" | "subscribed" | "favorites" | "history-opened" | "played";
 
-interface CatalogContentItemsResourceInput {
-  readonly mode: "all";
-  readonly input: ContentListInput;
+type SubscriptionAction = "subscribe" | "unsubscribe";
+
+type BrowsableCreator = CatalogCreator | UserSubscriptionWithCreator["creator"];
+
+interface ContentStatusFlags {
+  readonly opened: boolean;
+  readonly played: boolean;
 }
 
-interface FavoriteContentItemsResourceInput {
-  readonly mode: "favorites";
-  readonly reloadKey: number;
-}
+const emptyCatalogContentItems: readonly CatalogContentListItem[] = [];
 
-type ContentItemsResourceInput = CatalogContentItemsResourceInput | FavoriteContentItemsResourceInput;
+const emptyCatalogContentSources: readonly CatalogContentSource[] = [];
+
+const emptyCatalogFeeds: readonly CatalogFeed[] = [];
+
+const emptyBrowsableCreators: readonly BrowsableCreator[] = [];
+
+const emptyPlaylists: readonly Playlist[] = [];
+
+const emptyPlaylistItems: readonly PlaylistItemWithContent[] = [];
+
+const emptySubscriptions: readonly UserSubscriptionWithCreator[] = [];
+
+const emptyUserContentStatuses: readonly UserContentStatus[] = [];
+
+const emptyUserSettings: readonly UserSetting[] = [];
 
 const playlistSortOptions: readonly { readonly value: PlaylistSortMode; readonly label: string }[] = [
   { value: "manual", label: "Manual" },
@@ -100,93 +188,11 @@ const playlistSortOptions: readonly { readonly value: PlaylistSortMode; readonly
   { value: "added_at_asc", label: "Oldest added" },
 ];
 
-const sourceLabels: Record<CatalogCreator["sourceType"], string> = {
-  youtube: "YouTube",
-  odysee: "Odysee",
-  peertube: "PeerTube",
-};
+const readerDensityOptions: readonly { readonly value: ReaderDensity; readonly label: string; readonly helper: string }[] = [
+  { value: "comfortable", label: "Comfortable", helper: "App default; roomier rows for scanning thumbnails and actions." },
+  { value: "compact", label: "Compact", helper: "Denser rows for faster source and video scanning." },
+];
 
-type PlaybackKind = "embed" | "native";
-
-export interface PlayableSource {
-  readonly id: string;
-  readonly sourceType: SourceType;
-  readonly label: string;
-  readonly kind: PlaybackKind;
-  readonly url: string;
-  readonly canonicalUrl: string;
-  readonly priority: number;
-}
-
-export const shellPaneIds = ["creators", "content", "viewer"] as const;
-
-export const desktopShellGridClass = "lg:grid-cols-[1fr_3fr_8fr]";
-
-export const shellRootClass = "h-full w-dvw overflow-x-hidden bg-background text-foreground lg:min-h-0";
-
-export const shellGridClass = `flex min-h-full w-full flex-col lg:grid lg:min-h-0 ${desktopShellGridClass} lg:overflow-hidden`;
-
-export const hasInternalAppHeader = false;
-
-export const shellColumns: readonly ShellColumnDefinition[] = [
-  {
-    id: "creators",
-    title: "Sources",
-    description: "Compact creator and feed navigation.",
-  },
-  {
-    id: "content",
-    title: "Feed",
-    description: "Scan list for videos from the selected source.",
-  },
-  {
-    id: "viewer",
-    title: "Viewer",
-    description: "Large selected-video reading and playback surface.",
-  },
-] as const;
-
-export function getShellColumnCount() {
-  return shellColumns.length;
-}
-
-export function toCreatorListInput(search: string): CreatorListInput {
-  const trimmedSearch = search.trim();
-  if (trimmedSearch.length === 0) {
-    return { limit: creatorListLimit };
-  }
-
-  return { search: trimmedSearch, limit: creatorListLimit };
-}
-
-export function toContentListInput(search: string, creatorId: string | null, sourceType: SourceType | null): ContentListInput {
-  const trimmedSearch = search.trim();
-  return {
-    ...(trimmedSearch.length === 0 ? {} : { search: trimmedSearch }),
-    ...(creatorId === null ? {} : { creatorId }),
-    ...(sourceType === null ? {} : { sourceType }),
-    limit: contentListLimit,
-  };
-}
-
-export function showsCatalogFilters(viewMode: ContentViewMode): boolean {
-  return viewMode === "all";
-}
-
-export function toShellSelectionState(selectedCreatorId: string | null): ShellSelectionState {
-  return { selectedCreatorId };
-}
-
-export function toShellContentSelectionState(
-  selectedCreatorId: string | null,
-  selectedContentItemId: string | null,
-): ShellContentSelectionState {
-  return { selectedCreatorId, selectedContentItemId };
-}
-
-function formatSourceLabel(sourceType: CatalogCreator["sourceType"]): string {
-  return sourceLabels[sourceType];
-}
 
 function formatError(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) {
@@ -233,129 +239,322 @@ function formatDateTime(value: Date | null): string {
   }).format(value);
 }
 
-export function formatRefreshRunSummary(run: RefreshRun): string {
-  const mode = run.force ? "Force" : "Normal";
-  const scope = run.scope === "creator" ? "creator" : "all sources";
-  return `${mode} ${scope}: ${run.status}, ${run.feedsSucceededCount}/${run.feedsRequestedCount} feeds, ${run.feedsSkippedCount} skipped`;
+function formatFeedRefreshMetadata(feed: CatalogFeed): string {
+  if (feed.lastNormalRefreshAt === null) {
+    return "Last refresh: Never";
+  }
+
+  return `Last refresh: ${formatDateTime(feed.lastNormalRefreshAt)}`;
 }
 
-export function formatRefreshReportSummary(report: RefreshRunReport): string {
-  return `${report.status}: ${report.feedsSucceededCount}/${report.selectedFeedCount} feeds refreshed, ${report.skippedFeedCount} skipped, ${report.itemsCreatedCount} new items`;
+function formatFeedNextRefreshMetadata(feed: CatalogFeed): string {
+  if (feed.nextRefreshAfter === null) {
+    return "Next normal refresh: Not scheduled";
+  }
+
+  return `Next normal refresh: ${formatDateTime(feed.nextRefreshAfter)}`;
+}
+
+function formatFeedLabel(feed: Pick<CatalogFeed, "title" | "url">): string {
+  const title = feed.title?.trim();
+  return title !== undefined && title.length > 0 ? title : feed.url;
+}
+
+function formatRefreshSkipReason(reason: RefreshRunReport["feeds"][number]["skipReason"]): string {
+  if (reason === "cadence-disabled") {
+    return "Skipped: normal refresh cadence is disabled for this feed.";
+  }
+
+  if (reason === "not-due") {
+    return "Skipped: not due for normal refresh yet.";
+  }
+
+  return "";
+}
+
+function parseRefreshFeedResultError(errorSummaryJson: string | null): string | null {
+  if (errorSummaryJson === null) {
+    return null;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(errorSummaryJson);
+    if (typeof parsed === "object" && parsed !== null && typeof (parsed as { readonly message?: unknown }).message === "string") {
+      return (parsed as { readonly message: string }).message;
+    }
+  } catch {
+    return "Refresh failed with an unreadable stored error.";
+  }
+
+  return "Refresh failed with an unreadable stored error.";
 }
 
 function formatPlaylistSortMode(sortMode: PlaylistSortMode): string {
   return playlistSortOptions.find((option) => option.value === sortMode)?.label ?? "Manual";
 }
 
-export function formatSettingValue(valueJson: string): string {
-  try {
-    const parsed: unknown = JSON.parse(valueJson);
-    if (typeof parsed === "string") {
-      return parsed;
-    }
-  } catch {
-    return valueJson;
-  }
-
-  return valueJson;
-}
-
 function toPlaylistSortMode(value: string): PlaylistSortMode {
   return playlistSortOptions.find((option) => option.value === value)?.value ?? "manual";
-}
-
-export function toSafePlaybackUrl(value: string | null): string | null {
-  if (value === null) {
-    return null;
-  }
-
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:") {
-      return null;
-    }
-
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
-
-export function toPlayableSources(sources: readonly CatalogContentSource[]): readonly PlayableSource[] {
-  return sources
-    .map((source): PlayableSource | null => {
-      const nativeMediaUrl = toSafePlaybackUrl(source.nativeMediaUrl);
-      if (nativeMediaUrl !== null) {
-        return {
-          id: source.id,
-          sourceType: source.sourceType,
-          label: `${formatSourceLabel(source.sourceType)} media`,
-          kind: "native",
-          url: nativeMediaUrl,
-          canonicalUrl: source.canonicalUrl,
-          priority: source.priority,
-        };
-      }
-
-      if (source.sourceType !== "youtube" && source.sourceType !== "peertube") {
-        return null;
-      }
-
-      const embedUrl = toSafePlaybackUrl(source.embedUrl);
-      if (embedUrl === null) {
-        return null;
-      }
-
-      return {
-        id: source.id,
-        sourceType: source.sourceType,
-        label: `${formatSourceLabel(source.sourceType)} embed`,
-        kind: "embed",
-        url: embedUrl,
-        canonicalUrl: source.canonicalUrl,
-        priority: source.priority,
-      };
-    })
-    .filter((source): source is PlayableSource => source !== null)
-    .sort((left, right) => left.priority - right.priority);
 }
 
 function toSourceFilterValue(value: string): SourceType | null {
   return sourceFilterOptions.find((sourceType) => sourceType === value) ?? null;
 }
 
+function toCreatorListResourceKey(input: CreatorListInput): string {
+  return [
+    input.search ?? "",
+    input.sourceType ?? "",
+    input.limit.toString(),
+  ].join("\u001f");
+}
+
+function toContentItemsResourceKey(mode: ContentItemsResourceMode, input: ContentListInput, reloadKey: number): string {
+  return [
+    mode,
+    reloadKey.toString(),
+    input.search ?? "",
+    input.creatorId ?? "",
+    input.feedId ?? "",
+    input.sourceType ?? "",
+    input.limit.toString(),
+  ].join("\u001f");
+}
+
+function getContentItemPublishedTime(contentItem: CatalogContentListItem): number {
+  return contentItem.publishedAt?.getTime() ?? Number.NEGATIVE_INFINITY;
+}
+
+function mergeUniqueContentItems(contentItems: readonly CatalogContentListItem[]): readonly CatalogContentListItem[] {
+  const contentById = new Map<string, CatalogContentListItem>();
+  for (const contentItem of contentItems) {
+    if (!contentById.has(contentItem.id)) {
+      contentById.set(contentItem.id, contentItem);
+    }
+  }
+
+  return [...contentById.values()].sort((first, second) => getContentItemPublishedTime(second) - getContentItemPublishedTime(first));
+}
+
+function toContentStatusFlags(statuses: readonly UserContentStatus[], contentItemId: string): ContentStatusFlags {
+  let opened = false;
+  let played = false;
+
+  for (const status of statuses) {
+    if (status.contentItemId !== contentItemId) {
+      continue;
+    }
+
+    if (status.status === "opened") {
+      opened = true;
+    }
+    if (status.status === "played") {
+      played = true;
+    }
+  }
+
+  return { opened, played };
+}
+
+async function listSubscribedLibraryContentItems(input: ContentListInput): Promise<readonly CatalogContentListItem[]> {
+  const subscriptions = await client.overlays.subscriptions();
+
+  if (input.creatorId !== undefined) {
+    if (!subscriptions.some((subscription) => subscription.creator.id === input.creatorId)) {
+      return [];
+    }
+
+    return client.catalog.contentItems(input);
+  }
+
+  if (subscriptions.length === 0) {
+    return [];
+  }
+
+  const subscribedContentLists = await Promise.all(
+    subscriptions.map((subscription) =>
+      client.catalog.contentItems({
+        ...input,
+        creatorId: subscription.creator.id,
+      }),
+    ),
+  );
+
+  return mergeUniqueContentItems(subscribedContentLists.flat()).slice(0, contentListLimit);
+}
+
+async function listOpenedHistoryContentItems(): Promise<readonly CatalogContentListItem[]> {
+  const historyEntries = await client.overlays.contentHistory({ status: "opened" });
+
+  return mergeUniqueContentItems(historyEntries.map((entry) => entry.content)).slice(0, contentListLimit);
+}
+
+async function listPlayedHistoryContentItems(): Promise<readonly CatalogContentListItem[]> {
+  const historyEntries = await client.overlays.contentHistory({ status: "played" });
+
+  return mergeUniqueContentItems(historyEntries.map((entry) => entry.content)).slice(0, contentListLimit);
+}
+
+function contentItemMatchesLocalFilters(contentItem: CatalogContentListItem, input: ContentListInput): boolean {
+  if (input.creatorId !== undefined && contentItem.creatorId !== input.creatorId) {
+    return false;
+  }
+
+  if (input.sourceType !== undefined && contentItem.sourceType !== input.sourceType) {
+    return false;
+  }
+
+  if (input.search !== undefined) {
+    const search = input.search.toLowerCase();
+    return contentItem.title.toLowerCase().includes(search) || contentItem.creator.displayName.toLowerCase().includes(search);
+  }
+
+  return true;
+}
+
+function readerDensityPaddingClass(readerDensity: ReaderDensity): string {
+  return readerDensity === "compact" ? "p-1.5" : "p-2";
+}
+
+type SourceIndicatorContext = "content" | "feed";
+
+function formatSourceIndicatorLabel(sourceType: SourceType, context: SourceIndicatorContext, sourceCount?: number): string {
+  const sourceLabel = formatSourceLabel(sourceType);
+  if (context === "feed") {
+    return `${sourceLabel} feed source`;
+  }
+
+  if (sourceCount === undefined || sourceCount <= 1) {
+    return `${sourceLabel} content source`;
+  }
+
+  return `${sourceLabel} primary content source, ${sourceCount} source records available`;
+}
+
+function SourceTypeIcon(props: { readonly sourceType: SourceType }) {
+  const iconClass = "h-3.5 w-3.5";
+  return (
+    <Switch>
+      <Match when={props.sourceType === "youtube"}>
+        <SquarePlay class={iconClass} aria-hidden="true" />
+      </Match>
+      <Match when={props.sourceType === "odysee"}>
+        <CirclePlay class={iconClass} aria-hidden="true" />
+      </Match>
+      <Match when={props.sourceType === "peertube"}>
+        <RadioTower class={iconClass} aria-hidden="true" />
+      </Match>
+    </Switch>
+  );
+}
+
+function SourceIconBadge(props: { readonly sourceType: SourceType; readonly context: SourceIndicatorContext; readonly sourceCount?: number }) {
+  const label = createMemo(() => formatSourceIndicatorLabel(props.sourceType, props.context, props.sourceCount));
+  return (
+    <span
+      class="inline-flex shrink-0 items-center gap-1 border border-border bg-background px-1 py-0.5 text-muted-foreground"
+      role="img"
+      aria-label={label()}
+      title={label()}
+    >
+      <SourceTypeIcon sourceType={props.sourceType} />
+      <Show when={props.sourceCount !== undefined && props.sourceCount > 1}>
+        <span class="text-[0.62rem] font-semibold tabular-nums" aria-hidden="true">
+          ×{props.sourceCount}
+        </span>
+      </Show>
+    </span>
+  );
+}
+
 interface CreatorSourceColumnProps {
   readonly isAuthenticated: () => boolean;
+  readonly mode: ShellMode;
+  readonly readerDensity: () => ReaderDensity;
+  readonly settings: () => readonly UserSetting[];
+  readonly settingsUnavailable: () => boolean;
   readonly selectedCreatorId: () => string | null;
-  readonly selectedCreator: () => CatalogCreator | null;
+  readonly selectedCreator: () => BrowsableCreator | null;
+  readonly selectedFeed: () => CatalogFeed | null;
   readonly selectedPlaylistId: () => string | null;
   readonly playlistItemsReloadKey: () => number;
-  readonly onSelectCreator: (creator: CatalogCreator) => void;
+  readonly onCatalogChanged: () => void;
+  readonly onSettingsChanged: () => Promise<void>;
+  readonly onClearCreator: () => void;
+  readonly onSelectCreator: (creator: BrowsableCreator) => void;
+  readonly onSelectFeed: (feed: CatalogFeed | null) => void;
   readonly onSelectPlaylist: (playlistId: string | null) => void;
-  readonly onSelectContent: (contentItem: CatalogContentListItem) => void;
+  readonly onSelectContent: (contentItem: CatalogContentListItem) => Promise<void>;
 }
 
 function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [search, setSearch] = createSignal("");
-  const [creators] = createResource(
-    () => toCreatorListInput(search()),
-    (input) => client.catalog.creators(input),
+  const [sourceType, setSourceType] = createSignal<SourceType | null>(null);
+  const creatorListInput = createMemo(() => toCreatorListInput(search(), sourceType()));
+  const [creators, { refetch: refetchCreators }] = createResource(
+    () => toCreatorListResourceKey(creatorListInput()),
+    () => client.catalog.creators(untrack(creatorListInput)),
   );
-  const [feeds] = createResource(props.selectedCreatorId, (creatorId) =>
+  const subscriptionsResourceInput = createMemo(() => {
+    if (!props.isAuthenticated()) {
+      return null;
+    }
+
+    return props.mode;
+  });
+  const [subscriptions, { refetch: refetchSubscriptions }] = createResource(subscriptionsResourceInput, () =>
+    client.overlays.subscriptions(),
+  );
+  const [feeds, { refetch: refetchFeeds }] = createResource(props.selectedCreatorId, (creatorId) =>
     client.catalog.feeds({ creatorId, limit: 25 }),
   );
-  const creatorCount = createMemo(() => creators()?.length ?? 0);
+  const subscriptionCreatorIds = createMemo(() => new Set((subscriptions() ?? emptySubscriptions).map((subscription) => subscription.creator.id)));
+  const listedCreators = createMemo<readonly BrowsableCreator[]>(() => {
+    if (props.mode === "library") {
+      const trimmedSearch = search().trim().toLowerCase();
+      const subscribedCreators = (subscriptions() ?? emptySubscriptions).map((subscription) => subscription.creator);
+      return subscribedCreators.filter((creator) => {
+        const matchesSearch = trimmedSearch.length === 0 || creator.displayName.toLowerCase().includes(trimmedSearch);
+        const matchesSourceType = sourceType() === null || creator.sourceType === sourceType();
+        return matchesSearch && matchesSourceType;
+      });
+    }
+
+    return creators() ?? emptyBrowsableCreators;
+  });
+  const creatorCount = createMemo(() => listedCreators().length);
+
+  const refreshSourcePaneResources = async () => {
+    await refetchCreators();
+    await refetchSubscriptions();
+    if (props.selectedCreatorId() !== null) {
+      await refetchFeeds();
+    }
+  };
+
+  const updateSubscription = async (creatorId: string, action: SubscriptionAction) => {
+    if (action === "subscribe") {
+      await client.overlays.subscribeToCreator({ creatorId });
+    } else {
+      await client.overlays.unsubscribeFromCreator({ creatorId });
+    }
+
+    await refetchSubscriptions();
+    if (props.mode === "library" && action === "unsubscribe" && props.selectedCreatorId() === creatorId) {
+      props.onClearCreator();
+    }
+  };
 
   return (
     <section
       aria-labelledby="creator-source-title"
-      class="min-h-[12rem] border-b border-border bg-muted lg:min-h-0 lg:overflow-y-auto lg:border-b-0 lg:border-r"
+      class={sourceColumnClass}
       data-shell-column="creators"
     >
-      <div class="space-y-2 border-b border-border px-2 py-2">
+      <div class={sourceHeaderRegionClass} data-source-header-region>
         <div class="flex items-center justify-between gap-2">
           <h2 id="creator-source-title" class="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-            Sources
+            {props.mode === "library" ? "Library" : "Catalog"}
           </h2>
           <span class="text-[0.68rem] text-muted-foreground" data-creator-count>
             {creatorCount()} shown
@@ -373,85 +572,361 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
           autocomplete="off"
           onInput={(event) => setSearch(event.currentTarget.value)}
         />
+        <label class="sr-only" for={creatorSourceFilterId}>
+          Filter creators by source type
+        </label>
+        <select
+          id={creatorSourceFilterId}
+          class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+          value={sourceType() ?? allCreatorSourceFilterValue}
+          aria-label="Creator source-type filter"
+          title="Filters creator rows by catalog source type. Select a creator to inspect all feeds."
+          onChange={(event) => setSourceType(toSourceFilterValue(event.currentTarget.value))}
+        >
+          <option value={allCreatorSourceFilterValue}>All creator sources</option>
+          <For each={sourceFilterOptions}>
+            {(source) => <option value={source}>{formatSourceLabel(source)}</option>}
+          </For>
+        </select>
       </div>
-      <div class="px-2 py-2">
-        <Switch>
-          <Match when={creators.loading}>
-            <p class="text-xs font-semibold text-foreground">Loading sources</p>
-            <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading the public catalog.</p>
-          </Match>
-          <Match when={creators.error !== undefined}>
-            <p class="text-xs font-semibold text-destructive">Sources unavailable</p>
-            <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">{formatError(creators.error)}</p>
-          </Match>
-          <Match when={(creators()?.length ?? 0) === 0}>
-            <p class="text-xs font-semibold text-foreground">No sources found</p>
-            <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">
-              {search().trim().length === 0
-                ? "The public catalog has no creators yet."
-                : "No creators match this search."}
-            </p>
-          </Match>
-          <Match when={creators()}>
-            {(loadedCreators) => (
-              <ol class="space-y-1" aria-label="Creator sources">
-                <For each={loadedCreators()}>
-                  {(creator) => (
-                    <li>
-                      <button
-                        type="button"
-                        class="w-full border border-border bg-card px-2 py-2 text-left text-card-foreground transition hover:border-ring hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                        aria-pressed={props.selectedCreatorId() === creator.id}
-                        data-selected={props.selectedCreatorId() === creator.id ? "true" : "false"}
-                        onClick={() => props.onSelectCreator(creator)}
-                      >
-                        <span class="block truncate text-xs font-semibold">{creator.displayName}</span>
-                        <span class="mt-1 block truncate text-[0.68rem] text-muted-foreground">
-                          {formatSourceLabel(creator.sourceType)}
-                        </span>
-                      </button>
-                    </li>
+      <div class={sourceCatalogRegionClass} data-source-catalog-region>
+        <div class={sourceCreatorListRegionClass} data-source-scroll-region>
+          <Switch>
+            <Match when={props.mode === "library" && subscriptions.loading}>
+              <p class="text-xs font-semibold text-foreground">Loading Library</p>
+              <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading your subscribed sources.</p>
+            </Match>
+            <Match when={props.mode === "catalog" && creators.loading}>
+              <p class="text-xs font-semibold text-foreground">Loading sources</p>
+              <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading the public catalog.</p>
+            </Match>
+            <Match when={props.mode === "library" && subscriptions.error !== undefined}>
+              <p class="text-xs font-semibold text-destructive">Library unavailable</p>
+              <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">{formatError(subscriptions.error)}</p>
+            </Match>
+            <Match when={props.mode === "catalog" && creators.error !== undefined}>
+              <p class="text-xs font-semibold text-destructive">Sources unavailable</p>
+              <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">{formatError(creators.error)}</p>
+            </Match>
+            <Match when={listedCreators().length === 0}>
+              <p class="text-xs font-semibold text-foreground">No sources found</p>
+              <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">
+                {props.mode === "library"
+                  ? "Subscribed creators appear in your Library after you subscribe from the Catalog."
+                  : search().trim().length === 0 && sourceType() === null
+                  ? "The public catalog has no creators yet."
+                  : "No creators match this search."}
+              </p>
+            </Match>
+            <Match when={listedCreators()}>
+              {(loadedCreators) => (
+                <ol class="space-y-1" aria-label="Creator sources">
+                  <For each={loadedCreators()}>
+                    {(creator) => (
+                      <li>
+                        <CreatorSourceRow
+                          creator={creator}
+                          isAuthenticated={props.isAuthenticated()}
+                          isSelected={props.selectedCreatorId() === creator.id}
+                          isSubscribed={subscriptionCreatorIds().has(creator.id)}
+                          showSubscriptionControl={props.mode === "catalog"}
+                          readerDensity={props.readerDensity()}
+                          onSelectCreator={props.onSelectCreator}
+                          onUpdateSubscription={updateSubscription}
+                        />
+                      </li>
+                    )}
+                  </For>
+                </ol>
+              )}
+            </Match>
+          </Switch>
+        </div>
+        <Show when={props.selectedCreator()}>
+          {(creator) => (
+            <aside class={sourceFeedListRegionClass} aria-label="Selected source feeds" data-source-feed-scroll-region>
+              <div class="flex items-start justify-between gap-2">
+                <div class="min-w-0">
+                  <p class="truncate text-xs font-semibold text-foreground">{creator().displayName}</p>
+                  <p class="mt-1 text-[0.68rem] text-muted-foreground">
+                    {subscriptionCreatorIds().has(creator().id) ? "Subscribed" : "Catalog creator"}
+                  </p>
+                </div>
+                <Show when={props.isAuthenticated()}>
+                  <SubscriptionActionButton
+                    creatorId={creator().id}
+                    isSubscribed={subscriptionCreatorIds().has(creator().id)}
+                    onUpdateSubscription={updateSubscription}
+                  />
+                </Show>
+              </div>
+              <Switch>
+                <Match when={feeds.loading}>
+                  <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading feeds.</p>
+                </Match>
+                <Match when={feeds.error !== undefined}>
+                  <p class="mt-2 text-[0.72rem] leading-5 text-destructive">Feeds unavailable.</p>
+                </Match>
+                <Match when={(feeds()?.length ?? 0) === 0}>
+                  <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">No feeds are attached to this creator.</p>
+                </Match>
+                <Match when={feeds()}>
+                  {(loadedFeeds) => (
+                    <ul class="mt-2 space-y-1" aria-label="Feeds for selected creator">
+                      <For each={loadedFeeds()}>
+                        {(feed) => (
+                          <FeedRow
+                            feed={feed}
+                            creatorImageUrl={creator().imageUrl}
+                            isSelected={props.selectedFeed()?.id === feed.id}
+                            readerDensity={props.readerDensity()}
+                            onSelectFeed={(selectedFeed) => props.onSelectFeed(props.selectedFeed()?.id === selectedFeed.id ? null : selectedFeed)}
+                          />
+                        )}
+                      </For>
+                    </ul>
                   )}
-                </For>
-              </ol>
-            )}
-          </Match>
-        </Switch>
+                </Match>
+              </Switch>
+            </aside>
+          )}
+        </Show>
       </div>
-      <Show when={props.selectedCreator()}>
-        {(creator) => (
-          <aside class="border-t border-border px-2 py-2" aria-label="Selected source feeds">
-            <p class="truncate text-xs font-semibold text-foreground">{creator().displayName}</p>
-            <Switch>
-              <Match when={feeds.loading}>
-                <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading feeds.</p>
-              </Match>
-              <Match when={feeds.error !== undefined}>
-                <p class="mt-2 text-[0.72rem] leading-5 text-destructive">Feeds unavailable.</p>
-              </Match>
-              <Match when={(feeds()?.length ?? 0) === 0}>
-                <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">No feeds are attached to this creator.</p>
-              </Match>
-              <Match when={feeds()}>
-                {(loadedFeeds) => (
-                  <ul class="mt-2 space-y-1" aria-label="Feeds for selected creator">
-                    <For each={loadedFeeds()}>{(feed) => <FeedRow feed={feed} />}</For>
-                  </ul>
-                )}
-              </Match>
-            </Switch>
-          </aside>
-        )}
-      </Show>
-      <RefreshStatusSection isAuthenticated={props.isAuthenticated} selectedCreator={props.selectedCreator} />
-      <Show when={props.isAuthenticated()}>
-        <SettingsColumnSection />
-        <PlaylistColumnSection
-          selectedPlaylistId={props.selectedPlaylistId}
-          playlistItemsReloadKey={props.playlistItemsReloadKey}
-          onSelectPlaylist={props.onSelectPlaylist}
-          onSelectContent={props.onSelectContent}
+      <div class={sourceActionsRegionClass} data-source-actions-region>
+        <AddSourceSection
+          isAuthenticated={props.isAuthenticated}
+          onSourceAdded={async (value) => {
+            if (props.mode === "library") {
+              await client.overlays.subscribeToCreator({ creatorId: value.creator.id });
+            }
+
+            await refreshSourcePaneResources();
+            props.onSelectCreator(value.creator);
+            props.onCatalogChanged();
+          }}
         />
+        <RefreshStatusSection
+          isAuthenticated={props.isAuthenticated}
+          selectedCreator={props.selectedCreator}
+          selectedFeed={props.selectedFeed}
+          onRefreshCompleted={async () => {
+            await refreshSourcePaneResources();
+            props.onCatalogChanged();
+          }}
+        />
+        <Show when={props.isAuthenticated()}>
+          <SettingsColumnSection
+            settings={props.settings}
+            settingsUnavailable={props.settingsUnavailable}
+            onSettingsChanged={props.onSettingsChanged}
+          />
+          <PlaylistColumnSection
+            selectedPlaylistId={props.selectedPlaylistId}
+            playlistItemsReloadKey={props.playlistItemsReloadKey}
+            onSelectPlaylist={props.onSelectPlaylist}
+            onSelectContent={props.onSelectContent}
+          />
+        </Show>
+      </div>
+    </section>
+  );
+}
+
+interface CreatorSourceRowProps {
+  readonly creator: BrowsableCreator;
+  readonly isAuthenticated: boolean;
+  readonly isSelected: boolean;
+  readonly isSubscribed: boolean;
+  readonly showSubscriptionControl: boolean;
+  readonly readerDensity: ReaderDensity;
+  readonly onSelectCreator: (creator: BrowsableCreator) => void;
+  readonly onUpdateSubscription: (creatorId: string, action: SubscriptionAction) => Promise<void>;
+}
+
+function CreatorSourceRow(props: CreatorSourceRowProps) {
+  return (
+    <div class={`border border-border bg-card ${readerDensityPaddingClass(props.readerDensity)} text-card-foreground transition hover:border-ring hover:bg-accent hover:text-accent-foreground`}>
+      <button
+        type="button"
+        class="w-full text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+        aria-pressed={props.isSelected}
+        data-selected={props.isSelected ? "true" : "false"}
+        onClick={() => props.onSelectCreator(props.creator)}
+      >
+        <span class="block truncate text-xs font-semibold">{props.creator.displayName}</span>
+        <span class="mt-1 flex items-center justify-between gap-2 text-[0.68rem] text-muted-foreground">
+          <span class="truncate" title="Use the filter above to scope creator rows by catalog source type; select a creator to inspect its feeds.">
+            Feeds
+          </span>
+          <Show when={props.isSubscribed}>
+            <span class="shrink-0 border border-border bg-background px-1 py-0.5 text-[0.62rem] font-semibold uppercase tracking-[0.12em] text-foreground">
+              Subscribed
+            </span>
+          </Show>
+        </span>
+      </button>
+      <Show when={props.isAuthenticated && props.showSubscriptionControl}>
+        <div class="mt-2 flex justify-end">
+          <SubscriptionActionButton
+            creatorId={props.creator.id}
+            isSubscribed={props.isSubscribed}
+            onUpdateSubscription={props.onUpdateSubscription}
+          />
+        </div>
+      </Show>
+    </div>
+  );
+}
+
+interface SubscriptionActionButtonProps {
+  readonly creatorId: string;
+  readonly isSubscribed: boolean;
+  readonly onUpdateSubscription: (creatorId: string, action: SubscriptionAction) => Promise<void>;
+}
+
+function SubscriptionActionButton(props: SubscriptionActionButtonProps) {
+  const [busy, setBusy] = createSignal(false);
+  const [errorMessage, setErrorMessage] = createSignal<string | null>(null);
+  const action = createMemo<SubscriptionAction>(() => (props.isSubscribed ? "unsubscribe" : "subscribe"));
+
+  const updateSubscription = async () => {
+    setBusy(true);
+    setErrorMessage(null);
+    try {
+      await props.onUpdateSubscription(props.creatorId, action());
+    } catch (error) {
+      setErrorMessage(formatError(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div class="min-w-0">
+      <button
+        type="button"
+        class="border border-border bg-background px-2 py-1 text-[0.68rem] font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+        aria-pressed={props.isSubscribed}
+        disabled={busy()}
+        onClick={updateSubscription}
+      >
+        {props.isSubscribed ? "Unsubscribe" : "Subscribe"}
+      </button>
+      <Show when={errorMessage()}>
+        {(message) => <p class="mt-1 max-w-32 truncate text-[0.68rem] text-destructive">{message()}</p>}
+      </Show>
+    </div>
+  );
+}
+
+interface AddSourceSectionProps {
+  readonly isAuthenticated: () => boolean;
+  readonly onSourceAdded: (value: AddSourceValue) => Promise<void>;
+}
+
+function formatIngestionCounts(value: AddSourceValue): string {
+  const reusedCreators = 1 - value.created.creators;
+  const reusedFeeds = value.feeds.length - value.created.feeds;
+  const reusedContentItems = value.contentItems.length - value.created.contentItems;
+
+  return [
+    `Creators: ${value.created.creators} created, ${reusedCreators} reused`,
+    `Feeds: ${value.created.feeds} created, ${reusedFeeds} reused`,
+    `Content: ${value.created.contentItems} created, ${reusedContentItems} reused`,
+  ].join("; ");
+}
+
+function formatIngestionError(error: IngestionError): string {
+  return `${error.code}: ${error.message}`;
+}
+
+function AddSourceSection(props: AddSourceSectionProps) {
+  const [sourceInput, setSourceInput] = createSignal("");
+  const [busy, setBusy] = createSignal(false);
+  const [successMessage, setSuccessMessage] = createSignal<string | null>(null);
+  const [failureMessage, setFailureMessage] = createSignal<string | null>(null);
+
+  const submitSource = async () => {
+    const trimmedSourceInput = sourceInput().trim();
+    if (trimmedSourceInput.length === 0) {
+      setFailureMessage("Enter a source URL before adding it.");
+      setSuccessMessage(null);
+      return;
+    }
+
+    setBusy(true);
+    setFailureMessage(null);
+    setSuccessMessage(null);
+    try {
+      const result: AddSourceResult = await client.ingestion.addSource({ sourceInput: trimmedSourceInput });
+      if (!result.ok) {
+        setFailureMessage(formatIngestionError(result.error));
+        return;
+      }
+
+      await props.onSourceAdded(result.value);
+      setSuccessMessage(formatIngestionCounts(result.value));
+      setSourceInput("");
+    } catch (error) {
+      setFailureMessage(formatError(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section class="border-t border-border px-2 py-2" aria-labelledby="add-source-title" data-add-source-region>
+      <div class="flex items-center justify-between gap-2">
+        <h3 id="add-source-title" class="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          Add source
+        </h3>
+        <span class="text-[0.68rem] text-muted-foreground">Manual</span>
+      </div>
+      <p id={addSourceHelpId} class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">
+        Paste a creator, channel, feed, or video URL supported by the YouTube, Odysee, or PeerTube adapters.
+      </p>
+      <Show when={props.isAuthenticated()}>
+        <form
+          class="mt-2 space-y-2 border border-border bg-background p-2"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            await submitSource();
+          }}
+        >
+          <label class="sr-only" for={addSourceInputId}>Source URL</label>
+          <input
+            id={addSourceInputId}
+            class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+            value={sourceInput()}
+            maxlength={2048}
+            placeholder="https://..."
+            aria-describedby={addSourceHelpId}
+            autocomplete="off"
+            onInput={(event) => setSourceInput(event.currentTarget.value)}
+          />
+          <button
+            type="submit"
+            class="w-full border border-border bg-primary px-2 py-1.5 text-xs font-semibold text-primary-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={busy()}
+          >
+            Add source
+          </button>
+        </form>
+      </Show>
+      <Show when={!props.isAuthenticated()}>
+        <p class="mt-2 border border-border bg-background px-2 py-1.5 text-[0.72rem] leading-5 text-muted-foreground">
+          Sign in to add or subscribe to sources. Public catalog browsing stays available.
+        </p>
+      </Show>
+      <Show when={failureMessage()}>
+        {(message) => <p class="mt-2 border border-destructive px-2 py-1.5 text-[0.72rem] leading-5 text-destructive">{message()}</p>}
+      </Show>
+      <Show when={successMessage()}>
+        {(message) => (
+          <p class="mt-2 border border-border bg-card px-2 py-1.5 text-[0.72rem] leading-5 text-card-foreground" role="status">
+            {message()}
+          </p>
+        )}
       </Show>
     </section>
   );
@@ -459,26 +934,36 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
 
 interface RefreshStatusSectionProps {
   readonly isAuthenticated: () => boolean;
-  readonly selectedCreator: () => CatalogCreator | null;
+  readonly selectedCreator: () => BrowsableCreator | null;
+  readonly selectedFeed: () => CatalogFeed | null;
+  readonly onRefreshCompleted: () => Promise<void>;
 }
 
 function RefreshStatusSection(props: RefreshStatusSectionProps) {
   const [reloadKey, setReloadKey] = createSignal(0);
-  const [busyAction, setBusyAction] = createSignal<"normal-all" | "force-all" | "normal-creator" | "force-creator" | null>(null);
+  const [busyAction, setBusyAction] = createSignal<
+    "normal-all" | "force-all" | "normal-creator" | "force-creator" | "normal-feed" | "force-feed" | null
+  >(null);
   const [refreshError, setRefreshError] = createSignal<string | null>(null);
   const [latestReport, setLatestReport] = createSignal<RefreshRunReport | null>(null);
+  const statusResourceKey = createMemo(() => toRefreshStatusResourceKey(props.isAuthenticated(), reloadKey()));
   const [status] = createResource(
-    () => reloadKey(),
+    statusResourceKey,
     () => client.refresh.status({ limit: 5, feedResultsLimit: 3 }),
   );
 
   const runAllRefresh = async (force: boolean) => {
+    if (force && !globalThis.confirm("Force refresh all sources now?")) {
+      return;
+    }
+
     setBusyAction(force ? "force-all" : "normal-all");
     setRefreshError(null);
     try {
       const result = await client.refresh.runAll({ force });
       setLatestReport(result.report);
       setReloadKey((key) => key + 1);
+      await props.onRefreshCompleted();
     } catch (error) {
       setRefreshError(formatError(error));
     } finally {
@@ -493,12 +978,42 @@ function RefreshStatusSection(props: RefreshStatusSectionProps) {
       return;
     }
 
+    if (force && !globalThis.confirm(`Force refresh ${creator.displayName} now?`)) {
+      return;
+    }
+
     setBusyAction(force ? "force-creator" : "normal-creator");
     setRefreshError(null);
     try {
       const result = await client.refresh.runCreator({ creatorId: creator.id, force });
       setLatestReport(result.report);
       setReloadKey((key) => key + 1);
+      await props.onRefreshCompleted();
+    } catch (error) {
+      setRefreshError(formatError(error));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const runFeedRefresh = async (force: boolean) => {
+    const feed = props.selectedFeed();
+    if (feed === null) {
+      setRefreshError("Select a feed before refreshing one feed.");
+      return;
+    }
+
+    if (force && !globalThis.confirm("Force refresh the selected feed now?")) {
+      return;
+    }
+
+    setBusyAction(force ? "force-feed" : "normal-feed");
+    setRefreshError(null);
+    try {
+      const result = await client.refresh.runFeed({ feedId: feed.id, force });
+      setLatestReport(result.report);
+      setReloadKey((key) => key + 1);
+      await props.onRefreshCompleted();
     } catch (error) {
       setRefreshError(formatError(error));
     } finally {
@@ -548,6 +1063,22 @@ function RefreshStatusSection(props: RefreshStatusSectionProps) {
           >
             Force source
           </button>
+          <button
+            type="button"
+            class="border border-border bg-card px-2 py-1.5 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={busyAction() !== null || props.selectedFeed() === null}
+            onClick={async () => runFeedRefresh(false)}
+          >
+            Normal feed
+          </button>
+          <button
+            type="button"
+            class="border border-border bg-card px-2 py-1.5 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={busyAction() !== null || props.selectedFeed() === null}
+            onClick={async () => runFeedRefresh(true)}
+          >
+            Force feed
+          </button>
         </div>
       </Show>
       <Show when={!props.isAuthenticated()}>
@@ -558,11 +1089,19 @@ function RefreshStatusSection(props: RefreshStatusSectionProps) {
       <Show when={refreshError()}>
         {(message) => <p class="mt-2 border border-destructive px-2 py-1.5 text-[0.72rem] text-destructive">{message()}</p>}
       </Show>
+      <Show when={busyAction()}>
+        {(action) => (
+          <p class="mt-2 border border-border bg-background px-2 py-1.5 text-[0.72rem] leading-5 text-muted-foreground" role="status" aria-live="polite">
+            Manual refresh in progress: {action().replace("-", " ")}.
+          </p>
+        )}
+      </Show>
       <Show when={latestReport()}>
         {(report) => (
-          <p class="mt-2 border border-border bg-card px-2 py-1.5 text-[0.72rem] leading-5 text-card-foreground" role="status">
-            {formatRefreshReportSummary(report())}
-          </p>
+          <div class="mt-2 border border-border bg-card px-2 py-1.5 text-[0.72rem] leading-5 text-card-foreground" role="status">
+            <p>{formatRefreshReportSummary(report())}</p>
+            <RefreshReportFeedList feeds={report().feeds} />
+          </div>
         )}
       </Show>
       <Switch>
@@ -597,15 +1136,23 @@ function RefreshStatusSection(props: RefreshStatusSectionProps) {
   );
 }
 
-function RefreshFeedResultList(props: { readonly results: readonly RefreshFeedResult[] }) {
+function RefreshReportFeedList(props: { readonly feeds: RefreshRunReport["feeds"] }) {
   return (
-    <Show when={props.results.length > 0}>
-      <ul class="space-y-1" aria-label="Latest refresh feed results">
-        <For each={props.results}>
-          {(result) => (
-            <li class="flex items-center justify-between gap-2 border border-border bg-card px-2 py-1 text-[0.68rem] text-card-foreground">
-              <span>{result.status}</span>
-              <span class="text-muted-foreground">{result.itemsCreatedCount} new</span>
+    <Show when={props.feeds.length > 0}>
+      <ul class="mt-2 space-y-1" aria-label="Completed refresh feed details">
+        <For each={props.feeds}>
+          {(feed) => (
+            <li class="border border-border bg-background px-2 py-1 text-[0.68rem] text-foreground">
+              <div class="flex items-start justify-between gap-2">
+                <span class="min-w-0 truncate font-semibold">{formatFeedLabel({ title: feed.feedTitle, url: feed.feedUrl })}</span>
+                <span class="shrink-0 text-muted-foreground">{formatSourceLabel(feed.sourceType)}</span>
+              </div>
+              <p class="mt-1 text-muted-foreground">
+                {feed.status === "skipped" && feed.skipReason !== null ? formatRefreshSkipReason(feed.skipReason) : `${feed.status}: ${feed.itemsCreatedCount} new`}
+              </p>
+              <Show when={feed.error}>
+                {(error) => <p class="mt-1 text-destructive">{error().message}</p>}
+              </Show>
             </li>
           )}
         </For>
@@ -614,13 +1161,43 @@ function RefreshFeedResultList(props: { readonly results: readonly RefreshFeedRe
   );
 }
 
-function SettingsColumnSection() {
-  const [settings, { refetch: refetchSettings }] = createResource(() => client.overlays.settings());
+function RefreshFeedResultList(props: { readonly results: readonly RefreshFeedResultWithFeed[] }) {
+  return (
+    <Show when={props.results.length > 0}>
+      <ul class="space-y-1" aria-label="Latest refresh feed results">
+        <For each={props.results}>
+          {(result) => (
+            <li class="border border-border bg-card px-2 py-1 text-[0.68rem] text-card-foreground">
+              <div class="flex items-center justify-between gap-2">
+                <span class="min-w-0 truncate font-semibold">{formatFeedLabel(result.feed)}</span>
+                <span class="shrink-0 text-muted-foreground">{result.status}</span>
+              </div>
+              <p class="mt-1 text-muted-foreground">{result.itemsCreatedCount} new</p>
+              <Show when={parseRefreshFeedResultError(result.errorSummaryJson)}>
+                {(message) => <p class="mt-1 text-destructive">{message()}</p>}
+              </Show>
+            </li>
+          )}
+        </For>
+      </ul>
+    </Show>
+  );
+}
+
+interface SettingsColumnSectionProps {
+  readonly settings: () => readonly UserSetting[];
+  readonly settingsUnavailable: () => boolean;
+  readonly onSettingsChanged: () => Promise<void>;
+}
+
+function SettingsColumnSection(props: SettingsColumnSectionProps) {
   const [settingKey, setSettingKey] = createSignal("");
   const [settingValue, setSettingValue] = createSignal("");
   const [settingsError, setSettingsError] = createSignal<string | null>(null);
   const [settingsBusyKey, setSettingsBusyKey] = createSignal<string | null>(null);
   const [formBusy, setFormBusy] = createSignal(false);
+  const [readerDensityBusy, setReaderDensityBusy] = createSignal(false);
+  const readerDensity = createMemo(() => toReaderDensityFromSettings(props.settings()));
 
   const saveSetting = async () => {
     const key = settingKey().trim();
@@ -635,7 +1212,7 @@ function SettingsColumnSection() {
       await client.overlays.saveSetting({ key, value: settingValue() });
       setSettingKey("");
       setSettingValue("");
-      await refetchSettings();
+      await props.onSettingsChanged();
     } catch (error) {
       setSettingsError(formatError(error));
     } finally {
@@ -658,7 +1235,7 @@ function SettingsColumnSection() {
         setSettingKey("");
         setSettingValue("");
       }
-      await refetchSettings();
+      await props.onSettingsChanged();
     } catch (error) {
       setSettingsError(formatError(error));
     } finally {
@@ -666,79 +1243,139 @@ function SettingsColumnSection() {
     }
   };
 
+  const saveReaderDensity = async (nextReaderDensity: ReaderDensity) => {
+    setReaderDensityBusy(true);
+    setSettingsError(null);
+    try {
+      await client.overlays.saveSetting({ key: readerDensitySettingKey, value: nextReaderDensity });
+      await props.onSettingsChanged();
+    } catch (error) {
+      setSettingsError(formatError(error));
+    } finally {
+      setReaderDensityBusy(false);
+    }
+  };
+
+  const useReaderDensityDefault = async () => {
+    setReaderDensityBusy(true);
+    setSettingsError(null);
+    try {
+      await client.overlays.deleteSetting({ key: readerDensitySettingKey });
+      await props.onSettingsChanged();
+    } catch (error) {
+      setSettingsError(formatError(error));
+    } finally {
+      setReaderDensityBusy(false);
+    }
+  };
+
   return (
-    <section class="border-t border-border px-2 py-2" aria-labelledby="settings-section-title">
+    <section class="border-t border-border px-2 py-2" aria-labelledby="settings-section-title" data-settings-entry-point>
       <div class="flex items-center justify-between gap-2">
         <h3 id="settings-section-title" class="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
           Settings
         </h3>
-        <span class="text-[0.68rem] text-muted-foreground">{settings()?.length ?? 0} saved</span>
+        <span class="text-[0.68rem] text-muted-foreground">{props.settings().length} saved</span>
       </div>
       <Show when={settingsError()}>
         {(message) => <p class="mt-2 border border-destructive px-2 py-1.5 text-[0.72rem] text-destructive">{message()}</p>}
       </Show>
-      <form
-        class="mt-2 space-y-2 border border-border bg-background p-2"
-        onSubmit={async (event) => {
-          event.preventDefault();
-          await saveSetting();
-        }}
-      >
-        <label class="sr-only" for={settingKeyInputId}>Setting key</label>
-        <input
-          id={settingKeyInputId}
-          class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
-          value={settingKey()}
-          maxlength={64}
-          pattern={settingKeyPattern}
-          placeholder="setting.key"
-          autocomplete="off"
-          onInput={(event) => setSettingKey(event.currentTarget.value)}
-        />
-        <label class="sr-only" for={settingValueInputId}>Setting value</label>
-        <input
-          id={settingValueInputId}
-          class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
-          value={settingValue()}
-          maxlength={4096}
-          placeholder="Value"
-          onInput={(event) => setSettingValue(event.currentTarget.value)}
-        />
-        <div class="grid grid-cols-2 gap-2">
-          <button
-            type="submit"
-            class="border border-border bg-primary px-2 py-1.5 text-xs font-semibold text-primary-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={formBusy()}
-          >
-            Save
-          </button>
-          <button
-            type="button"
-            class="border border-border bg-card px-2 py-1.5 text-xs font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-            onClick={() => {
-              setSettingKey("");
-              setSettingValue("");
-              setSettingsError(null);
-            }}
-          >
-            Clear
-          </button>
-        </div>
-      </form>
-      <Switch>
-        <Match when={settings.loading}>
-          <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading settings.</p>
-        </Match>
-        <Match when={settings.error !== undefined}>
-          <p class="mt-2 text-[0.72rem] leading-5 text-destructive">Settings unavailable.</p>
-        </Match>
-        <Match when={(settings()?.length ?? 0) === 0}>
+      <Show when={props.settingsUnavailable()}>
+        <p class="mt-2 border border-destructive px-2 py-1.5 text-[0.72rem] text-destructive">Settings unavailable.</p>
+      </Show>
+      <section class="mt-2 border border-border bg-background p-2" aria-labelledby="reader-density-title" data-typed-settings>
+        <p id="reader-density-title" class="text-[0.72rem] font-semibold text-foreground">Reader density</p>
+        <p class="mt-1 text-[0.68rem] leading-5 text-muted-foreground">
+          Controls the actual spacing used by source, feed, and video rows. Comfortable is the app default when no setting is saved.
+        </p>
+        <label class="sr-only" for={readerDensityInputId}>Reader density</label>
+        <select
+          id={readerDensityInputId}
+          class="mt-2 w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+          value={readerDensity()}
+          disabled={readerDensityBusy() || props.settingsUnavailable()}
+          onChange={async (event) => {
+            const nextReaderDensity = readerDensityValues.find((value) => value === event.currentTarget.value);
+            if (nextReaderDensity !== undefined) {
+              await saveReaderDensity(nextReaderDensity);
+            }
+          }}
+        >
+          <For each={readerDensityOptions}>
+            {(option) => <option value={option.value}>{option.label}</option>}
+          </For>
+        </select>
+        <p class="mt-1 text-[0.68rem] leading-5 text-muted-foreground">
+          {readerDensityOptions.find((option) => option.value === readerDensity())?.helper}
+        </p>
+        <button
+          type="button"
+          class="mt-2 w-full border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={readerDensityBusy() || props.settingsUnavailable()}
+          onClick={useReaderDensityDefault}
+        >
+          Use app default
+        </button>
+      </section>
+      <details class="mt-2 border border-border bg-background p-2" data-advanced-settings>
+        <summary class="cursor-pointer text-[0.72rem] font-semibold text-foreground">Advanced settings</summary>
+        <p class="mt-2 text-[0.68rem] leading-5 text-muted-foreground">
+          Edit raw stored keys only when a typed control is unavailable.
+        </p>
+        <form
+          class="mt-2 space-y-2 border border-border bg-card p-2"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            await saveSetting();
+          }}
+        >
+          <label class="sr-only" for={settingKeyInputId}>Setting key</label>
+          <input
+            id={settingKeyInputId}
+            class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+            value={settingKey()}
+            maxlength={64}
+            pattern={settingKeyPattern}
+            placeholder="setting.key"
+            autocomplete="off"
+            onInput={(event) => setSettingKey(event.currentTarget.value)}
+          />
+          <label class="sr-only" for={settingValueInputId}>Setting value</label>
+          <input
+            id={settingValueInputId}
+            class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+            value={settingValue()}
+            maxlength={4096}
+            placeholder="Value"
+            onInput={(event) => setSettingValue(event.currentTarget.value)}
+          />
+          <div class="grid grid-cols-2 gap-2">
+            <button
+              type="submit"
+              class="border border-border bg-primary px-2 py-1.5 text-xs font-semibold text-primary-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={formBusy()}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              class="border border-border bg-card px-2 py-1.5 text-xs font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              onClick={() => {
+                setSettingKey("");
+                setSettingValue("");
+                setSettingsError(null);
+              }}
+            >
+              Clear
+            </button>
+          </div>
+        </form>
+        <Show when={props.settings().length === 0}>
           <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">No settings have been saved.</p>
-        </Match>
-        <Match when={settings()}>
-          {(loadedSettings) => (
+        </Show>
+        <Show when={props.settings().length > 0}>
             <ol class="mt-2 space-y-1" aria-label="Saved settings">
-              <For each={loadedSettings()}>
+              <For each={props.settings()}>
                 {(setting) => (
                   <li class="border border-border bg-card p-2">
                     <button
@@ -765,9 +1402,8 @@ function SettingsColumnSection() {
                 )}
               </For>
             </ol>
-          )}
-        </Match>
-      </Switch>
+        </Show>
+      </details>
     </section>
   );
 }
@@ -776,7 +1412,7 @@ interface PlaylistColumnSectionProps {
   readonly selectedPlaylistId: () => string | null;
   readonly playlistItemsReloadKey: () => number;
   readonly onSelectPlaylist: (playlistId: string | null) => void;
-  readonly onSelectContent: (contentItem: CatalogContentListItem) => void;
+  readonly onSelectContent: (contentItem: CatalogContentListItem) => Promise<void>;
 }
 
 function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
@@ -787,17 +1423,44 @@ function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
   const [editingPlaylist, setEditingPlaylist] = createSignal<Playlist | null>(null);
   const [playlistError, setPlaylistError] = createSignal<string | null>(null);
   const [playlistBusy, setPlaylistBusy] = createSignal(false);
-  const selectedPlaylistItemsInput = createMemo(() => props.selectedPlaylistId());
+  const selectedPlaylistItemsInput = createMemo(() => {
+    const playlistId = props.selectedPlaylistId();
+    if (playlistId === null) {
+      return null;
+    }
+
+    return `${playlistId}\u001f${props.playlistItemsReloadKey().toString()}`;
+  });
   const [selectedPlaylistItems, { refetch: refetchSelectedPlaylistItems }] = createResource(
     selectedPlaylistItemsInput,
-    (playlistId) => client.overlays.playlistItems({ playlistId }),
+    (resourceKey) => {
+      const [playlistId] = resourceKey.split("\u001f", 1);
+      if (playlistId === undefined) {
+        return emptyPlaylistItems;
+      }
+
+      return client.overlays.playlistItems({ playlistId });
+    },
   );
   const selectedPlaylist = createMemo(
     () => playlists()?.find((playlist) => playlist.id === props.selectedPlaylistId()) ?? null,
   );
+  const selectedPlaylistUsesManualOrder = createMemo(() => selectedPlaylist()?.sortMode === "manual");
 
+  let lastFormPlaylistId: string | null | undefined;
   createEffect(() => {
-    const playlist = selectedPlaylist();
+    const playlistId = props.selectedPlaylistId();
+    const loadedPlaylists = playlists();
+    if (playlistId !== null && loadedPlaylists === undefined) {
+      return;
+    }
+
+    if (playlistId === lastFormPlaylistId) {
+      return;
+    }
+
+    lastFormPlaylistId = playlistId;
+    const playlist = playlistId === null ? null : loadedPlaylists?.find((candidate) => candidate.id === playlistId) ?? null;
     setEditingPlaylist(playlist);
     setPlaylistName(playlist?.name ?? "");
     setPlaylistDescription(playlist?.description ?? "");
@@ -812,13 +1475,6 @@ function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
 
     if (props.selectedPlaylistId() !== null && !loadedPlaylists.some((playlist) => playlist.id === props.selectedPlaylistId())) {
       props.onSelectPlaylist(null);
-    }
-  });
-
-  createEffect(() => {
-    props.playlistItemsReloadKey();
-    if (props.selectedPlaylistId() !== null) {
-      Promise.resolve(refetchSelectedPlaylistItems()).catch((error: unknown) => setPlaylistError(formatError(error)));
     }
   });
 
@@ -899,7 +1555,7 @@ function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
   };
 
   const movePlaylistItem = async (item: PlaylistItemWithContent, direction: -1 | 1) => {
-    const items = selectedPlaylistItems() ?? [];
+    const items = selectedPlaylistItems() ?? emptyPlaylistItems;
     const currentIndex = items.findIndex((candidate) => candidate.id === item.id);
     const targetIndex = currentIndex + direction;
     if (currentIndex < 0 || targetIndex < 0 || targetIndex >= items.length) {
@@ -935,21 +1591,38 @@ function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
         </h3>
         <span class="text-[0.68rem] text-muted-foreground">{playlists()?.length ?? 0} saved</span>
       </div>
+      <Show when={(playlists()?.length ?? 0) > 0}>
+        <div class="mt-2">
+          <label class="sr-only" for="source-playlist-selector">Selected playlist</label>
+          <select
+            id="source-playlist-selector"
+            class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+            value={props.selectedPlaylistId() ?? ""}
+            onChange={(event) => props.onSelectPlaylist(event.currentTarget.value.length === 0 ? null : event.currentTarget.value)}
+            data-compact-playlist-selector
+          >
+            <option value="">No playlist selected</option>
+            <For each={playlists() ?? emptyPlaylists}>{(playlist) => <option value={playlist.id}>{playlist.name}</option>}</For>
+          </select>
+        </div>
+      </Show>
       <Show when={playlistError()}>
         {(message) => <p class="mt-2 border border-destructive px-2 py-1.5 text-[0.72rem] text-destructive">{message()}</p>}
       </Show>
-      <form
-        class="mt-2 space-y-2 border border-border bg-background p-2"
-        onSubmit={async (event) => {
-          event.preventDefault();
-          const playlist = editingPlaylist();
-          if (playlist === null) {
-            await createPlaylist();
-          } else {
-            await updatePlaylist(playlist);
-          }
-        }}
-      >
+      <details class="mt-2 border border-border bg-background p-2" data-playlist-management-panel>
+        <summary class="cursor-pointer text-xs font-semibold text-foreground">Manage playlists</summary>
+        <form
+          class="mt-2 space-y-2 border border-border bg-background p-2"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            const playlist = editingPlaylist();
+            if (playlist === null) {
+              await createPlaylist();
+            } else {
+              await updatePlaylist(playlist);
+            }
+          }}
+        >
         <label class="sr-only" for={playlistNameInputId}>Playlist name</label>
         <input
           id={playlistNameInputId}
@@ -998,8 +1671,8 @@ function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
             New
           </button>
         </div>
-      </form>
-      <Switch>
+        </form>
+        <Switch>
         <Match when={playlists.loading}>
           <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading playlists.</p>
         </Match>
@@ -1056,8 +1729,8 @@ function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
             </ol>
           )}
         </Match>
-      </Switch>
-      <Show when={props.selectedPlaylistId() !== null}>
+        </Switch>
+        <Show when={props.selectedPlaylistId() !== null}>
         <section class="mt-2 border-t border-border pt-2" aria-label="Selected playlist videos">
           <Switch>
             <Match when={selectedPlaylistItems.loading}>
@@ -1079,6 +1752,7 @@ function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
                         itemIndex={index()}
                         itemCount={items().length}
                         busy={playlistBusy()}
+                        showManualControls={selectedPlaylistUsesManualOrder()}
                         onSelectContent={props.onSelectContent}
                         onMove={movePlaylistItem}
                         onRemove={removePlaylistItem}
@@ -1090,7 +1764,8 @@ function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
             </Match>
           </Switch>
         </section>
-      </Show>
+        </Show>
+      </details>
     </section>
   );
 }
@@ -1100,7 +1775,8 @@ interface PlaylistItemRowProps {
   readonly itemIndex: number;
   readonly itemCount: number;
   readonly busy: boolean;
-  readonly onSelectContent: (contentItem: CatalogContentListItem) => void;
+  readonly showManualControls: boolean;
+  readonly onSelectContent: (contentItem: CatalogContentListItem) => Promise<void>;
   readonly onMove: (item: PlaylistItemWithContent, direction: -1 | 1) => Promise<void>;
   readonly onRemove: (item: PlaylistItemWithContent) => Promise<void>;
 }
@@ -1111,32 +1787,36 @@ function PlaylistItemRow(props: PlaylistItemRowProps) {
       <button
         type="button"
         class="w-full text-left text-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-        onClick={() => props.onSelectContent(props.item.content)}
+        onClick={async () => {
+          await props.onSelectContent(props.item.content);
+        }}
       >
         <span class="block truncate text-[0.72rem] font-semibold">{props.item.content.title}</span>
         <span class="mt-1 block truncate text-[0.68rem] text-muted-foreground">{props.item.content.creator.displayName}</span>
       </button>
-      <div class="mt-2 grid grid-cols-3 gap-1">
-        <button
-          type="button"
-          class="border border-border bg-card px-1 py-1 text-[0.68rem] text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={props.busy || props.itemIndex === 0}
-          onClick={async () => {
-            await props.onMove(props.item, -1);
-          }}
-        >
-          Up
-        </button>
-        <button
-          type="button"
-          class="border border-border bg-card px-1 py-1 text-[0.68rem] text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={props.busy || props.itemIndex === props.itemCount - 1}
-          onClick={async () => {
-            await props.onMove(props.item, 1);
-          }}
-        >
-          Down
-        </button>
+      <div class={`mt-2 grid ${props.showManualControls ? "grid-cols-3" : "grid-cols-1"} gap-1`} data-manual-reorder={props.showManualControls ? "true" : "false"}>
+        <Show when={props.showManualControls}>
+          <button
+            type="button"
+            class="border border-border bg-card px-1 py-1 text-[0.68rem] text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={props.busy || props.itemIndex === 0}
+            onClick={async () => {
+              await props.onMove(props.item, -1);
+            }}
+          >
+            Up
+          </button>
+          <button
+            type="button"
+            class="border border-border bg-card px-1 py-1 text-[0.68rem] text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={props.busy || props.itemIndex === props.itemCount - 1}
+            onClick={async () => {
+              await props.onMove(props.item, 1);
+            }}
+          >
+            Down
+          </button>
+        </Show>
         <button
           type="button"
           class="border border-border bg-card px-1 py-1 text-[0.68rem] text-destructive transition hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
@@ -1154,44 +1834,163 @@ function PlaylistItemRow(props: PlaylistItemRowProps) {
 
 interface FeedRowProps {
   readonly feed: CatalogFeed;
+  readonly creatorImageUrl?: string | null;
+  readonly isSelected?: boolean;
+  readonly readerDensity?: ReaderDensity;
+  readonly onSelectFeed?: (feed: CatalogFeed) => void;
 }
 
 function FeedRow(props: FeedRowProps) {
+  const selected = createMemo(() => props.isSelected ?? false);
+  const feedTitle = createMemo(() => props.feed.title ?? props.feed.url);
+  const feedUrl = createMemo(() => (props.feed.title === null ? null : props.feed.url));
+  const rowClass = createMemo(() =>
+    `border border-border ${readerDensityPaddingClass(props.readerDensity ?? "comfortable")} transition hover:border-ring hover:bg-accent hover:text-accent-foreground ${selected() ? "bg-card" : "bg-background"}`,
+  );
+  const rowBodyClass = createMemo(() =>
+    props.creatorImageUrl === null || props.creatorImageUrl === undefined
+      ? "min-w-0"
+      : "grid grid-cols-[2.75rem_1fr] gap-2",
+  );
+  const content = () => (
+    <span class={rowBodyClass()}>
+      <Show when={props.creatorImageUrl}>
+        {(imageUrl) => (
+          <span class="aspect-square overflow-hidden border border-border bg-muted" data-feed-image="creator">
+            <img class="h-full w-full object-cover" src={imageUrl()} alt="" loading="lazy" />
+          </span>
+        )}
+      </Show>
+      <span class="min-w-0">
+        <span class="flex items-center justify-between gap-2">
+          <span class="min-w-0 truncate text-[0.72rem] font-semibold text-foreground" data-feed-title>
+            {feedTitle()}
+          </span>
+          <span data-feed-source-chip>
+            <SourceIconBadge sourceType={props.feed.sourceType} context="feed" />
+          </span>
+        </span>
+        <Show when={feedUrl()}>
+          {(url) => <span class="mt-1 block truncate text-[0.68rem] text-muted-foreground" data-feed-url>{url()}</span>}
+        </Show>
+        <span class="mt-1 block truncate text-[0.68rem] text-muted-foreground" data-feed-refresh-metadata>
+          {formatFeedRefreshMetadata(props.feed)}
+        </span>
+        <span class="mt-1 block truncate text-[0.68rem] text-muted-foreground" data-feed-next-refresh-metadata>
+          {formatFeedNextRefreshMetadata(props.feed)}
+        </span>
+        <Show when={props.onSelectFeed}>
+          <span class="mt-1 block text-[0.68rem] font-semibold text-muted-foreground" data-feed-action-label>
+            {selected() ? "Selected feed" : "Filter feed"}
+          </span>
+        </Show>
+      </span>
+    </span>
+  );
+
   return (
-    <li class="border border-border bg-background px-2 py-1.5">
-      <p class="truncate text-[0.72rem] font-semibold text-foreground">{props.feed.title ?? props.feed.url}</p>
-      <p class="mt-1 truncate text-[0.68rem] text-muted-foreground">{formatSourceLabel(props.feed.sourceType)}</p>
+    <li class={rowClass()} data-selected={selected() ? "true" : "false"} data-selected-feed-id={selected() ? props.feed.id : ""}>
+      <Show
+        when={props.onSelectFeed}
+        fallback={
+          content()
+        }
+      >
+        {(onSelectFeed) => (
+          <button
+            type="button"
+            class="w-full text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            aria-pressed={selected()}
+            onClick={() => onSelectFeed()(props.feed)}
+          >
+            {content()}
+          </button>
+        )}
+      </Show>
     </li>
   );
 }
 
 interface ContentListColumnProps {
   readonly isAuthenticated: () => boolean;
-  readonly selectedCreator: () => CatalogCreator | null;
+  readonly mode: ShellMode;
+  readonly readerDensity: () => ReaderDensity;
+  readonly selectedPlaylistId: () => string | null;
+  readonly selectedCreator: () => BrowsableCreator | null;
+  readonly selectedFeed: () => CatalogFeed | null;
   readonly selectedContentItemId: () => string | null;
+  readonly catalogReloadKey: () => number;
   readonly favoritesReloadKey: () => number;
-  readonly onSelectContent: (contentItem: CatalogContentListItem) => void;
+  readonly contentStatuses: () => readonly UserContentStatus[];
+  readonly statusReloadKey: () => number;
+  readonly onSelectContent: (contentItem: CatalogContentListItem) => Promise<void>;
   readonly onFavoriteChanged: () => void;
+  readonly onMarkContentOpened: (contentItemId: string) => Promise<void>;
+  readonly onMarkContentPlayed: (contentItemId: string) => Promise<void>;
+  readonly onSelectPlaylist: (playlistId: string | null) => void;
+  readonly onPlaylistItemAdded: () => void;
 }
 
 function ContentListColumn(props: ContentListColumnProps) {
   const [search, setSearch] = createSignal("");
   const [sourceType, setSourceType] = createSignal<SourceType | null>(null);
-  const [viewMode, setViewMode] = createSignal<ContentViewMode>("all");
-  const contentListInput = createMemo(() => toContentListInput(search(), props.selectedCreator()?.id ?? null, sourceType()));
-  const contentItemsResourceInput = createMemo<ContentItemsResourceInput>(() => {
+  const [viewMode, setViewMode] = createSignal<ContentViewMode>(props.mode === "library" ? "subscribed" : "catalog");
+  const [hidePlayed, setHidePlayed] = createSignal(false);
+  const [playlistActionError, setPlaylistActionError] = createSignal<string | null>(null);
+  const authenticatedPlaylistSource = createMemo(() => (props.isAuthenticated() ? "content-list-playlists" : null));
+  const [playlists] = createResource(authenticatedPlaylistSource, () => client.overlays.playlists());
+  const contentListInput = createMemo(() =>
+    toContentListInput(search(), props.selectedCreator()?.id ?? null, props.selectedFeed()?.id ?? null, sourceType()),
+  );
+  const contentItemsResourceMode = createMemo<ContentItemsResourceMode>(() => {
     if (props.isAuthenticated() && viewMode() === "favorites") {
-      return { mode: "favorites", reloadKey: props.favoritesReloadKey() };
+      return "favorites";
     }
 
-    return { mode: "all", input: contentListInput() };
+    if (props.isAuthenticated() && viewMode() === "history-opened") {
+      return "history-opened";
+    }
+
+    if (props.isAuthenticated() && viewMode() === "played") {
+      return "played";
+    }
+
+    if (props.mode === "library") {
+      return "subscribed";
+    }
+
+    return "catalog";
   });
-  const [contentItems, { refetch: refetchContentItems }] = createResource(contentItemsResourceInput, (input) => {
-    if (input.mode === "favorites") {
+  const contentItemsResourceKey = createMemo(() => {
+    const mode = contentItemsResourceMode();
+    const reloadKey = mode === "favorites" ? props.favoritesReloadKey() : mode === "history-opened" || mode === "played" ? props.statusReloadKey() : props.catalogReloadKey();
+    return toContentItemsResourceKey(mode, contentListInput(), reloadKey);
+  });
+  const [contentItems] = createResource(contentItemsResourceKey, () => {
+    const mode = untrack(contentItemsResourceMode);
+    const input = untrack(contentListInput);
+
+    if (mode === "favorites") {
       return client.overlays.favoriteContentItems();
     }
 
-    return client.catalog.contentItems(input.input);
+    if (mode === "history-opened") {
+      return listOpenedHistoryContentItems();
+    }
+
+    if (mode === "played") {
+      return listPlayedHistoryContentItems();
+    }
+
+    if (mode === "subscribed") {
+      return listSubscribedLibraryContentItems(input);
+    }
+
+    if (mode === "catalog") {
+      return client.catalog.contentItems(input);
+    }
+
+    return [];
   });
   const favoriteItemsResourceInput = createMemo(() => {
     if (!props.isAuthenticated()) {
@@ -1203,52 +2002,170 @@ function ContentListColumn(props: ContentListColumnProps) {
   const [favoriteItems, { refetch: refetchFavoriteItems }] = createResource(favoriteItemsResourceInput, () =>
     client.overlays.favoriteContentItems(),
   );
-  const contentCount = createMemo(() => contentItems()?.length ?? 0);
-  const favoriteContentItemIds = createMemo(() => new Set((favoriteItems() ?? []).map((contentItem) => contentItem.id)));
+  const favoriteContentItemIds = createMemo(() => new Set((favoriteItems() ?? emptyCatalogContentItems).map((contentItem) => contentItem.id)));
+  const listTargetPlaylistId = createMemo(() => {
+    const loadedPlaylists = playlists() ?? emptyPlaylists;
+    const selectedId = props.selectedPlaylistId();
+
+    if (selectedId !== null && loadedPlaylists.some((playlist) => playlist.id === selectedId)) {
+      return selectedId;
+    }
+
+    return loadedPlaylists[0]?.id ?? null;
+  });
+  const displayedContentItems = createMemo(() => {
+    const loadedContentItems = contentItems() ?? emptyCatalogContentItems;
+    const input = contentListInput();
+    const statuses = props.contentStatuses();
+    const locallyFilteredItems = showsCatalogFilters(viewMode())
+      ? loadedContentItems
+      : loadedContentItems.filter((contentItem) => contentItemMatchesLocalFilters(contentItem, input));
+
+    if (!props.isAuthenticated() || !hidePlayed()) {
+      return locallyFilteredItems;
+    }
+
+    return locallyFilteredItems.filter((contentItem) => !toContentStatusFlags(statuses, contentItem.id).played);
+  });
+  const contentCount = createMemo(() => displayedContentItems().length);
 
   createEffect(() => {
     if (!props.isAuthenticated() && viewMode() === "favorites") {
-      setViewMode("all");
+      setViewMode("catalog");
+    }
+    if (!props.isAuthenticated() && (viewMode() === "history-opened" || viewMode() === "played")) {
+      setViewMode("catalog");
+    }
+    if (!props.isAuthenticated() && hidePlayed()) {
+      setHidePlayed(false);
     }
   });
+
+  createEffect(() => {
+    setViewMode(props.mode === "library" ? "subscribed" : "catalog");
+    setSourceType(null);
+    setSearch("");
+    setHidePlayed(false);
+  });
+
+  createEffect(() => {
+    if (props.mode === "catalog" && viewMode() === "subscribed") {
+      setViewMode("catalog");
+    }
+    if (props.mode === "library" && viewMode() === "catalog") {
+      setViewMode("subscribed");
+    }
+  });
+
+  const contentSectionTitle = createMemo(() => {
+    if (viewMode() === "favorites") {
+      return "Favorites";
+    }
+    if (viewMode() === "history-opened") {
+      return "History/Open";
+    }
+    if (viewMode() === "played") {
+      return "Played";
+    }
+
+    return props.mode === "library" ? "Library" : "Catalog";
+  });
+
+  const contentContextLabel = createMemo(() => {
+    if (viewMode() === "history-opened") {
+      return "Opened videos · local filters";
+    }
+    if (viewMode() === "played") {
+      return "Played videos · local filters";
+    }
+
+    if (viewMode() === "favorites") {
+      return "Saved videos";
+    }
+
+    return props.selectedFeed()?.title ?? props.selectedFeed()?.url ?? props.selectedCreator()?.displayName ?? (props.mode === "library" ? "Subscribed content" : "All sources");
+  });
+
+  const visibleContentCollectionLabel = createMemo(() => {
+    if (viewMode() === "favorites") {
+      return "Favorite Library";
+    }
+    if (viewMode() === "history-opened") {
+      return "Open History Library";
+    }
+    if (viewMode() === "played") {
+      return "Played Library";
+    }
+
+    return props.mode === "library" ? "Subscribed Library" : "Catalog";
+  });
+
+  const visibleFiltersLabel = createMemo(() =>
+    props.mode === "library" && viewMode() !== "catalog" ? contentLibraryFiltersLabel : contentCatalogFiltersLabel,
+  );
 
   const toggleFavorite = async (contentItemId: string) => {
     try {
       await client.overlays.toggleContentFavorite({ contentItemId });
       props.onFavoriteChanged();
       await refetchFavoriteItems();
-      await refetchContentItems();
     } catch (error) {
       throw new Error(`Favorite update failed: ${formatError(error)}`);
+    }
+  };
+
+  const markOpened = async (contentItemId: string) => {
+    await props.onMarkContentOpened(contentItemId);
+  };
+
+  const markPlayed = async (contentItemId: string) => {
+    await props.onMarkContentPlayed(contentItemId);
+  };
+
+  const addContentToPlaylist = async (contentItemId: string) => {
+    const playlistId = listTargetPlaylistId();
+    if (playlistId === null) {
+      setPlaylistActionError("Create or select a playlist before adding videos.");
+      return;
+    }
+
+    setPlaylistActionError(null);
+    try {
+      await client.overlays.addPlaylistItem({ playlistId, contentItemId });
+      props.onSelectPlaylist(playlistId);
+      props.onPlaylistItemAdded();
+    } catch (error) {
+      setPlaylistActionError(formatError(error));
     }
   };
 
   return (
     <section
       aria-labelledby="content-list-title"
-      class="min-h-[18rem] border-b border-border bg-card lg:min-h-0 lg:overflow-y-auto lg:border-b-0 lg:border-r"
+      class={contentColumnClass}
       data-shell-column="content"
       data-selected-creator-id={props.selectedCreator()?.id ?? ""}
+      data-selected-feed-id={props.selectedFeed()?.id ?? ""}
     >
-      <div class="border-b border-border px-3 py-2">
+      <div class={contentHeaderRegionClass} data-content-header-region>
         <div class="flex items-center justify-between gap-3">
           <h2 id="content-list-title" class="text-sm font-semibold tracking-tight text-card-foreground">
-            {viewMode() === "favorites" ? "Favorites" : "Feed"}
+            {contentSectionTitle()}
           </h2>
           <span class="min-w-0 truncate border border-border bg-background px-2 py-1 text-[0.68rem] text-muted-foreground">
-            {props.selectedCreator()?.displayName ?? "All sources"}
+            {contentContextLabel()}
           </span>
         </div>
         <Show when={props.isAuthenticated()}>
-          <div class="mt-2 grid grid-cols-2 gap-2" aria-label="Content view">
+          <div class="mt-2 grid grid-cols-4 gap-2" aria-label="Content view">
             <button
-              id={contentViewModeAllId}
+              id={props.mode === "library" ? contentViewModeSubscribedId : contentViewModeAllId}
               type="button"
               class="border border-border bg-background px-2 py-1.5 text-xs font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-              aria-pressed={viewMode() === "all"}
-              onClick={() => setViewMode("all")}
+              aria-pressed={viewMode() === (props.mode === "library" ? "subscribed" : "catalog")}
+              onClick={() => setViewMode(props.mode === "library" ? "subscribed" : "catalog")}
             >
-              All videos
+              All
             </button>
             <button
               id={contentViewModeFavoritesId}
@@ -1259,10 +2176,28 @@ function ContentListColumn(props: ContentListColumnProps) {
             >
               Favorites
             </button>
+            <button
+              id={contentViewModeHistoryId}
+              type="button"
+              class="border border-border bg-background px-2 py-1.5 text-xs font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              aria-pressed={viewMode() === "history-opened"}
+              onClick={() => setViewMode("history-opened")}
+            >
+              History/Open
+            </button>
+            <button
+              id={contentViewModePlayedId}
+              type="button"
+              class="border border-border bg-background px-2 py-1.5 text-xs font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              aria-pressed={viewMode() === "played"}
+              onClick={() => setViewMode("played")}
+            >
+              Played
+            </button>
           </div>
         </Show>
-        <Show when={showsCatalogFilters(viewMode())}>
-          <div class="mt-2 grid grid-cols-[1fr_auto] gap-2" aria-label={contentCatalogFiltersLabel}>
+        <Show when={showsCatalogFilters(viewMode()) || (props.isAuthenticated() && (viewMode() === "favorites" || viewMode() === "history-opened" || viewMode() === "played"))}>
+          <div class="mt-2 grid grid-cols-[1fr_auto] gap-2" aria-label={visibleFiltersLabel()}>
             <label class="sr-only" for={contentSearchInputId}>
               Search content
             </label>
@@ -1291,47 +2226,103 @@ function ContentListColumn(props: ContentListColumnProps) {
             </select>
           </div>
         </Show>
+        <Show when={props.isAuthenticated()}>
+          <label class="mt-2 flex items-center justify-between gap-2 border border-border bg-background px-2 py-1.5 text-[0.72rem] text-muted-foreground" for={contentHidePlayedInputId}>
+            <span>Hide played</span>
+            <input
+              id={contentHidePlayedInputId}
+              type="checkbox"
+              checked={hidePlayed()}
+              onChange={(event) => setHidePlayed(event.currentTarget.checked)}
+            />
+          </label>
+          <Show when={!showsCatalogFilters(viewMode())}>
+            <p class="mt-2 text-[0.68rem] leading-5 text-muted-foreground">
+              Favorites and history are loaded from your Library, then search, source, creator, and Hide played are applied locally to the loaded videos.
+            </p>
+          </Show>
+          <section class="mt-2 border border-border bg-background p-2" aria-label="Add feed-list videos to playlist" data-content-playlist-actions>
+            <div class="grid grid-cols-[auto_1fr] items-center gap-2">
+              <span class="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Playlist</span>
+              <Switch>
+                <Match when={playlists.loading}>
+                  <p class="text-[0.68rem] text-muted-foreground">Loading playlists.</p>
+                </Match>
+                <Match when={playlists.error !== undefined}>
+                  <p class="text-[0.68rem] text-destructive">Playlists unavailable.</p>
+                </Match>
+                <Match when={(playlists()?.length ?? 0) === 0}>
+                  <p class="text-[0.68rem] text-muted-foreground">Create a playlist in Sources to add videos from rows.</p>
+                </Match>
+                <Match when={(playlists()?.length ?? 0) > 0}>
+                  <label class="sr-only" for="content-list-playlist-target">Playlist for row add buttons</label>
+                  <select
+                    id="content-list-playlist-target"
+                    class="min-w-0 border border-input bg-background px-2 py-1 text-[0.68rem] text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+                    value={listTargetPlaylistId() ?? ""}
+                    onChange={(event) => props.onSelectPlaylist(event.currentTarget.value)}
+                  >
+                    <For each={playlists() ?? emptyPlaylists}>{(playlist) => <option value={playlist.id}>{playlist.name}</option>}</For>
+                  </select>
+                </Match>
+              </Switch>
+            </div>
+            <Show when={playlistActionError()}>
+              {(message) => <p class="mt-2 text-[0.68rem] text-destructive">{message()}</p>}
+            </Show>
+          </section>
+        </Show>
       </div>
-      <div class="px-3 py-2">
+      <div class={contentScrollRegionClass} data-content-scroll-region>
         <Switch>
           <Match when={contentItems.loading}>
             <p class="text-xs font-semibold text-card-foreground">Loading videos</p>
-            <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading the public catalog.</p>
+            <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading {visibleContentCollectionLabel()} videos.</p>
           </Match>
           <Match when={contentItems.error !== undefined}>
             <p class="text-xs font-semibold text-destructive">Videos unavailable</p>
             <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">{formatError(contentItems.error)}</p>
           </Match>
-          <Match when={(contentItems()?.length ?? 0) === 0}>
+          <Match when={contentItems() !== undefined && displayedContentItems().length === 0}>
             <p class="text-xs font-semibold text-card-foreground">No videos found</p>
             <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">
               {viewMode() === "favorites"
                 ? "Favorite videos from the viewer or feed list to collect them here."
-                : search().trim().length === 0 && props.selectedCreator() === null && sourceType() === null
+                : viewMode() === "history-opened"
+                ? "Open videos to build your Library history, or clear local filters to see loaded history."
+                : viewMode() === "played"
+                ? "Play videos to build your played Library, or clear local filters to see loaded played history."
+                : props.mode === "library" && search().trim().length === 0 && props.selectedCreator() === null && props.selectedFeed() === null && sourceType() === null
+                ? "Your subscribed Library has no videos yet. Subscribe from the Catalog or refresh your sources."
+                : search().trim().length === 0 && props.selectedCreator() === null && props.selectedFeed() === null && sourceType() === null
                 ? "The public catalog has no videos yet."
                 : "No videos match the current filters."}
             </p>
           </Match>
-          <Match when={contentItems()}>
-            {(loadedContentItems) => (
-              <ol class="space-y-1" aria-label={`Catalog videos, ${contentCount()} shown`}>
-                <For each={loadedContentItems()}>
+          <Match when={displayedContentItems().length > 0}>
+              <ol class="space-y-1" aria-label={`${visibleContentCollectionLabel()} videos, ${contentCount()} shown`}>
+                <For each={displayedContentItems()}>
                   {(contentItem) => (
                     <li>
                       <ContentListItemRow
                         contentItem={contentItem}
                         isAuthenticated={props.isAuthenticated()}
                         isFavorite={favoriteContentItemIds().has(contentItem.id)}
+                        status={toContentStatusFlags(props.contentStatuses(), contentItem.id)}
                         selected={props.selectedContentItemId() === contentItem.id}
                         favoritesView={viewMode() === "favorites"}
+                        readerDensity={props.readerDensity()}
+                        targetPlaylistId={listTargetPlaylistId()}
                         onSelectContent={props.onSelectContent}
+                        onMarkOpened={markOpened}
+                        onMarkPlayed={markPlayed}
                         onToggleFavorite={toggleFavorite}
+                        onAddToPlaylist={addContentToPlaylist}
                       />
                     </li>
                   )}
                 </For>
               </ol>
-            )}
           </Match>
         </Switch>
       </div>
@@ -1343,15 +2334,32 @@ interface ContentListItemRowProps {
   readonly contentItem: CatalogContentListItem;
   readonly isAuthenticated: boolean;
   readonly isFavorite: boolean;
+  readonly status: ContentStatusFlags;
   readonly selected: boolean;
   readonly favoritesView: boolean;
-  readonly onSelectContent: (contentItem: CatalogContentListItem) => void;
+  readonly readerDensity: ReaderDensity;
+  readonly targetPlaylistId: string | null;
+  readonly onSelectContent: (contentItem: CatalogContentListItem) => Promise<void>;
+  readonly onMarkOpened: (contentItemId: string) => Promise<void>;
+  readonly onMarkPlayed: (contentItemId: string) => Promise<void>;
   readonly onToggleFavorite: (contentItemId: string) => Promise<void>;
+  readonly onAddToPlaylist: (contentItemId: string) => Promise<void>;
 }
 
 function ContentListItemRow(props: ContentListItemRowProps) {
   const [favoriteError, setFavoriteError] = createSignal<string | null>(null);
   const [favoriteBusy, setFavoriteBusy] = createSignal(false);
+  const [statusError, setStatusError] = createSignal<string | null>(null);
+  const [statusBusy, setStatusBusy] = createSignal<"opened" | "played" | null>(null);
+  const [playlistBusy, setPlaylistBusy] = createSignal(false);
+  const [playlistError, setPlaylistError] = createSignal<string | null>(null);
+  const rowImageUrl = createMemo(() => props.contentItem.thumbnailUrl ?? props.contentItem.creator.imageUrl);
+  const rowImageSource = createMemo(() => (props.contentItem.thumbnailUrl !== null ? "content" : props.contentItem.creator.imageUrl !== null ? "creator" : null));
+  const contentButtonClass = createMemo(() =>
+    rowImageUrl() === null
+      ? "group w-full text-left text-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+      : "group grid w-full grid-cols-[4.75rem_1fr] gap-2 text-left text-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+  );
 
   const toggleFavorite = async () => {
     setFavoriteBusy(true);
@@ -1365,29 +2373,77 @@ function ContentListItemRow(props: ContentListItemRowProps) {
     }
   };
 
+  const markOpened = async () => {
+    setStatusBusy("opened");
+    setStatusError(null);
+    try {
+      await props.onMarkOpened(props.contentItem.id);
+    } catch (error) {
+      setStatusError(formatError(error));
+    } finally {
+      setStatusBusy(null);
+    }
+  };
+
+  const markPlayed = async () => {
+    setStatusBusy("played");
+    setStatusError(null);
+    try {
+      await props.onMarkPlayed(props.contentItem.id);
+    } catch (error) {
+      setStatusError(formatError(error));
+    } finally {
+      setStatusBusy(null);
+    }
+  };
+
+  const addToPlaylist = async () => {
+    setPlaylistBusy(true);
+    setPlaylistError(null);
+    try {
+      await props.onAddToPlaylist(props.contentItem.id);
+    } catch (error) {
+      setPlaylistError(formatError(error));
+    } finally {
+      setPlaylistBusy(false);
+    }
+  };
+
   return (
-    <div class="border border-border bg-background p-2 transition hover:border-ring hover:bg-accent hover:text-accent-foreground">
+    <div
+      class={`border border-border ${readerDensityPaddingClass(props.readerDensity)} transition hover:border-ring hover:bg-accent hover:text-accent-foreground ${props.status.played ? "bg-muted" : props.status.opened ? "bg-card" : "bg-background"}`}
+      data-selected={props.selected ? "true" : "false"}
+      data-opened={props.status.opened ? "true" : "false"}
+      data-played={props.status.played ? "true" : "false"}
+      data-favorite={props.isFavorite ? "true" : "false"}
+    >
       <button
         type="button"
-        class="group grid w-full grid-cols-[4.75rem_1fr] gap-2 text-left text-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+        class={contentButtonClass()}
         aria-pressed={props.selected}
-        data-selected={props.selected ? "true" : "false"}
-        onClick={() => props.onSelectContent(props.contentItem)}
+        onClick={async () => {
+          await props.onSelectContent(props.contentItem);
+        }}
       >
-        <span class="aspect-video overflow-hidden border border-border bg-muted">
-          <Show when={props.contentItem.thumbnailUrl}>
-            {(thumbnailUrl) => (
+        <Show when={rowImageUrl()}>
+          {(imageUrl) => (
+            <span class="aspect-video overflow-hidden border border-border bg-muted" data-thumbnail-source={rowImageSource() ?? ""}>
               <img
                 class="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
-                src={thumbnailUrl()}
+                src={imageUrl()}
                 alt=""
                 loading="lazy"
               />
-            )}
-          </Show>
-        </span>
+            </span>
+          )}
+        </Show>
         <span class="min-w-0">
-          <span class="block truncate text-xs font-semibold">{props.contentItem.title}</span>
+          <span class="flex items-start justify-between gap-2">
+            <span class="min-w-0 truncate text-xs font-semibold">{props.contentItem.title}</span>
+            <span data-content-source-chip data-content-source-indicator>
+              <SourceIconBadge sourceType={props.contentItem.sourceType} context="content" sourceCount={props.contentItem.sourceCount} />
+            </span>
+          </span>
           <span class="mt-1 block truncate text-[0.68rem] text-muted-foreground">
             {props.contentItem.creator.displayName}
           </span>
@@ -1395,13 +2451,62 @@ function ContentListItemRow(props: ContentListItemRowProps) {
             <span class="truncate">{formatPublishedAt(props.contentItem.publishedAt)}</span>
             <span class="shrink-0">{formatDuration(props.contentItem.durationSeconds)}</span>
           </span>
+          <Show when={props.selected || props.status.opened || props.status.played || props.isFavorite}>
+            <span class="mt-1 flex items-center gap-1 text-[0.62rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              <Show when={props.selected}>
+                <span class="border border-border bg-background px-1 py-0.5" data-content-status="selected">Selected</span>
+              </Show>
+              <Show when={props.status.opened}>
+                <span class="border border-border bg-background px-1 py-0.5" data-content-status="opened">Opened</span>
+              </Show>
+              <Show when={props.status.played}>
+                <span class="border border-border bg-background px-1 py-0.5" data-content-status="played">Played</span>
+              </Show>
+              <Show when={props.isFavorite}>
+                <span class="border border-border bg-background px-1 py-0.5" data-content-status="favorite">Favorite</span>
+              </Show>
+            </span>
+          </Show>
         </span>
       </button>
       <Show when={props.isAuthenticated}>
         <div class="mt-2 flex items-center justify-end gap-2">
+          <Show when={statusError()}>
+            {(message) => <p class="min-w-0 flex-1 truncate text-[0.68rem] text-destructive">{message()}</p>}
+          </Show>
           <Show when={favoriteError()}>
             {(message) => <p class="min-w-0 flex-1 truncate text-[0.68rem] text-destructive">{message()}</p>}
           </Show>
+          <Show when={playlistError()}>
+            {(message) => <p class="min-w-0 flex-1 truncate text-[0.68rem] text-destructive">{message()}</p>}
+          </Show>
+          <button
+            type="button"
+            class="border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={playlistBusy() || props.targetPlaylistId === null}
+            onClick={addToPlaylist}
+            data-content-row-add-playlist
+          >
+            Add to playlist
+          </button>
+          <button
+            type="button"
+            class="border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            aria-pressed={props.status.opened}
+            disabled={statusBusy() !== null || props.status.opened}
+            onClick={markOpened}
+          >
+            {props.status.opened ? "Opened" : "Mark opened"}
+          </button>
+          <button
+            type="button"
+            class="border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            aria-pressed={props.status.played}
+            disabled={statusBusy() !== null || props.status.played}
+            onClick={markPlayed}
+          >
+            {props.status.played ? "Played" : "Mark played"}
+          </button>
           <button
             type="button"
             class="border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
@@ -1422,15 +2527,22 @@ interface SelectedContentViewerProps {
   readonly selectedContent: () => CatalogContentListItem | null;
   readonly selectedPlaylistId: () => string | null;
   readonly favoritesReloadKey: () => number;
+  readonly contentStatuses: () => readonly UserContentStatus[];
+  readonly contentStatusesLoading: () => boolean;
+  readonly statusSelectionError: () => string | null;
   readonly onSelectPlaylist: (playlistId: string | null) => void;
   readonly onPlaylistItemAdded: () => void;
   readonly onFavoriteChanged: () => void;
+  readonly onMarkContentOpened: (contentItemId: string) => Promise<void>;
+  readonly onMarkContentPlayed: (contentItemId: string) => Promise<void>;
 }
 
 function SelectedContentViewer(props: SelectedContentViewerProps) {
   const selectedContentItemId = createMemo(() => props.selectedContent()?.id ?? null);
   const [contentDetail] = createResource(selectedContentItemId, (id) => client.catalog.contentDetail({ id }));
-  const playableSources = createMemo(() => toPlayableSources(contentDetail()?.sources ?? []));
+  const playableSources = createMemo(() => toPlayableSources(contentDetail()?.sources ?? emptyCatalogContentSources));
+  const playableSourceIds = createMemo(() => playableSources().map((source) => source.id).join("\u001f"));
+  const playbackSourceSwitcherLabel = createMemo(() => `Playback source, ${playableSources().length} options`);
   const authenticatedPlaylistSource = createMemo(() => (props.isAuthenticated() ? "playlists" : null));
   const [playlists, { refetch: refetchPlaylists }] = createResource(authenticatedPlaylistSource, () =>
     client.overlays.playlists(),
@@ -1445,22 +2557,33 @@ function SelectedContentViewer(props: SelectedContentViewerProps) {
       return null;
     }
 
-    return { contentItemId, reloadKey: props.favoritesReloadKey() };
+    return `${contentItemId}\u001f${props.favoritesReloadKey().toString()}`;
   });
   const [favoriteItems, { refetch: refetchFavoriteItems }] = createResource(selectedFavoriteSource, () =>
     client.overlays.favoriteContentItems(),
   );
   const selectedContentIsFavorite = createMemo(() => {
     const contentItemId = selectedContentItemId();
-    return contentItemId !== null && (favoriteItems() ?? []).some((contentItem) => contentItem.id === contentItemId);
+    return contentItemId !== null && (favoriteItems() ?? emptyCatalogContentItems).some((contentItem) => contentItem.id === contentItemId);
   });
   const [favoriteActionError, setFavoriteActionError] = createSignal<string | null>(null);
   const [favoriteActionBusy, setFavoriteActionBusy] = createSignal(false);
+  const selectedContentStatus = createMemo(() => {
+    const contentItemId = selectedContentItemId();
+    if (contentItemId === null) {
+      return { opened: false, played: false };
+    }
+
+    return toContentStatusFlags(props.contentStatuses(), contentItemId);
+  });
+  const [statusActionError, setStatusActionError] = createSignal<string | null>(null);
+  const [statusActionBusy, setStatusActionBusy] = createSignal<"opened" | "played" | null>(null);
 
   createEffect(() => {
-    const sources = playableSources();
+    const sourceIds = playableSourceIds();
+    const sources = untrack(playableSources);
     const currentSourceId = selectedSourceId();
-    if (sources.length === 0) {
+    if (sourceIds.length === 0) {
       setSelectedSourceId(null);
       return;
     }
@@ -1471,7 +2594,7 @@ function SelectedContentViewer(props: SelectedContentViewerProps) {
   });
 
   createEffect(() => {
-    const loadedPlaylists = playlists() ?? [];
+    const loadedPlaylists = playlists() ?? emptyPlaylists;
     if (loadedPlaylists.length === 0) {
       setTargetPlaylistId(null);
       return;
@@ -1528,19 +2651,53 @@ function SelectedContentViewer(props: SelectedContentViewerProps) {
     }
   };
 
+  const markSelectedContentOpened = async () => {
+    const contentItemId = selectedContentItemId();
+    if (contentItemId === null) {
+      return;
+    }
+
+    setStatusActionBusy("opened");
+    setStatusActionError(null);
+    try {
+      await props.onMarkContentOpened(contentItemId);
+    } catch (error) {
+      setStatusActionError(formatError(error));
+    } finally {
+      setStatusActionBusy(null);
+    }
+  };
+
+  const markSelectedContentPlayed = async () => {
+    const contentItemId = selectedContentItemId();
+    if (!props.isAuthenticated() || contentItemId === null) {
+      return;
+    }
+
+    setStatusActionBusy("played");
+    setStatusActionError(null);
+    try {
+      await props.onMarkContentPlayed(contentItemId);
+    } catch (error) {
+      setStatusActionError(formatError(error));
+    } finally {
+      setStatusActionBusy(null);
+    }
+  };
+
   return (
     <section
       aria-labelledby="selected-viewer-title"
-      class="min-h-[30rem] bg-background lg:min-h-0 lg:overflow-y-auto"
+      class={viewerColumnClass}
       data-shell-column="viewer"
       data-selected-content-item-id={selectedContentItemId() ?? ""}
     >
-      <div class="p-3">
+      <div class={viewerScrollRegionClass} data-viewer-scroll-region>
         <h2 id="selected-viewer-title" class="sr-only">Viewer</h2>
         <Switch>
           <Match when={selectedContentItemId() === null}>
             <div class="flex min-h-[18rem] items-center justify-center border border-border bg-muted px-6 text-center">
-              <p class="text-sm leading-6 text-muted-foreground">Pick a catalog video to open the viewer.</p>
+              <p class="text-sm leading-6 text-muted-foreground">Pick a video to open the viewer.</p>
             </div>
           </Match>
           <Match when={contentDetail.loading}>
@@ -1557,7 +2714,11 @@ function SelectedContentViewer(props: SelectedContentViewerProps) {
           <Match when={contentDetail()}>
             {(detail) => (
               <div class="min-w-0">
-                <PlaybackSurface source={selectedPlayableSource()} title={detail().title} />
+                <PlaybackSurface
+                  source={selectedPlayableSource()}
+                  title={detail().title}
+                  onNativePlay={markSelectedContentPlayed}
+                />
                 <Show when={playableSources().length > 1}>
                   <div class="mt-3 flex justify-end">
                     <label class="sr-only" for="viewer-source-switcher">
@@ -1567,6 +2728,8 @@ function SelectedContentViewer(props: SelectedContentViewerProps) {
                       id="viewer-source-switcher"
                       class="w-52 border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
                       value={selectedPlayableSource()?.id ?? ""}
+                      aria-label={playbackSourceSwitcherLabel()}
+                      title={playbackSourceSwitcherLabel()}
                       onChange={(event) => setSelectedSourceId(event.currentTarget.value)}
                     >
                       <For each={playableSources()}>
@@ -1580,6 +2743,9 @@ function SelectedContentViewer(props: SelectedContentViewerProps) {
                   </div>
                 </Show>
                 <Show when={props.isAuthenticated()}>
+                  <Show when={props.statusSelectionError()}>
+                    {(message) => <p class="mt-3 border border-destructive px-3 py-2 text-xs text-destructive">{message()}</p>}
+                  </Show>
                   <FavoriteActionControls
                     isFavorite={selectedContentIsFavorite()}
                     loading={favoriteItems.loading}
@@ -1587,8 +2753,16 @@ function SelectedContentViewer(props: SelectedContentViewerProps) {
                     actionError={favoriteActionError()}
                     onToggle={toggleSelectedContentFavorite}
                   />
+                  <ContentStatusActionControls
+                    status={selectedContentStatus()}
+                    loading={props.contentStatusesLoading()}
+                    busy={statusActionBusy()}
+                    actionError={statusActionError()}
+                    onMarkOpened={markSelectedContentOpened}
+                    onMarkPlayed={markSelectedContentPlayed}
+                  />
                   <PlaylistAddControls
-                    playlists={playlists() ?? []}
+                    playlists={playlists() ?? emptyPlaylists}
                     loading={playlists.loading}
                     error={playlists.error}
                     selectedPlaylistId={targetPlaylistId()}
@@ -1628,6 +2802,15 @@ interface FavoriteActionControlsProps {
   readonly onToggle: () => Promise<void>;
 }
 
+interface ContentStatusActionControlsProps {
+  readonly status: ContentStatusFlags;
+  readonly loading: boolean;
+  readonly busy: "opened" | "played" | null;
+  readonly actionError: string | null;
+  readonly onMarkOpened: () => Promise<void>;
+  readonly onMarkPlayed: () => Promise<void>;
+}
+
 function FavoriteActionControls(props: FavoriteActionControlsProps) {
   return (
     <section class="mt-3 border border-border bg-card p-2" aria-label="Favorite action for selected video">
@@ -1645,6 +2828,48 @@ function FavoriteActionControls(props: FavoriteActionControlsProps) {
           }}
         >
           {props.isFavorite ? "Remove favorite" : "Favorite"}
+        </button>
+      </div>
+      <Show when={props.actionError}>
+        {(message) => <p class="mt-2 text-xs text-destructive">{message()}</p>}
+      </Show>
+    </section>
+  );
+}
+
+function ContentStatusActionControls(props: ContentStatusActionControlsProps) {
+  return (
+    <section
+      class="mt-3 border border-border bg-card p-2"
+      aria-label="Opened and played actions for selected video"
+      data-opened={props.status.opened ? "true" : "false"}
+      data-played={props.status.played ? "true" : "false"}
+    >
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+        <p class="text-xs text-muted-foreground">
+          {props.status.played ? "Played." : props.status.opened ? "Opened." : "Mark this video opened or played."}
+        </p>
+        <button
+          type="button"
+          class="border border-border bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+          aria-pressed={props.status.opened}
+          disabled={props.loading || props.busy !== null || props.status.opened}
+          onClick={async () => {
+            await props.onMarkOpened();
+          }}
+        >
+          {props.status.opened ? "Opened" : "Mark opened"}
+        </button>
+        <button
+          type="button"
+          class="border border-border bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+          aria-pressed={props.status.played}
+          disabled={props.loading || props.busy !== null || props.status.played}
+          onClick={async () => {
+            await props.onMarkPlayed();
+          }}
+        >
+          {props.status.played ? "Played" : "Mark played"}
         </button>
       </div>
       <Show when={props.actionError}>
@@ -1701,6 +2926,7 @@ function PlaylistAddControls(props: PlaylistAddControlsProps) {
 interface PlaybackSurfaceProps {
   readonly source: PlayableSource | null;
   readonly title: string;
+  readonly onNativePlay: () => Promise<void>;
 }
 
 function PlaybackSurface(props: PlaybackSurfaceProps) {
@@ -1718,7 +2944,7 @@ function PlaybackSurface(props: PlaybackSurfaceProps) {
           />
         </Match>
         <Match when={props.source?.kind === "native" && props.source !== null}>
-          <video class="h-full w-full" src={props.source?.url ?? ""} controls preload="metadata">
+          <video class="h-full w-full" src={props.source?.url ?? ""} controls preload="metadata" onPlay={props.onNativePlay}>
             <a class="text-primary underline" href={props.source?.url ?? ""}>
               Open video source
             </a>
@@ -1787,7 +3013,7 @@ function ContentDetailMetadata(props: ContentDetailMetadataProps) {
         <section class="border-b border-border py-3">
           <p class="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Feeds</p>
           <ul class="mt-2 space-y-1" aria-label="Feeds containing selected video">
-            <For each={props.detail?.feeds ?? []}>{(feed) => <FeedRow feed={feed} />}</For>
+            <For each={props.detail?.feeds ?? emptyCatalogFeeds}>{(feed) => <FeedRow feed={feed} />}</For>
           </ul>
         </section>
       </Show>
@@ -1812,51 +3038,149 @@ function ContentDetailMetadata(props: ContentDetailMetadataProps) {
   );
 }
 
-export default function AppShell() {
+export interface AppShellProps {
+  readonly mode?: ShellMode;
+}
+
+export default function AppShell(props: AppShellProps) {
+  const mode = props.mode ?? "catalog";
   const session = authClient.useSession();
   const isAuthenticated = createMemo(() => !session().isPending && session().data !== null);
-  const [selectedCreator, setSelectedCreator] = createSignal<CatalogCreator | null>(null);
+  const [selectedCreator, setSelectedCreator] = createSignal<BrowsableCreator | null>(null);
+  const [selectedFeed, setSelectedFeed] = createSignal<CatalogFeed | null>(null);
   const [selectedContent, setSelectedContent] = createSignal<CatalogContentListItem | null>(null);
   const [selectedPlaylistId, setSelectedPlaylistId] = createSignal<string | null>(null);
   const [playlistItemsReloadKey, setPlaylistItemsReloadKey] = createSignal(0);
+  const [catalogReloadKey, setCatalogReloadKey] = createSignal(0);
   const [favoritesReloadKey, setFavoritesReloadKey] = createSignal(0);
+  const [statusReloadKey, setStatusReloadKey] = createSignal(0);
+  const [statusSelectionError, setStatusSelectionError] = createSignal<string | null>(null);
+  const settingsResourceInput = createMemo(() => {
+    if (!isAuthenticated()) {
+      return null;
+    }
+
+    return "settings";
+  });
+  const [settings, { refetch: refetchSettings }] = createResource(settingsResourceInput, () => client.overlays.settings());
+  const readerDensity = createMemo(() => toReaderDensityFromSettings(settings() ?? emptyUserSettings));
+  const contentStatusesResourceInput = createMemo(() => {
+    if (!isAuthenticated()) {
+      return null;
+    }
+
+    return statusReloadKey();
+  });
+  const [contentStatuses, { refetch: refetchContentStatuses }] = createResource(contentStatusesResourceInput, () =>
+    client.overlays.contentStatuses(),
+  );
   const selectedCreatorId = createMemo(() => selectedCreator()?.id ?? null);
   const selectedContentItemId = createMemo(() => selectedContent()?.id ?? null);
 
-  const selectCreator = (creator: CatalogCreator) => {
+  const selectCreator = (creator: BrowsableCreator) => {
     setSelectedCreator(creator);
+    setSelectedFeed(null);
     setSelectedContent(null);
+  };
+
+  const selectFeed = (feed: CatalogFeed | null) => {
+    setSelectedFeed(feed);
+    setSelectedContent(null);
+  };
+
+  const reconcileStatusState = async () => {
+    setStatusReloadKey((key) => key + 1);
+    await refetchContentStatuses();
+  };
+
+  const markContentOpened = async (contentItemId: string) => {
+    if (!isAuthenticated()) {
+      return;
+    }
+
+    await client.overlays.markContentOpened({ contentItemId });
+    await reconcileStatusState();
+  };
+
+  const markContentPlayed = async (contentItemId: string) => {
+    if (!isAuthenticated()) {
+      return;
+    }
+
+    await client.overlays.markContentPlayed({ contentItemId });
+    await reconcileStatusState();
+  };
+
+  const selectContent = async (contentItem: CatalogContentListItem) => {
+    setSelectedContent(contentItem);
+    setStatusSelectionError(null);
+    try {
+      await markContentOpened(contentItem.id);
+    } catch (error) {
+      setStatusSelectionError(`Opened status update failed: ${formatError(error)}`);
+    }
   };
 
   return (
     <main class={shellRootClass}>
-      <div class={shellGridClass}>
+      <div class={shellGridClass} data-reader-density={readerDensity()}>
         <CreatorSourceColumn
           isAuthenticated={isAuthenticated}
+          mode={mode}
+          readerDensity={readerDensity}
+          settings={() => settings() ?? emptyUserSettings}
+          settingsUnavailable={() => settings.error !== undefined}
           selectedCreatorId={selectedCreatorId}
           selectedCreator={selectedCreator}
+          selectedFeed={selectedFeed}
           selectedPlaylistId={selectedPlaylistId}
           playlistItemsReloadKey={playlistItemsReloadKey}
+          onCatalogChanged={() => setCatalogReloadKey((key) => key + 1)}
+          onSettingsChanged={async () => {
+            await refetchSettings();
+          }}
+          onClearCreator={() => {
+            setSelectedCreator(null);
+            setSelectedFeed(null);
+            setSelectedContent(null);
+          }}
           onSelectCreator={selectCreator}
+          onSelectFeed={selectFeed}
           onSelectPlaylist={setSelectedPlaylistId}
-          onSelectContent={setSelectedContent}
+          onSelectContent={selectContent}
         />
         <ContentListColumn
           isAuthenticated={isAuthenticated}
+          mode={mode}
           selectedCreator={selectedCreator}
+          selectedFeed={selectedFeed}
+          selectedPlaylistId={selectedPlaylistId}
           selectedContentItemId={selectedContentItemId}
+          catalogReloadKey={catalogReloadKey}
           favoritesReloadKey={favoritesReloadKey}
-          onSelectContent={setSelectedContent}
+          readerDensity={readerDensity}
+          contentStatuses={() => contentStatuses() ?? emptyUserContentStatuses}
+          statusReloadKey={statusReloadKey}
+          onSelectContent={selectContent}
           onFavoriteChanged={() => setFavoritesReloadKey((key) => key + 1)}
+          onMarkContentOpened={markContentOpened}
+          onMarkContentPlayed={markContentPlayed}
+          onSelectPlaylist={setSelectedPlaylistId}
+          onPlaylistItemAdded={() => setPlaylistItemsReloadKey((key) => key + 1)}
         />
         <SelectedContentViewer
           isAuthenticated={isAuthenticated}
           selectedContent={selectedContent}
           selectedPlaylistId={selectedPlaylistId}
           favoritesReloadKey={favoritesReloadKey}
+          contentStatuses={() => contentStatuses() ?? emptyUserContentStatuses}
+          contentStatusesLoading={() => contentStatuses.loading}
+          statusSelectionError={statusSelectionError}
           onSelectPlaylist={setSelectedPlaylistId}
           onPlaylistItemAdded={() => setPlaylistItemsReloadKey((key) => key + 1)}
           onFavoriteChanged={() => setFavoritesReloadKey((key) => key + 1)}
+          onMarkContentOpened={markContentOpened}
+          onMarkContentPlayed={markContentPlayed}
         />
       </div>
     </main>
