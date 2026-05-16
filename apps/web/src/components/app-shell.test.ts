@@ -66,6 +66,7 @@ import {
 const changedUiSourceFiles = [
   "./app-shell.contract.ts",
   "./app-shell.tsx",
+  "./app-shell-rows.tsx",
   "./source-indicator.tsx",
   "./header.tsx",
   "./user-menu.tsx",
@@ -77,6 +78,14 @@ const changedUiSourceFiles = [
 async function readChangedUiSource() {
   const sources = await Promise.all(
     changedUiSourceFiles.map(async (filePath) => Bun.file(new URL(filePath, import.meta.url)).text()),
+  );
+
+  return sources.join("\n");
+}
+
+async function readAppShellSource() {
+  const sources = await Promise.all(
+    ["./app-shell.tsx", "./app-shell-rows.tsx"].map(async (filePath) => Bun.file(new URL(filePath, import.meta.url)).text()),
   );
 
   return sources.join("\n");
@@ -276,7 +285,7 @@ test("content selection updates shell state contract", () => {
 });
 
 test("creator pane is wired to anonymous catalog creators and feeds", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("client.catalog.creators(untrack(creatorListInput))");
   expect(source).toContain("return input === null ? emptyCatalogFeeds : client.catalog.feeds(input);");
@@ -300,7 +309,7 @@ test("creator source-type filter scopes the creator list without changing playba
 });
 
 test("selected feed is explicit and shapes catalog content input", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("const [selectedFeed, setSelectedFeed] = createSignal<CatalogFeed | null>(null)");
   expect(source).toContain("const selectFeed = (feed: CatalogFeed | null) => {");
@@ -331,7 +340,7 @@ test("feed selection exposes real protected feed refresh controls", async () => 
 });
 
 test("feed rows expose selected state icon source metadata and real creator images only", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("function formatFeedRefreshMetadata(feed: CatalogFeed): string");
   expect(source).toContain("Last refresh: Never");
@@ -748,7 +757,7 @@ test("playlist management is compact and collapsible inside existing panes", asy
 });
 
 test("add-to-playlist is discoverable from content rows and viewer with real API calls", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("data-content-playlist-actions");
   expect(source).toContain("content-list-playlist-target");
@@ -761,7 +770,7 @@ test("add-to-playlist is discoverable from content rows and viewer with real API
 });
 
 test("manual reorder controls render only for manual playlist order", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("const selectedPlaylistUsesManualOrder = createMemo(() => selectedPlaylist()?.sortMode === \"manual\")");
   expect(source).toContain("showManualControls={selectedPlaylistUsesManualOrder()}");
@@ -776,7 +785,7 @@ test("playlist items reload through resource key without effect refetch loop", a
   const playlistItemsInputStart = source.indexOf("const selectedPlaylistItemsInput = createMemo(() => {");
   const playlistItemsResourceEnd = source.indexOf("const selectedPlaylist = createMemo(", playlistItemsInputStart);
   const playlistItemsResourceSource = source.slice(playlistItemsInputStart, playlistItemsResourceEnd);
-  const playlistSectionEnd = source.indexOf("interface PlaylistItemRowProps", playlistItemsInputStart);
+  const playlistSectionEnd = source.indexOf("interface ContentListColumnProps", playlistItemsInputStart);
   const playlistSectionSource = source.slice(playlistItemsInputStart, playlistSectionEnd);
   const refetchEffectPattern = /createEffect\(\(\) => \{[\s\S]*props\.playlistItemsReloadKey\(\)[\s\S]*refetchSelectedPlaylistItems\(/;
 
@@ -844,7 +853,7 @@ test("typed settings expose bounded known reader density controls", async () => 
 });
 
 test("reader density setting is applied to real row spacing", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("const emptyUserSettings: readonly UserSetting[] = [];");
   expect(source).toContain("const readerDensity = createMemo(() => toReaderDensityFromSettings(settings() ?? emptyUserSettings));");
@@ -972,7 +981,7 @@ test("favorite-only row actions reconcile favorites without refetching catalog c
 });
 
 test("anonymous users do not see favorite controls or protected favorite calls", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("if (props.isAuthenticated() && viewMode() === \"favorites\")");
   expect(source).toContain("if (!props.isAuthenticated()) {\n      return null;\n    }");
@@ -1108,7 +1117,7 @@ test("status-only row actions do not manually refetch catalog content", async ()
 });
 
 test("content rows expose opened and played state with semantic attributes", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("data-opened={props.status.opened ? \"true\" : \"false\"}");
   expect(source).toContain("data-played={props.status.played ? \"true\" : \"false\"}");
@@ -1124,7 +1133,7 @@ test("content rows expose opened and played state with semantic attributes", asy
 });
 
 test("content rows expose concise icon source indicators and avoid fake thumbnails", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const sourceIndicator = await Bun.file(new URL("./source-indicator.tsx", import.meta.url)).text();
 
   expect(source).toContain("const rowImageUrl = createMemo(() => props.contentItem.thumbnailUrl ?? props.contentItem.creator.imageUrl)");
@@ -1149,7 +1158,7 @@ test("content rows expose concise icon source indicators and avoid fake thumbnai
 });
 
 test("row-level source affordances use icons instead of visible source-name chips", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const sourceIndicator = await Bun.file(new URL("./source-indicator.tsx", import.meta.url)).text();
 
   expect(sourceIndicator).toContain('import CirclePlay from "lucide-solid/icons/circle-play";');
@@ -1168,7 +1177,7 @@ test("row-level source affordances use icons instead of visible source-name chip
 });
 
 test("creator rows avoid single-source claims while selected feed list shows feed sources", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("title=\"Use the filter above to scope creator rows by catalog source type; select a creator to inspect its feeds.\"");
   expect(source).toContain("Feeds");
@@ -1192,7 +1201,7 @@ test("viewer playback source selector stays accessible for multiple playable sou
 });
 
 test("subscription UI is authenticated and wired to real protected procedures", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("client.overlays.subscriptions()");
   expect(source).toContain("client.overlays.subscribeToCreator({ creatorId })");
