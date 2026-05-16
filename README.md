@@ -49,7 +49,7 @@ bun run dev
 ```
 
 Open [http://localhost:3001](http://localhost:3001) in your browser to see the web application.
-The API is running at [http://localhost:3000](http://localhost:3000).
+The API is running at [http://localhost:3002](http://localhost:3002).
 
 ## Project Structure
 

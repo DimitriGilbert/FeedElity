@@ -5,6 +5,7 @@ dist-ssr
 *.local
 .env
 .env.*
+!.env.example
 
 .wrangler
 .alchemy
