@@ -9,7 +9,7 @@ import * as schema from "@FeedElity/db/schema";
 import type { AccountState, Context } from "../context";
 import type { RepositoryDb } from "../repositories/catalog";
 import { findOrCreateContentItem, findOrCreateCreator } from "../repositories/catalog";
-import { createPlaylist, findOrCreateSubscription, saveUserSetting } from "../repositories/overlays";
+import { createPlaylist, findOrCreateSubscription } from "../repositories/overlays";
 import { appRouter } from "./index";
 
 interface TestDatabase {
@@ -61,6 +61,12 @@ describe("auth access rules", () => {
   test("anonymous users cannot read protected overlays", async () => {
     await expect(
       call(appRouter.overlays.subscriptions, undefined, { context: anonymousContext(testDatabase.db) }),
+    ).rejects.toHaveProperty("code", "UNAUTHORIZED");
+    await expect(
+      call(appRouter.overlays.favoriteContentItems, undefined, { context: anonymousContext(testDatabase.db) }),
+    ).rejects.toHaveProperty("code", "UNAUTHORIZED");
+    await expect(
+      call(appRouter.overlays.contentHistory, { status: "opened" }, { context: anonymousContext(testDatabase.db) }),
     ).rejects.toHaveProperty("code", "UNAUTHORIZED");
   });
 
@@ -116,19 +122,10 @@ describe("auth access rules", () => {
       userId: "user-b",
       name: "User B queue",
     });
-    await saveUserSetting(testDatabase.db, {
-      userId: "user-b",
-      key: "reader.layout",
-      valueJson: JSON.stringify({ density: "comfortable" }),
-    });
-
     const subscriptions = await call(appRouter.overlays.subscriptions, undefined, {
       context: authenticatedContext(testDatabase.db, "user-a", "active"),
     });
     const playlists = await call(appRouter.overlays.playlists, undefined, {
-      context: authenticatedContext(testDatabase.db, "user-a", "active"),
-    });
-    const settings = await call(appRouter.overlays.settings, undefined, {
       context: authenticatedContext(testDatabase.db, "user-a", "active"),
     });
 
@@ -144,7 +141,6 @@ describe("auth access rules", () => {
       throw new Error("Expected protected playlist procedure to return user A's playlist.");
     }
     expect(playlist).toMatchObject({ userId: "user-a", name: "User A queue" });
-    expect(settings).toHaveLength(0);
   });
 
   test("migrated pending users cannot access protected procedures until password setup is complete", async () => {
@@ -160,6 +156,264 @@ describe("auth access rules", () => {
         context: authenticatedContext(testDatabase.db, "migrated-user", "migrated_pending_password_setup"),
       }),
     ).rejects.toHaveProperty("code", "FORBIDDEN");
+  });
+
+  test("authenticated users can idempotently subscribe to an existing catalog creator", async () => {
+    await insertUser(testDatabase.db, "user-a", "user-a@example.test", "active");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "idempotent-channel",
+      displayName: "Idempotent Creator",
+      imageUrl: "https://example.test/avatar.png",
+      canonicalUrl: "https://example.test/channel",
+    });
+
+    const firstResult = await call(appRouter.overlays.subscribeToCreator, { creatorId: creator.id }, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+    const secondResult = await call(appRouter.overlays.subscribeToCreator, { creatorId: creator.id }, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+    const subscriptions = await call(appRouter.overlays.subscriptions, undefined, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+
+    expect(firstResult.subscription.id).toBe(secondResult.subscription.id);
+    expect(firstResult.subscription).toMatchObject({
+      userId: "user-a",
+      creatorId: creator.id,
+      creator: {
+        id: creator.id,
+        sourceType: "youtube",
+        sourceExternalId: "idempotent-channel",
+        displayName: "Idempotent Creator",
+        imageUrl: "https://example.test/avatar.png",
+        canonicalUrl: "https://example.test/channel",
+      },
+    });
+    expect(subscriptions).toHaveLength(1);
+  });
+
+  test("authenticated users can toggle favorite content without leaking other users favorites", async () => {
+    await insertUser(testDatabase.db, "user-a", "user-a@example.test", "active");
+    await insertUser(testDatabase.db, "user-b", "user-b@example.test", "active");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "favorite-channel",
+      displayName: "Favorite Creator",
+      imageUrl: "https://example.test/favorite.png",
+    });
+    const firstContentItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "favorite-video-a",
+      title: "User A favorite",
+    });
+    const secondContentItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "favorite-video-b",
+      title: "User B favorite",
+    });
+
+    const enabled = await call(appRouter.overlays.toggleContentFavorite, { contentItemId: firstContentItem.id }, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+    await call(appRouter.overlays.toggleContentFavorite, { contentItemId: secondContentItem.id }, {
+      context: authenticatedContext(testDatabase.db, "user-b", "active"),
+    });
+    const userAFavorites = await call(appRouter.overlays.favoriteContentItems, undefined, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+    const disabled = await call(appRouter.overlays.toggleContentFavorite, { contentItemId: firstContentItem.id }, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+    const userAFavoritesAfterToggle = await call(appRouter.overlays.favoriteContentItems, undefined, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+    const userBFavorites = await call(appRouter.overlays.favoriteContentItems, undefined, {
+      context: authenticatedContext(testDatabase.db, "user-b", "active"),
+    });
+
+    expect(enabled).toMatchObject({
+      favorited: true,
+      status: { userId: "user-a", contentItemId: firstContentItem.id, status: "favorite" },
+    });
+    expect(userAFavorites).toHaveLength(1);
+    expect(userAFavorites[0]).toMatchObject({
+      id: firstContentItem.id,
+      title: "User A favorite",
+      creator: { id: creator.id, displayName: "Favorite Creator" },
+    });
+    expect(JSON.stringify(userAFavorites)).not.toContain("user-b");
+    expect(disabled).toEqual({ favorited: false, status: null });
+    expect(userAFavoritesAfterToggle).toHaveLength(0);
+    expect(userBFavorites).toHaveLength(1);
+    expect(userBFavorites[0]).toMatchObject({ id: secondContentItem.id, title: "User B favorite" });
+  });
+
+  test("opened and played status writes are idempotent and exposed through explicit history filters", async () => {
+    await insertUser(testDatabase.db, "user-a", "user-a@example.test", "active");
+    await insertUser(testDatabase.db, "user-b", "user-b@example.test", "active");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "odysee",
+      sourceExternalId: "history-channel",
+      displayName: "History Creator",
+    });
+    const contentItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "odysee",
+      sourceExternalId: "history-video-a",
+      title: "History video",
+    });
+    const otherContentItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "odysee",
+      sourceExternalId: "history-video-b",
+      title: "Other user history video",
+    });
+
+    const firstOpened = await call(appRouter.overlays.markContentOpened, { contentItemId: contentItem.id }, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+    const secondOpened = await call(appRouter.overlays.markContentOpened, { contentItemId: contentItem.id }, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+    const firstPlayed = await call(appRouter.overlays.markContentPlayed, { contentItemId: contentItem.id }, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+    const secondPlayed = await call(appRouter.overlays.markContentPlayed, { contentItemId: contentItem.id }, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+    await call(appRouter.overlays.markContentOpened, { contentItemId: otherContentItem.id }, {
+      context: authenticatedContext(testDatabase.db, "user-b", "active"),
+    });
+
+    const openedHistory = await call(appRouter.overlays.contentHistory, { status: "opened" }, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+    const playedHistory = await call(appRouter.overlays.contentHistory, { status: "played" }, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+    const allStatuses = await call(appRouter.overlays.contentStatuses, undefined, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+
+    expect(firstOpened.status.id).toBe(secondOpened.status.id);
+    expect(firstPlayed.status.id).toBe(secondPlayed.status.id);
+    expect(openedHistory).toHaveLength(1);
+    expect(openedHistory[0]).toMatchObject({
+      userId: "user-a",
+      status: "opened",
+      content: { id: contentItem.id, title: "History video", creator: { displayName: "History Creator" } },
+    });
+    expect(playedHistory).toHaveLength(1);
+    expect(playedHistory[0]).toMatchObject({ userId: "user-a", status: "played", contentItemId: contentItem.id });
+    expect(allStatuses).toHaveLength(2);
+    expect(JSON.stringify(openedHistory)).not.toContain("Other user history video");
+  });
+
+  test("status operations require an existing catalog content item", async () => {
+    await insertUser(testDatabase.db, "user-a", "user-a@example.test", "active");
+
+    await expect(
+      call(appRouter.overlays.markContentOpened, { contentItemId: "missing-content" }, {
+        context: authenticatedContext(testDatabase.db, "user-a", "active"),
+      }),
+    ).rejects.toHaveProperty("code", "NOT_FOUND");
+    await expect(
+      call(appRouter.overlays.markContentPlayed, { contentItemId: "missing-content" }, {
+        context: authenticatedContext(testDatabase.db, "user-a", "active"),
+      }),
+    ).rejects.toHaveProperty("code", "NOT_FOUND");
+    await expect(
+      call(appRouter.overlays.toggleContentFavorite, { contentItemId: "missing-content" }, {
+        context: authenticatedContext(testDatabase.db, "user-a", "active"),
+      }),
+    ).rejects.toHaveProperty("code", "NOT_FOUND");
+  });
+
+  test("subscription list and unsubscribe are scoped to the authenticated user", async () => {
+    await insertUser(testDatabase.db, "user-a", "user-a@example.test", "active");
+    await insertUser(testDatabase.db, "user-b", "user-b@example.test", "active");
+    const sharedCreator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "peertube",
+      sourceExternalId: "shared-channel",
+      displayName: "Shared Creator",
+    });
+    const userBCreator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "odysee",
+      sourceExternalId: "user-b-channel",
+      displayName: "User B Creator",
+    });
+    await call(appRouter.overlays.subscribeToCreator, { creatorId: sharedCreator.id }, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+    await call(appRouter.overlays.subscribeToCreator, { creatorId: sharedCreator.id }, {
+      context: authenticatedContext(testDatabase.db, "user-b", "active"),
+    });
+    await call(appRouter.overlays.subscribeToCreator, { creatorId: userBCreator.id }, {
+      context: authenticatedContext(testDatabase.db, "user-b", "active"),
+    });
+
+    const userAList = await call(appRouter.overlays.subscriptions, undefined, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+    const userBListBeforeUnsubscribe = await call(appRouter.overlays.subscriptions, undefined, {
+      context: authenticatedContext(testDatabase.db, "user-b", "active"),
+    });
+    const unsubscribeResult = await call(appRouter.overlays.unsubscribeFromCreator, { creatorId: sharedCreator.id }, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+    const userAListAfterUnsubscribe = await call(appRouter.overlays.subscriptions, undefined, {
+      context: authenticatedContext(testDatabase.db, "user-a", "active"),
+    });
+    const userBListAfterUnsubscribe = await call(appRouter.overlays.subscriptions, undefined, {
+      context: authenticatedContext(testDatabase.db, "user-b", "active"),
+    });
+    const catalogCreators = await call(appRouter.catalog.creators, undefined, { context: anonymousContext(testDatabase.db) });
+
+    expect(userAList).toHaveLength(1);
+    expect(userAList.at(0)).toMatchObject({ userId: "user-a", creatorId: sharedCreator.id });
+    expect(userBListBeforeUnsubscribe).toHaveLength(2);
+    expect(unsubscribeResult).toEqual({
+      creator: {
+        id: sharedCreator.id,
+        sourceType: "peertube",
+        sourceExternalId: "shared-channel",
+        displayName: "Shared Creator",
+        imageUrl: null,
+        canonicalUrl: null,
+      },
+      unsubscribed: true,
+    });
+    expect(userAListAfterUnsubscribe).toHaveLength(0);
+    expect(userBListAfterUnsubscribe).toHaveLength(2);
+    expect(catalogCreators.map((creator) => creator.id).sort()).toEqual([sharedCreator.id, userBCreator.id].sort());
+  });
+
+  test("anonymous users cannot call subscription mutation procedures", async () => {
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "anonymous-rejected-channel",
+      displayName: "Anonymous Rejected Creator",
+    });
+
+    await expect(
+      call(appRouter.overlays.subscribeToCreator, { creatorId: creator.id }, { context: anonymousContext(testDatabase.db) }),
+    ).rejects.toHaveProperty("code", "UNAUTHORIZED");
+    await expect(
+      call(appRouter.overlays.unsubscribeFromCreator, { creatorId: creator.id }, { context: anonymousContext(testDatabase.db) }),
+    ).rejects.toHaveProperty("code", "UNAUTHORIZED");
+    await expect(
+      call(appRouter.overlays.markContentOpened, { contentItemId: "content" }, { context: anonymousContext(testDatabase.db) }),
+    ).rejects.toHaveProperty("code", "UNAUTHORIZED");
+    await expect(
+      call(appRouter.overlays.markContentPlayed, { contentItemId: "content" }, { context: anonymousContext(testDatabase.db) }),
+    ).rejects.toHaveProperty("code", "UNAUTHORIZED");
+    await expect(
+      call(appRouter.overlays.toggleContentFavorite, { contentItemId: "content" }, { context: anonymousContext(testDatabase.db) }),
+    ).rejects.toHaveProperty("code", "UNAUTHORIZED");
   });
 });
 
@@ -278,6 +532,7 @@ const schemaStatements = [
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
   )`,
+  "CREATE UNIQUE INDEX content_status_user_item_status_uidx ON content_status (user_id, content_item_id, status)",
   `CREATE TABLE playlist (
     id TEXT PRIMARY KEY NOT NULL,
     user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,

@@ -32,6 +32,7 @@ import {
   listSubscriptionsForUser,
   listUserSettingsForUser,
   recordMigrationMapping,
+  reorderPlaylistItemsForUser,
   saveUserSetting,
 } from "./overlays";
 
@@ -259,6 +260,35 @@ describe("catalog and overlay repositories", () => {
       secondContentItem.id,
     ]);
     expect(otherUserItems).toHaveLength(0);
+  });
+
+  test("empty playlist reorders verify playlist ownership before returning items", async () => {
+    await insertUser(testDatabase.db, "user-a", "empty-playlist-a@example.test");
+    await insertUser(testDatabase.db, "user-b", "empty-playlist-b@example.test");
+    const emptyPlaylist = await createPlaylist(testDatabase.db, {
+      userId: "user-a",
+      name: "Empty queue",
+    });
+
+    const ownerResult = await reorderPlaylistItemsForUser(testDatabase.db, {
+      userId: "user-a",
+      playlistId: emptyPlaylist.id,
+      playlistItemIds: [],
+    });
+    const otherUserResult = await reorderPlaylistItemsForUser(testDatabase.db, {
+      userId: "user-b",
+      playlistId: emptyPlaylist.id,
+      playlistItemIds: [],
+    });
+    const missingPlaylistResult = await reorderPlaylistItemsForUser(testDatabase.db, {
+      userId: "user-a",
+      playlistId: "missing-playlist",
+      playlistItemIds: [],
+    });
+
+    expect(ownerResult).toEqual([]);
+    expect(otherUserResult).toBeNull();
+    expect(missingPlaylistResult).toBeNull();
   });
 
   test("user settings are idempotent and scoped by user", async () => {

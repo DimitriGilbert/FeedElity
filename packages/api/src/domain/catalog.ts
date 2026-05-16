@@ -63,6 +63,25 @@ export interface CatalogContentSource {
   readonly metadataJson: string | null;
 }
 
+export interface CatalogContentListItem extends CatalogContentItem {
+  readonly creator: CatalogCreatorSummary;
+}
+
+export interface CatalogCreatorSummary {
+  readonly id: string;
+  readonly sourceType: SourceType;
+  readonly sourceExternalId: string;
+  readonly displayName: string;
+  readonly imageUrl: string | null;
+  readonly canonicalUrl: string | null;
+}
+
+export interface CatalogContentDetail extends CatalogContentItem {
+  readonly creator: CatalogCreatorSummary;
+  readonly feeds: readonly CatalogFeed[];
+  readonly sources: readonly CatalogContentSource[];
+}
+
 export interface FeedContentLink {
   readonly feedId: string;
   readonly contentItemId: string;

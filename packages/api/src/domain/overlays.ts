@@ -1,4 +1,4 @@
-import type { ContentStatusKind } from "./catalog";
+import type { CatalogContentListItem, CatalogCreatorSummary, ContentStatusKind } from "./catalog";
 
 export type PlaylistSortMode = "manual" | "published_at_desc" | "published_at_asc" | "added_at_desc" | "added_at_asc";
 
@@ -14,12 +14,20 @@ export interface UserSubscription {
   readonly settingsJson: string | null;
 }
 
+export interface UserSubscriptionWithCreator extends UserSubscription {
+  readonly creator: CatalogCreatorSummary;
+}
+
 export interface UserContentStatus {
   readonly id: string;
   readonly userId: string;
   readonly contentItemId: string;
   readonly status: ContentStatusKind;
   readonly metadataJson: string | null;
+}
+
+export interface UserContentStatusWithContent extends UserContentStatus {
+  readonly content: CatalogContentListItem;
 }
 
 export interface Playlist {
@@ -38,6 +46,10 @@ export interface PlaylistItem {
   readonly contentItemId: string;
   readonly position: number;
   readonly addedAt: Date;
+}
+
+export interface PlaylistItemWithContent extends PlaylistItem {
+  readonly content: CatalogContentListItem;
 }
 
 export interface UserSetting {

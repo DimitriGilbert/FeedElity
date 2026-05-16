@@ -1,12 +1,15 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { LibSQLDatabase } from "drizzle-orm/libsql";
 
 import * as schema from "@FeedElity/db/schema";
 
 import type {
   CatalogContentItem,
+  CatalogContentDetail,
+  CatalogContentListItem,
   CatalogContentSource,
   CatalogCreator,
+  CatalogCreatorSummary,
   CatalogFeed,
   RefreshFeedResult,
   RefreshRun,
@@ -120,6 +123,25 @@ export interface UpdateFeedRefreshMetadataInput {
   readonly nextRefreshAfter: Date | null;
 }
 
+export interface ListCatalogCreatorsInput {
+  readonly search?: string;
+  readonly sourceType?: SourceType;
+  readonly limit: number;
+}
+
+export interface ListCatalogContentItemsInput {
+  readonly search?: string;
+  readonly creatorId?: string;
+  readonly sourceType?: SourceType;
+  readonly limit: number;
+}
+
+export interface ListCatalogFeedsInput {
+  readonly creatorId?: string;
+  readonly sourceType?: SourceType;
+  readonly limit: number;
+}
+
 export async function findOrCreateCreator(db: RepositoryDb, input: SaveCreatorInput): Promise<CatalogCreator> {
   const id = crypto.randomUUID();
 
@@ -156,6 +178,17 @@ export async function findCreatorBySourceIdentity(
   });
 
   return row === undefined ? null : toCatalogCreator(row);
+}
+
+export async function getCatalogCreatorSummaryById(
+  db: RepositoryDb,
+  creatorId: string,
+): Promise<CatalogCreatorSummary | null> {
+  const row = await db.query.creator.findFirst({
+    where: eq(schema.creator.id, creatorId),
+  });
+
+  return row === undefined ? null : toCatalogCreatorSummary(row);
 }
 
 export async function findOrCreateFeed(db: RepositoryDb, input: SaveFeedInput): Promise<CatalogFeed> {
@@ -238,6 +271,17 @@ export async function findContentItemBySourceIdentity(
   return row === undefined ? null : toCatalogContentItem(row);
 }
 
+export async function getCatalogContentItemById(
+  db: RepositoryDb,
+  contentItemId: string,
+): Promise<CatalogContentItem | null> {
+  const row = await db.query.contentItem.findFirst({
+    where: eq(schema.contentItem.id, contentItemId),
+  });
+
+  return row === undefined ? null : toCatalogContentItem(row);
+}
+
 export async function findOrCreateContentSource(
   db: RepositoryDb,
   input: SaveContentSourceInput,
@@ -308,12 +352,48 @@ export async function linkFeedContent(db: RepositoryDb, input: LinkFeedContentIn
   };
 }
 
-export async function listCatalogContentItems(db: RepositoryDb): Promise<readonly CatalogContentItem[]> {
-  const rows = await db.query.contentItem.findMany({
-    orderBy: (contentItem, { desc }) => [desc(contentItem.publishedAt), desc(contentItem.createdAt)],
+export async function listCatalogCreators(
+  db: RepositoryDb,
+  input: ListCatalogCreatorsInput,
+): Promise<readonly CatalogCreator[]> {
+  const conditions = [
+    input.sourceType === undefined ? undefined : eq(schema.creator.sourceType, input.sourceType),
+    input.search === undefined ? undefined : containsNormalized(schema.creator.displayName, input.search),
+  ].filter(isDefined);
+  const rows = await db.query.creator.findMany({
+    where: conditions.length === 0 ? undefined : and(...conditions),
+    orderBy: (creator, { asc }) => [asc(creator.displayName), asc(creator.createdAt)],
+    limit: input.limit,
   });
 
-  return rows.map(toCatalogContentItem);
+  return rows.map(toCatalogCreator);
+}
+
+export async function listCatalogContentItems(
+  db: RepositoryDb,
+  input: ListCatalogContentItemsInput = { limit: 50 },
+): Promise<readonly CatalogContentListItem[]> {
+  const conditions = [
+    input.creatorId === undefined ? undefined : eq(schema.contentItem.creatorId, input.creatorId),
+    input.sourceType === undefined ? undefined : eq(schema.contentItem.sourceType, input.sourceType),
+    input.search === undefined ? undefined : containsNormalized(schema.contentItem.title, input.search),
+  ].filter(isDefined);
+
+  const rows = await db
+    .select({
+      contentItem: schema.contentItem,
+      creator: schema.creator,
+    })
+    .from(schema.contentItem)
+    .innerJoin(schema.creator, eq(schema.contentItem.creatorId, schema.creator.id))
+    .where(conditions.length === 0 ? undefined : and(...conditions))
+    .orderBy(desc(schema.contentItem.publishedAt), desc(schema.contentItem.createdAt))
+    .limit(input.limit);
+
+  return rows.map((row) => ({
+    ...toCatalogContentItem(row.contentItem),
+    creator: toCatalogCreatorSummary(row.creator),
+  }));
 }
 
 export async function listCatalogFeeds(db: RepositoryDb): Promise<readonly CatalogFeed[]> {
@@ -322,6 +402,60 @@ export async function listCatalogFeeds(db: RepositoryDb): Promise<readonly Catal
   });
 
   return rows.map(toCatalogFeed);
+}
+
+export async function listCatalogFeedsForBrowsing(
+  db: RepositoryDb,
+  input: ListCatalogFeedsInput,
+): Promise<readonly CatalogFeed[]> {
+  const conditions = [
+    input.creatorId === undefined ? undefined : eq(schema.feed.creatorId, input.creatorId),
+    input.sourceType === undefined ? undefined : eq(schema.feed.sourceType, input.sourceType),
+  ].filter(isDefined);
+  const rows = await db.query.feed.findMany({
+    where: conditions.length === 0 ? undefined : and(...conditions),
+    orderBy: (feed, { asc }) => [asc(feed.createdAt)],
+    limit: input.limit,
+  });
+
+  return rows.map(toCatalogFeed);
+}
+
+export async function getCatalogContentDetail(
+  db: RepositoryDb,
+  contentItemId: string,
+): Promise<CatalogContentDetail | null> {
+  const row = await db
+    .select({
+      contentItem: schema.contentItem,
+      creator: schema.creator,
+    })
+    .from(schema.contentItem)
+    .innerJoin(schema.creator, eq(schema.contentItem.creatorId, schema.creator.id))
+    .where(eq(schema.contentItem.id, contentItemId))
+    .limit(1);
+  const firstRow = row.at(0);
+  if (firstRow === undefined) {
+    return null;
+  }
+
+  const sourceRows = await db.query.contentSource.findMany({
+    where: eq(schema.contentSource.contentItemId, contentItemId),
+    orderBy: (contentSource, { asc }) => [asc(contentSource.priority), asc(contentSource.createdAt)],
+  });
+  const feedRows = await db
+    .select({ feed: schema.feed })
+    .from(schema.feedContent)
+    .innerJoin(schema.feed, eq(schema.feedContent.feedId, schema.feed.id))
+    .where(eq(schema.feedContent.contentItemId, contentItemId))
+    .orderBy(asc(schema.feed.createdAt));
+
+  return {
+    ...toCatalogContentItem(firstRow.contentItem),
+    creator: toCatalogCreatorSummary(firstRow.creator),
+    sources: sourceRows.map(toCatalogContentSource),
+    feeds: feedRows.map((feedRow) => toCatalogFeed(feedRow.feed)),
+  };
 }
 
 export async function listCatalogFeedsForCreator(db: RepositoryDb, creatorId: string): Promise<readonly CatalogFeed[]> {
@@ -470,6 +604,25 @@ function toCatalogCreator(row: typeof schema.creator.$inferSelect): CatalogCreat
     canonicalUrl: row.canonicalUrl,
     metadataJson: row.metadataJson,
   };
+}
+
+function toCatalogCreatorSummary(row: typeof schema.creator.$inferSelect): CatalogCreatorSummary {
+  return {
+    id: row.id,
+    sourceType: row.sourceType,
+    sourceExternalId: row.sourceExternalId,
+    displayName: row.displayName,
+    imageUrl: row.imageUrl,
+    canonicalUrl: row.canonicalUrl,
+  };
+}
+
+function containsNormalized(column: typeof schema.creator.displayName | typeof schema.contentItem.title, value: string) {
+  return sql`instr(lower(${column}), lower(${value})) > 0`;
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
 }
 
 function toCatalogFeed(row: typeof schema.feed.$inferSelect): CatalogFeed {

@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 
 import * as schema from "@FeedElity/db/schema";
 
@@ -10,10 +10,13 @@ import type {
   MigrationSeverity,
   Playlist,
   PlaylistItem,
+  PlaylistItemWithContent,
   PlaylistSortMode,
   UserContentStatus,
+  UserContentStatusWithContent,
   UserSetting,
   UserSubscription,
+  UserSubscriptionWithCreator,
 } from "../domain/overlays";
 import type { RepositoryDb } from "./catalog";
 
@@ -39,12 +42,27 @@ export interface CreatePlaylistInput {
   readonly position?: number;
 }
 
+export interface UpdatePlaylistInput {
+  readonly userId: string;
+  readonly playlistId: string;
+  readonly name: string;
+  readonly description?: string | null;
+  readonly sortMode?: PlaylistSortMode;
+  readonly position?: number;
+}
+
 export interface AddPlaylistItemInput {
   readonly userId: string;
   readonly playlistId: string;
   readonly contentItemId: string;
   readonly position: number;
   readonly addedAt?: Date;
+}
+
+export interface ReorderPlaylistItemsInput {
+  readonly userId: string;
+  readonly playlistId: string;
+  readonly playlistItemIds: readonly string[];
 }
 
 export interface SaveUserSettingInput {
@@ -117,6 +135,66 @@ export async function listSubscriptionsForUser(db: RepositoryDb, userId: string)
   return rows.map(toUserSubscription);
 }
 
+export async function listSubscriptionsWithCreatorsForUser(
+  db: RepositoryDb,
+  userId: string,
+): Promise<readonly UserSubscriptionWithCreator[]> {
+  const rows = await db
+    .select({ subscription: schema.subscription, creator: schema.creator })
+    .from(schema.subscription)
+    .innerJoin(schema.creator, eq(schema.subscription.creatorId, schema.creator.id))
+    .where(eq(schema.subscription.userId, userId))
+    .orderBy(asc(schema.subscription.createdAt));
+
+  return rows.map((row) => ({
+    ...toUserSubscription(row.subscription),
+    creator: toCatalogCreatorSummary(row.creator),
+  }));
+}
+
+export async function getSubscriptionWithCreatorForUser(
+  db: RepositoryDb,
+  userId: string,
+  creatorId: string,
+): Promise<UserSubscriptionWithCreator | null> {
+  const rows = await db
+    .select({ subscription: schema.subscription, creator: schema.creator })
+    .from(schema.subscription)
+    .innerJoin(schema.creator, eq(schema.subscription.creatorId, schema.creator.id))
+    .where(and(eq(schema.subscription.userId, userId), eq(schema.subscription.creatorId, creatorId)))
+    .limit(1);
+  const row = rows.at(0);
+
+  if (row === undefined) {
+    return null;
+  }
+
+  return {
+    ...toUserSubscription(row.subscription),
+    creator: toCatalogCreatorSummary(row.creator),
+  };
+}
+
+export async function unsubscribeFromCreatorForUser(
+  db: RepositoryDb,
+  userId: string,
+  creatorId: string,
+): Promise<boolean> {
+  const existing = await db.query.subscription.findFirst({
+    where: and(eq(schema.subscription.userId, userId), eq(schema.subscription.creatorId, creatorId)),
+  });
+
+  if (existing === undefined) {
+    return false;
+  }
+
+  await db
+    .delete(schema.subscription)
+    .where(and(eq(schema.subscription.userId, userId), eq(schema.subscription.creatorId, creatorId)));
+
+  return true;
+}
+
 export async function findOrCreateContentStatus(
   db: RepositoryDb,
   input: SaveContentStatusInput,
@@ -163,6 +241,93 @@ export async function listContentStatusesForUser(
   return rows.map(toUserContentStatus);
 }
 
+export async function getContentStatusForUser(
+  db: RepositoryDb,
+  userId: string,
+  contentItemId: string,
+  status: ContentStatusKind,
+): Promise<UserContentStatus | null> {
+  const row = await db.query.contentStatus.findFirst({
+    where: and(
+      eq(schema.contentStatus.userId, userId),
+      eq(schema.contentStatus.contentItemId, contentItemId),
+      eq(schema.contentStatus.status, status),
+    ),
+  });
+
+  return row === undefined ? null : toUserContentStatus(row);
+}
+
+export async function deleteContentStatusForUser(
+  db: RepositoryDb,
+  userId: string,
+  contentItemId: string,
+  status: ContentStatusKind,
+): Promise<boolean> {
+  const existing = await getContentStatusForUser(db, userId, contentItemId, status);
+  if (existing === null) {
+    return false;
+  }
+
+  await db
+    .delete(schema.contentStatus)
+    .where(
+      and(
+        eq(schema.contentStatus.userId, userId),
+        eq(schema.contentStatus.contentItemId, contentItemId),
+        eq(schema.contentStatus.status, status),
+      ),
+    );
+
+  return true;
+}
+
+export async function toggleFavoriteContentStatusForUser(
+  db: RepositoryDb,
+  userId: string,
+  contentItemId: string,
+): Promise<{ readonly favorited: boolean; readonly status: UserContentStatus | null }> {
+  const existing = await getContentStatusForUser(db, userId, contentItemId, "favorite");
+  if (existing !== null) {
+    await deleteContentStatusForUser(db, userId, contentItemId, "favorite");
+    return { favorited: false, status: null };
+  }
+
+  const status = await findOrCreateContentStatus(db, {
+    userId,
+    contentItemId,
+    status: "favorite",
+  });
+
+  return { favorited: true, status };
+}
+
+export async function listContentStatusWithContentForUser(
+  db: RepositoryDb,
+  userId: string,
+  status: ContentStatusKind,
+): Promise<readonly UserContentStatusWithContent[]> {
+  const rows = await db
+    .select({
+      contentStatus: schema.contentStatus,
+      contentItem: schema.contentItem,
+      creator: schema.creator,
+    })
+    .from(schema.contentStatus)
+    .innerJoin(schema.contentItem, eq(schema.contentStatus.contentItemId, schema.contentItem.id))
+    .innerJoin(schema.creator, eq(schema.contentItem.creatorId, schema.creator.id))
+    .where(and(eq(schema.contentStatus.userId, userId), eq(schema.contentStatus.status, status)))
+    .orderBy(desc(schema.contentStatus.createdAt));
+
+  return rows.map((row) => ({
+    ...toUserContentStatus(row.contentStatus),
+    content: {
+      ...toCatalogContentItem(row.contentItem),
+      creator: toCatalogCreatorSummary(row.creator),
+    },
+  }));
+}
+
 export async function createPlaylist(db: RepositoryDb, input: CreatePlaylistInput): Promise<Playlist> {
   const id = crypto.randomUUID();
 
@@ -189,6 +354,63 @@ export async function listPlaylistsForUser(db: RepositoryDb, userId: string): Pr
   });
 
   return rows.map(toPlaylist);
+}
+
+export async function getPlaylistForUser(db: RepositoryDb, userId: string, playlistId: string): Promise<Playlist | null> {
+  const row = await db.query.playlist.findFirst({
+    where: and(eq(schema.playlist.userId, userId), eq(schema.playlist.id, playlistId)),
+  });
+
+  return row === undefined ? null : toPlaylist(row);
+}
+
+export async function updatePlaylistForUser(db: RepositoryDb, input: UpdatePlaylistInput): Promise<Playlist | null> {
+  const existing = await getPlaylistForUser(db, input.userId, input.playlistId);
+  if (existing === null) {
+    return null;
+  }
+
+  await db
+    .update(schema.playlist)
+    .set({
+      name: input.name,
+      description: input.description ?? null,
+      sortMode: input.sortMode ?? existing.sortMode,
+      position: input.position ?? existing.position,
+    })
+    .where(and(eq(schema.playlist.userId, input.userId), eq(schema.playlist.id, input.playlistId)));
+
+  return getPlaylistForUser(db, input.userId, input.playlistId);
+}
+
+export async function deletePlaylistForUser(db: RepositoryDb, userId: string, playlistId: string): Promise<boolean> {
+  const playlist = await getPlaylistForUser(db, userId, playlistId);
+  if (playlist === null) {
+    return false;
+  }
+
+  await db.delete(schema.playlist).where(and(eq(schema.playlist.userId, userId), eq(schema.playlist.id, playlistId)));
+  return true;
+}
+
+export async function getNextPlaylistItemPositionForUserPlaylist(
+  db: RepositoryDb,
+  userId: string,
+  playlistId: string,
+): Promise<number | null> {
+  const playlist = await getPlaylistForUser(db, userId, playlistId);
+  if (playlist === null) {
+    return null;
+  }
+
+  const rows = await db.query.playlistItem.findMany({
+    where: and(eq(schema.playlistItem.userId, userId), eq(schema.playlistItem.playlistId, playlistId)),
+    orderBy: (playlistItem, { desc }) => [desc(playlistItem.position)],
+    limit: 1,
+  });
+  const lastItem = rows.at(0);
+
+  return lastItem === undefined ? 0 : lastItem.position + 10;
 }
 
 export async function addPlaylistItem(db: RepositoryDb, input: AddPlaylistItemInput): Promise<PlaylistItem> {
@@ -232,6 +454,110 @@ export async function listPlaylistItemsForUserPlaylist(
   return rows.map(toPlaylistItem);
 }
 
+export async function listPlaylistItemsWithContentForUserPlaylist(
+  db: RepositoryDb,
+  userId: string,
+  playlistId: string,
+): Promise<readonly PlaylistItemWithContent[]> {
+  const rows = await db
+    .select({
+      playlistItem: schema.playlistItem,
+      contentItem: schema.contentItem,
+      creator: schema.creator,
+    })
+    .from(schema.playlistItem)
+    .innerJoin(schema.contentItem, eq(schema.playlistItem.contentItemId, schema.contentItem.id))
+    .innerJoin(schema.creator, eq(schema.contentItem.creatorId, schema.creator.id))
+    .where(and(eq(schema.playlistItem.userId, userId), eq(schema.playlistItem.playlistId, playlistId)))
+    .orderBy(asc(schema.playlistItem.position), asc(schema.playlistItem.addedAt));
+
+  return rows.map((row) => ({
+    ...toPlaylistItem(row.playlistItem),
+    content: {
+      ...toCatalogContentItem(row.contentItem),
+      creator: toCatalogCreatorSummary(row.creator),
+    },
+  }));
+}
+
+export async function removePlaylistItemForUser(
+  db: RepositoryDb,
+  userId: string,
+  playlistId: string,
+  playlistItemId: string,
+): Promise<boolean> {
+  const row = await db.query.playlistItem.findFirst({
+    where: and(
+      eq(schema.playlistItem.userId, userId),
+      eq(schema.playlistItem.playlistId, playlistId),
+      eq(schema.playlistItem.id, playlistItemId),
+    ),
+  });
+  if (row === undefined) {
+    return false;
+  }
+
+  await db
+    .delete(schema.playlistItem)
+    .where(
+      and(
+        eq(schema.playlistItem.userId, userId),
+        eq(schema.playlistItem.playlistId, playlistId),
+        eq(schema.playlistItem.id, playlistItemId),
+      ),
+    );
+  return true;
+}
+
+export async function reorderPlaylistItemsForUser(
+  db: RepositoryDb,
+  input: ReorderPlaylistItemsInput,
+): Promise<readonly PlaylistItemWithContent[] | null> {
+  const playlist = await getPlaylistForUser(db, input.userId, input.playlistId);
+  if (playlist === null) {
+    return null;
+  }
+
+  const existingItems = await listPlaylistItemsForUserPlaylist(db, input.userId, input.playlistId);
+  if (existingItems.length !== input.playlistItemIds.length) {
+    return null;
+  }
+
+  const existingIds = new Set(existingItems.map((item) => item.id));
+  const requestedIds = new Set(input.playlistItemIds);
+  if (existingIds.size !== requestedIds.size || input.playlistItemIds.some((id) => !existingIds.has(id))) {
+    return null;
+  }
+
+  for (const [index, playlistItemId] of input.playlistItemIds.entries()) {
+    await db
+      .update(schema.playlistItem)
+      .set({ position: -1_000_000 - index })
+      .where(
+        and(
+          eq(schema.playlistItem.userId, input.userId),
+          eq(schema.playlistItem.playlistId, input.playlistId),
+          eq(schema.playlistItem.id, playlistItemId),
+        ),
+      );
+  }
+
+  for (const [index, playlistItemId] of input.playlistItemIds.entries()) {
+    await db
+      .update(schema.playlistItem)
+      .set({ position: index * 10 })
+      .where(
+        and(
+          eq(schema.playlistItem.userId, input.userId),
+          eq(schema.playlistItem.playlistId, input.playlistId),
+          eq(schema.playlistItem.id, playlistItemId),
+        ),
+      );
+  }
+
+  return listPlaylistItemsWithContentForUserPlaylist(db, input.userId, input.playlistId);
+}
+
 export async function saveUserSetting(db: RepositoryDb, input: SaveUserSettingInput): Promise<UserSetting> {
   const id = crypto.randomUUID();
 
@@ -259,6 +585,20 @@ export async function listUserSettingsForUser(db: RepositoryDb, userId: string):
   });
 
   return rows.map(toUserSetting);
+}
+
+export async function deleteUserSettingForUser(db: RepositoryDb, userId: string, key: string): Promise<boolean> {
+  const existing = await db.query.userSetting.findFirst({
+    where: and(eq(schema.userSetting.userId, userId), eq(schema.userSetting.key, key)),
+  });
+
+  if (existing === undefined) {
+    return false;
+  }
+
+  await db.delete(schema.userSetting).where(and(eq(schema.userSetting.userId, userId), eq(schema.userSetting.key, key)));
+
+  return true;
 }
 
 export async function findOrCreateMigrationRun(
@@ -366,12 +706,42 @@ function toUserSubscription(row: typeof schema.subscription.$inferSelect): UserS
   };
 }
 
+function toCatalogCreatorSummary(row: typeof schema.creator.$inferSelect): UserSubscriptionWithCreator["creator"] {
+  return {
+    id: row.id,
+    sourceType: row.sourceType,
+    sourceExternalId: row.sourceExternalId,
+    displayName: row.displayName,
+    imageUrl: row.imageUrl,
+    canonicalUrl: row.canonicalUrl,
+  };
+}
+
 function toUserContentStatus(row: typeof schema.contentStatus.$inferSelect): UserContentStatus {
   return {
     id: row.id,
     userId: row.userId,
     contentItemId: row.contentItemId,
     status: row.status,
+    metadataJson: row.metadataJson,
+  };
+}
+
+function toCatalogContentItem(
+  row: typeof schema.contentItem.$inferSelect,
+): Omit<UserContentStatusWithContent["content"], "creator"> {
+  return {
+    id: row.id,
+    creatorId: row.creatorId,
+    sourceType: row.sourceType,
+    sourceExternalId: row.sourceExternalId,
+    title: row.title,
+    description: row.description,
+    publishedAt: row.publishedAt,
+    contentType: row.contentType,
+    durationSeconds: row.durationSeconds,
+    thumbnailUrl: row.thumbnailUrl,
+    canonicalUrl: row.canonicalUrl,
     metadataJson: row.metadataJson,
   };
 }
