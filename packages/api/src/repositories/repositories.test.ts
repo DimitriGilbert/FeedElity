@@ -346,6 +346,7 @@ describe("catalog and overlay repositories", () => {
       status: "partial",
       requestedFeedId: feed.id,
       feedsRequestedCount: 1,
+      feedsSkippedCount: 0,
       feedsSucceededCount: 0,
       feedsFailedCount: 1,
       errorSummaryJson: JSON.stringify([{ feedId: feed.id, message: "timeout" }]),
@@ -366,7 +367,7 @@ describe("catalog and overlay repositories", () => {
     const refreshFeedResults = await listRefreshFeedResultsForRun(testDatabase.db, refreshRun.id);
 
     expect(refreshRuns).toHaveLength(1);
-    expect(refreshRuns[0]).toMatchObject({ id: refreshRun.id, force: true, status: "partial" });
+    expect(refreshRuns[0]).toMatchObject({ id: refreshRun.id, force: true, status: "partial", feedsSkippedCount: 0 });
     expect(duplicateRefreshFeedResult).toEqual(refreshFeedResult);
     expect(refreshFeedResults).toHaveLength(1);
     expect(refreshFeedResults[0]).toMatchObject({ refreshRunId: refreshRun.id, feedId: feed.id, status: "failed" });
@@ -483,6 +484,7 @@ const schemaStatements = [
     requested_creator_id TEXT REFERENCES creator(id) ON DELETE SET NULL,
     requested_feed_id TEXT REFERENCES feed(id) ON DELETE SET NULL,
     feeds_requested_count INTEGER NOT NULL DEFAULT 0,
+    feeds_skipped_count INTEGER NOT NULL DEFAULT 0,
     feeds_succeeded_count INTEGER NOT NULL DEFAULT 0,
     feeds_failed_count INTEGER NOT NULL DEFAULT 0,
     items_discovered_count INTEGER NOT NULL DEFAULT 0,

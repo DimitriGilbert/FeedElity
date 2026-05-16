@@ -8,6 +8,10 @@ export type RefreshScope = "all" | "creator" | "feed";
 
 export type RefreshStatus = "running" | "succeeded" | "failed" | "partial";
 
+export type RefreshFeedReportStatus = RefreshStatus | "skipped";
+
+export type RefreshFeedSkipReason = "cadence-disabled" | "not-due";
+
 export interface SourceIdentity {
   readonly sourceType: SourceType;
   readonly sourceExternalId: string;
@@ -29,6 +33,8 @@ export interface CatalogFeed extends SourceIdentity {
   readonly title: string | null;
   readonly description: string | null;
   readonly refreshCadenceSeconds: number | null;
+  readonly lastNormalRefreshAt: Date | null;
+  readonly nextRefreshAfter: Date | null;
   readonly adapterMetadataJson: string | null;
 }
 
@@ -72,6 +78,7 @@ export interface RefreshRun {
   readonly requestedCreatorId: string | null;
   readonly requestedFeedId: string | null;
   readonly feedsRequestedCount: number;
+  readonly feedsSkippedCount: number;
   readonly feedsSucceededCount: number;
   readonly feedsFailedCount: number;
   readonly itemsDiscoveredCount: number;
@@ -80,6 +87,41 @@ export interface RefreshRun {
   readonly startedAt: Date;
   readonly completedAt: Date | null;
   readonly errorSummaryJson: string | null;
+}
+
+export interface RefreshFeedErrorSummary {
+  readonly feedId: string;
+  readonly code: string;
+  readonly message: string;
+}
+
+export interface RefreshFeedReport {
+  readonly feedId: string;
+  readonly status: RefreshFeedReportStatus;
+  readonly skipReason: RefreshFeedSkipReason | null;
+  readonly itemsDiscoveredCount: number;
+  readonly itemsCreatedCount: number;
+  readonly itemsUpdatedCount: number;
+  readonly error: RefreshFeedErrorSummary | null;
+  readonly startedAt: Date | null;
+  readonly completedAt: Date | null;
+}
+
+export interface RefreshRunReport {
+  readonly runId: string;
+  readonly scope: RefreshScope;
+  readonly force: boolean;
+  readonly status: RefreshStatus;
+  readonly selectedFeedCount: number;
+  readonly skippedFeedCount: number;
+  readonly feedsSucceededCount: number;
+  readonly feedsFailedCount: number;
+  readonly itemsDiscoveredCount: number;
+  readonly itemsCreatedCount: number;
+  readonly itemsUpdatedCount: number;
+  readonly startedAt: Date;
+  readonly completedAt: Date | null;
+  readonly feeds: readonly RefreshFeedReport[];
 }
 
 export interface RefreshFeedResult {

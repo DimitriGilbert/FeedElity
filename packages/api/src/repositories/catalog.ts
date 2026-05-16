@@ -77,6 +77,7 @@ export interface CreateRefreshRunInput {
   readonly requestedCreatorId?: string | null;
   readonly requestedFeedId?: string | null;
   readonly feedsRequestedCount?: number;
+  readonly feedsSkippedCount?: number;
   readonly feedsSucceededCount?: number;
   readonly feedsFailedCount?: number;
   readonly itemsDiscoveredCount?: number;
@@ -97,6 +98,26 @@ export interface RecordRefreshFeedResultInput {
   readonly startedAt?: Date;
   readonly completedAt?: Date | null;
   readonly errorSummaryJson?: string | null;
+}
+
+export interface CompleteRefreshRunInput {
+  readonly id: string;
+  readonly status: RefreshStatus;
+  readonly feedsRequestedCount: number;
+  readonly feedsSkippedCount: number;
+  readonly feedsSucceededCount: number;
+  readonly feedsFailedCount: number;
+  readonly itemsDiscoveredCount: number;
+  readonly itemsCreatedCount: number;
+  readonly itemsUpdatedCount?: number;
+  readonly completedAt: Date;
+  readonly errorSummaryJson?: string | null;
+}
+
+export interface UpdateFeedRefreshMetadataInput {
+  readonly feedId: string;
+  readonly refreshedAt: Date;
+  readonly nextRefreshAfter: Date | null;
 }
 
 export async function findOrCreateCreator(db: RepositoryDb, input: SaveCreatorInput): Promise<CatalogCreator> {
@@ -295,6 +316,23 @@ export async function listCatalogContentItems(db: RepositoryDb): Promise<readonl
   return rows.map(toCatalogContentItem);
 }
 
+export async function listCatalogFeeds(db: RepositoryDb): Promise<readonly CatalogFeed[]> {
+  const rows = await db.query.feed.findMany({
+    orderBy: (feed, { asc }) => [asc(feed.createdAt)],
+  });
+
+  return rows.map(toCatalogFeed);
+}
+
+export async function listCatalogFeedsForCreator(db: RepositoryDb, creatorId: string): Promise<readonly CatalogFeed[]> {
+  const rows = await db.query.feed.findMany({
+    where: eq(schema.feed.creatorId, creatorId),
+    orderBy: (feed, { asc }) => [asc(feed.createdAt)],
+  });
+
+  return rows.map(toCatalogFeed);
+}
+
 export async function createRefreshRun(db: RepositoryDb, input: CreateRefreshRunInput): Promise<RefreshRun> {
   const id = crypto.randomUUID();
 
@@ -306,6 +344,7 @@ export async function createRefreshRun(db: RepositoryDb, input: CreateRefreshRun
     requestedCreatorId: input.requestedCreatorId ?? null,
     requestedFeedId: input.requestedFeedId ?? null,
     feedsRequestedCount: input.feedsRequestedCount ?? 0,
+    feedsSkippedCount: input.feedsSkippedCount ?? 0,
     feedsSucceededCount: input.feedsSucceededCount ?? 0,
     feedsFailedCount: input.feedsFailedCount ?? 0,
     itemsDiscoveredCount: input.itemsDiscoveredCount ?? 0,
@@ -329,6 +368,49 @@ export async function listRefreshRuns(db: RepositoryDb): Promise<readonly Refres
   });
 
   return rows.map(toRefreshRun);
+}
+
+export async function completeRefreshRun(db: RepositoryDb, input: CompleteRefreshRunInput): Promise<RefreshRun> {
+  await db
+    .update(schema.refreshRun)
+    .set({
+      status: input.status,
+      feedsRequestedCount: input.feedsRequestedCount,
+      feedsSkippedCount: input.feedsSkippedCount,
+      feedsSucceededCount: input.feedsSucceededCount,
+      feedsFailedCount: input.feedsFailedCount,
+      itemsDiscoveredCount: input.itemsDiscoveredCount,
+      itemsCreatedCount: input.itemsCreatedCount,
+      itemsUpdatedCount: input.itemsUpdatedCount ?? 0,
+      completedAt: input.completedAt,
+      errorSummaryJson: input.errorSummaryJson ?? null,
+    })
+    .where(eq(schema.refreshRun.id, input.id));
+
+  const row = await db.query.refreshRun.findFirst({ where: eq(schema.refreshRun.id, input.id) });
+  if (row === undefined) {
+    throw new Error("Refresh run completion did not produce a readable catalog record.");
+  }
+  return toRefreshRun(row);
+}
+
+export async function updateFeedRefreshMetadata(
+  db: RepositoryDb,
+  input: UpdateFeedRefreshMetadataInput,
+): Promise<CatalogFeed> {
+  await db
+    .update(schema.feed)
+    .set({
+      lastNormalRefreshAt: input.refreshedAt,
+      nextRefreshAfter: input.nextRefreshAfter,
+    })
+    .where(eq(schema.feed.id, input.feedId));
+
+  const row = await db.query.feed.findFirst({ where: eq(schema.feed.id, input.feedId) });
+  if (row === undefined) {
+    throw new Error("Feed refresh metadata update did not produce a readable catalog record.");
+  }
+  return toCatalogFeed(row);
 }
 
 export async function recordRefreshFeedResult(
@@ -400,6 +482,8 @@ function toCatalogFeed(row: typeof schema.feed.$inferSelect): CatalogFeed {
     title: row.title,
     description: row.description,
     refreshCadenceSeconds: row.refreshCadenceSeconds,
+    lastNormalRefreshAt: row.lastNormalRefreshAt,
+    nextRefreshAfter: row.nextRefreshAfter,
     adapterMetadataJson: row.adapterMetadataJson,
   };
 }
@@ -444,6 +528,7 @@ function toRefreshRun(row: typeof schema.refreshRun.$inferSelect): RefreshRun {
     requestedCreatorId: row.requestedCreatorId,
     requestedFeedId: row.requestedFeedId,
     feedsRequestedCount: row.feedsRequestedCount,
+    feedsSkippedCount: row.feedsSkippedCount,
     feedsSucceededCount: row.feedsSucceededCount,
     feedsFailedCount: row.feedsFailedCount,
     itemsDiscoveredCount: row.itemsDiscoveredCount,

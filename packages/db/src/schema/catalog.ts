@@ -154,6 +154,7 @@ export const refreshRun = sqliteTable(
     requestedCreatorId: text("requested_creator_id").references(() => creator.id, { onDelete: "set null" }),
     requestedFeedId: text("requested_feed_id").references(() => feed.id, { onDelete: "set null" }),
     feedsRequestedCount: integer("feeds_requested_count").default(0).notNull(),
+    feedsSkippedCount: integer("feeds_skipped_count").default(0).notNull(),
     feedsSucceededCount: integer("feeds_succeeded_count").default(0).notNull(),
     feedsFailedCount: integer("feeds_failed_count").default(0).notNull(),
     itemsDiscoveredCount: integer("items_discovered_count").default(0).notNull(),
