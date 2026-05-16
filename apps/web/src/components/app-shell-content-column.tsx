@@ -1,17 +1,15 @@
 import type {
   CatalogContentListItem,
-  CatalogCreator,
   CatalogFeed,
   Playlist,
   SourceType,
   UserContentStatus,
-  UserSubscriptionWithCreator,
 } from "@FeedElity/api";
 import { For, Match, Show, Switch, createMemo, createResource, createSignal, untrack } from "solid-js";
 
 import { client } from "@/utils/orpc";
 
-import { ContentListItemRow, type ContentStatusFlags } from "./app-shell-rows";
+import { ContentListItemRow } from "./app-shell-rows";
 import {
   contentCatalogFiltersLabel,
   contentColumnClass,
@@ -27,17 +25,24 @@ import {
   contentViewModeHistoryId,
   contentViewModePlayedId,
   contentViewModeSubscribedId,
+  emptyAppendedPageState,
+  formatError,
+  formatContentDuration,
+  formatContentPublishedAt,
   formatSourceLabel,
   mergeUniqueContentItemsForDisplay,
+  pageHasMoreForKey,
+  pageItemsForKey,
   showsCatalogFilters,
   toContentListInput,
+  toContentStatusFlags,
+  type AppendedPageState,
+  type BrowsableCreator,
   type ContentListInput,
   type ContentViewMode,
   type ReaderDensity,
   type ShellMode,
 } from "./app-shell.contract";
-
-type BrowsableCreator = CatalogCreator | UserSubscriptionWithCreator["creator"];
 
 type ContentItemsResourceMode = "catalog" | "subscribed" | "favorites" | "history-opened" | "played";
 
@@ -48,56 +53,6 @@ const sourceFilterOptions: readonly SourceType[] = ["youtube", "odysee", "peertu
 const emptyCatalogContentItems: readonly CatalogContentListItem[] = [];
 
 const emptyPlaylists: readonly Playlist[] = [];
-
-interface AppendedPageState<TItem> {
-  readonly key: string;
-  readonly items: readonly TItem[];
-  readonly hasMore: boolean;
-}
-
-function emptyAppendedPageState<TItem>(): AppendedPageState<TItem> {
-  return { key: "", items: [], hasMore: false };
-}
-
-function pageItemsForKey<TItem>(state: AppendedPageState<TItem>, key: string): readonly TItem[] {
-  return state.key === key ? state.items : [];
-}
-
-function pageHasMoreForKey<TItem>(state: AppendedPageState<TItem>, key: string, firstPageLength: number, pageSize: number): boolean {
-  return state.key === key ? state.hasMore : firstPageLength === pageSize;
-}
-
-function formatError(error: unknown): string {
-  if (error instanceof Error && error.message.trim().length > 0) {
-    return error.message;
-  }
-
-  return "Catalog request failed.";
-}
-
-function formatPublishedAt(publishedAt: Date | null): string {
-  if (publishedAt === null) {
-    return "Undated";
-  }
-
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(publishedAt);
-}
-
-function formatDuration(durationSeconds: number | null): string {
-  if (durationSeconds === null) {
-    return "Video";
-  }
-
-  const hours = Math.floor(durationSeconds / 3_600);
-  const minutes = Math.floor((durationSeconds % 3_600) / 60);
-  const seconds = durationSeconds % 60;
-
-  if (hours > 0) {
-    return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
-  }
-
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-}
 
 function toSourceFilterValue(value: string): SourceType | null {
   return sourceFilterOptions.find((sourceType) => sourceType === value) ?? null;
@@ -126,26 +81,6 @@ function appendUniqueContentItems(
   }
 
   return [...contentItemById.values()];
-}
-
-function toContentStatusFlags(statuses: readonly UserContentStatus[], contentItemId: string): ContentStatusFlags {
-  let opened = false;
-  let played = false;
-
-  for (const status of statuses) {
-    if (status.contentItemId !== contentItemId) {
-      continue;
-    }
-
-    if (status.status === "opened") {
-      opened = true;
-    }
-    if (status.status === "played") {
-      played = true;
-    }
-  }
-
-  return { opened, played };
 }
 
 async function listSubscribedLibraryContentItems(input: ContentListInput): Promise<readonly CatalogContentListItem[]> {
@@ -633,8 +568,8 @@ export function ContentListColumn(props: ContentListColumnProps) {
                         readerDensity={props.readerDensity()}
                         targetPlaylistId={listTargetPlaylistId()}
                         formatError={formatError}
-                        formatPublishedAt={formatPublishedAt}
-                        formatDuration={formatDuration}
+                        formatPublishedAt={formatContentPublishedAt}
+                        formatDuration={formatContentDuration}
                         onSelectContent={props.onSelectContent}
                         onMarkOpened={markOpened}
                         onMarkPlayed={markPlayed}

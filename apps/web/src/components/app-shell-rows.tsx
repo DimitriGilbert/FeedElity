@@ -1,16 +1,9 @@
-import type { CatalogContentListItem, CatalogCreator, CatalogFeed, PlaylistItemWithContent, UserSubscriptionWithCreator } from "@FeedElity/api";
+import type { CatalogContentListItem, CatalogFeed, PlaylistItemWithContent } from "@FeedElity/api";
 import type { JSX } from "solid-js";
 import { Show, createMemo, createSignal } from "solid-js";
 
-import type { ReaderDensity } from "./app-shell.contract";
+import type { BrowsableCreator, ContentStatusFlags, ReaderDensity } from "./app-shell.contract";
 import { SourceIconBadge } from "./source-indicator";
-
-type BrowsableCreator = CatalogCreator | UserSubscriptionWithCreator["creator"];
-
-export interface ContentStatusFlags {
-  readonly opened: boolean;
-  readonly played: boolean;
-}
 
 function readerDensityPaddingClass(readerDensity: ReaderDensity): string {
   return readerDensity === "compact" ? "p-1.5" : "p-2";

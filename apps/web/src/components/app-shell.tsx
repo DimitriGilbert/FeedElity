@@ -1,6 +1,5 @@
 import type {
   CatalogContentListItem,
-  CatalogCreator,
   CatalogFeed,
   SourceType,
   UserContentStatus,
@@ -25,8 +24,12 @@ import {
   creatorListLimit,
   creatorSearchInputId,
   creatorSourceFilterId,
+  emptyAppendedPageState,
   feedListLimit,
+  formatError,
   formatSourceLabel,
+  pageHasMoreForKey,
+  pageItemsForKey,
   shellGridClass,
   shellRootClass,
   sourceActionsRegionClass,
@@ -38,6 +41,8 @@ import {
   toFeedListInput,
   toCreatorListInput,
   toReaderDensityFromSettings,
+  type AppendedPageState,
+  type BrowsableCreator,
   type CreatorListInput,
   type FeedListInput,
   type ReaderDensity,
@@ -118,8 +123,6 @@ const sourceFilterOptions: readonly SourceType[] = ["youtube", "odysee", "peertu
 
 type SubscriptionAction = "subscribe" | "unsubscribe";
 
-type BrowsableCreator = CatalogCreator | UserSubscriptionWithCreator["creator"];
-
 const emptyCatalogFeeds: readonly CatalogFeed[] = [];
 
 const emptyBrowsableCreators: readonly BrowsableCreator[] = [];
@@ -129,32 +132,6 @@ const emptySubscriptions: readonly UserSubscriptionWithCreator[] = [];
 const emptyUserContentStatuses: readonly UserContentStatus[] = [];
 
 const emptyUserSettings: readonly UserSetting[] = [];
-
-interface AppendedPageState<TItem> {
-  readonly key: string;
-  readonly items: readonly TItem[];
-  readonly hasMore: boolean;
-}
-
-function emptyAppendedPageState<TItem>(): AppendedPageState<TItem> {
-  return { key: "", items: [], hasMore: false };
-}
-
-function pageItemsForKey<TItem>(state: AppendedPageState<TItem>, key: string): readonly TItem[] {
-  return state.key === key ? state.items : [];
-}
-
-function pageHasMoreForKey<TItem>(state: AppendedPageState<TItem>, key: string, firstPageLength: number, pageSize: number): boolean {
-  return state.key === key ? state.hasMore : firstPageLength === pageSize;
-}
-
-function formatError(error: unknown): string {
-  if (error instanceof Error && error.message.trim().length > 0) {
-    return error.message;
-  }
-
-  return "Catalog request failed.";
-}
 
 function toSourceFilterValue(value: string): SourceType | null {
   return sourceFilterOptions.find((sourceType) => sourceType === value) ?? null;

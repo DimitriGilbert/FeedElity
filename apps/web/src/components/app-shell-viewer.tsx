@@ -3,12 +3,17 @@ import { For, Match, Show, Switch, createMemo, createResource, createSignal } fr
 
 import { client } from "@/utils/orpc";
 
-import { FeedRow, type ContentStatusFlags } from "./app-shell-rows";
+import { FeedRow } from "./app-shell-rows";
 import {
+  formatError,
+  formatContentDuration,
+  formatContentPublishedAt,
   formatSourceLabel,
+  toContentStatusFlags,
   toPlayableSources,
   viewerColumnClass,
   viewerScrollRegionClass,
+  type ContentStatusFlags,
   type PlayableSource,
 } from "./app-shell.contract";
 
@@ -19,58 +24,6 @@ const emptyCatalogContentSources: readonly CatalogContentSource[] = [];
 const emptyCatalogFeeds: readonly CatalogFeed[] = [];
 
 const emptyPlaylists: readonly Playlist[] = [];
-
-function formatError(error: unknown): string {
-  if (error instanceof Error && error.message.trim().length > 0) {
-    return error.message;
-  }
-
-  return "Catalog request failed.";
-}
-
-function formatPublishedAt(publishedAt: Date | null): string {
-  if (publishedAt === null) {
-    return "Undated";
-  }
-
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(publishedAt);
-}
-
-function formatDuration(durationSeconds: number | null): string {
-  if (durationSeconds === null) {
-    return "Video";
-  }
-
-  const hours = Math.floor(durationSeconds / 3_600);
-  const minutes = Math.floor((durationSeconds % 3_600) / 60);
-  const seconds = durationSeconds % 60;
-
-  if (hours > 0) {
-    return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
-  }
-
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-}
-
-function toContentStatusFlags(statuses: readonly UserContentStatus[], contentItemId: string): ContentStatusFlags {
-  let opened = false;
-  let played = false;
-
-  for (const status of statuses) {
-    if (status.contentItemId !== contentItemId) {
-      continue;
-    }
-
-    if (status.status === "opened") {
-      opened = true;
-    }
-    if (status.status === "played") {
-      played = true;
-    }
-  }
-
-  return { opened, played };
-}
 
 export interface SelectedContentViewerProps {
   readonly isAuthenticated: () => boolean;
@@ -514,7 +467,7 @@ function ContentDetailBody(props: ContentDetailBodyProps) {
       <div>
         <h3 class="text-xl font-semibold tracking-tight text-foreground">{props.detail.title}</h3>
         <p class="mt-2 text-sm text-muted-foreground">
-          {props.detail.creator.displayName} · {formatPublishedAt(props.detail.publishedAt)} · {formatDuration(props.detail.durationSeconds)}
+          {props.detail.creator.displayName} · {formatContentPublishedAt(props.detail.publishedAt)} · {formatContentDuration(props.detail.durationSeconds)}
         </p>
       </div>
       <Show when={props.detail.description}>

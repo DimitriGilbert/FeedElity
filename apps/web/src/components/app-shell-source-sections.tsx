@@ -2,7 +2,6 @@ import type {
   AddSourceResult,
   AddSourceValue,
   CatalogContentListItem,
-  CatalogCreator,
   CatalogFeed,
   IngestionError,
   Playlist,
@@ -11,7 +10,6 @@ import type {
   RefreshFeedResultWithFeed,
   RefreshRunReport,
   UserSetting,
-  UserSubscriptionWithCreator,
 } from "@FeedElity/api";
 import { For, Match, Show, Switch, createMemo, createResource, createSignal } from "solid-js";
 
@@ -20,6 +18,7 @@ import { client } from "@/utils/orpc";
 import {
   addSourceHelpId,
   addSourceInputId,
+  formatError,
   formatRefreshReportSummary,
   formatRefreshRunSummary,
   formatSettingValue,
@@ -36,11 +35,10 @@ import {
   settingValueInputId,
   toReaderDensityFromSettings,
   toRefreshStatusResourceKey,
+  type BrowsableCreator,
   type ReaderDensity,
 } from "./app-shell.contract";
 import { PlaylistItemRow } from "./app-shell-rows";
-
-type BrowsableCreator = CatalogCreator | UserSubscriptionWithCreator["creator"];
 
 type SubscriptionAction = "subscribe" | "unsubscribe";
 
@@ -60,14 +58,6 @@ const readerDensityOptions: readonly { readonly value: ReaderDensity; readonly l
   { value: "comfortable", label: "Comfortable", helper: "App default; roomier rows for scanning thumbnails and actions." },
   { value: "compact", label: "Compact", helper: "Denser rows for faster source and video scanning." },
 ];
-
-function formatError(error: unknown): string {
-  if (error instanceof Error && error.message.trim().length > 0) {
-    return error.message;
-  }
-
-  return "Catalog request failed.";
-}
 
 function formatDateTime(value: Date | null): string {
   if (value === null) {

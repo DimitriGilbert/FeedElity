@@ -5,7 +5,9 @@ import type {
   RefreshRun,
   RefreshRunReport,
   SourceType,
+  UserContentStatus,
   UserSetting,
+  UserSubscriptionWithCreator,
 } from "@FeedElity/api";
 
 export interface ShellColumnDefinition {
@@ -42,6 +44,19 @@ export interface ContentListInput {
 export type ShellMode = "catalog" | "library";
 
 export type ReaderDensity = "comfortable" | "compact";
+
+export type BrowsableCreator = CatalogCreator | UserSubscriptionWithCreator["creator"];
+
+export interface ContentStatusFlags {
+  readonly opened: boolean;
+  readonly played: boolean;
+}
+
+export interface AppendedPageState<TItem> {
+  readonly key: string;
+  readonly items: readonly TItem[];
+  readonly hasMore: boolean;
+}
 
 export interface ShellSelectionState {
   readonly selectedCreatorId: string | null;
@@ -236,6 +251,70 @@ export function mergeUniqueContentItemsForDisplay(
   }
 
   return [...contentById.values()].sort(compareContentItemsForDisplay);
+}
+
+export function emptyAppendedPageState<TItem>(): AppendedPageState<TItem> {
+  return { key: "", items: [], hasMore: false };
+}
+
+export function pageItemsForKey<TItem>(state: AppendedPageState<TItem>, key: string): readonly TItem[] {
+  return state.key === key ? state.items : [];
+}
+
+export function pageHasMoreForKey<TItem>(state: AppendedPageState<TItem>, key: string, firstPageLength: number, pageSize: number): boolean {
+  return state.key === key ? state.hasMore : firstPageLength === pageSize;
+}
+
+export function formatError(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return "Catalog request failed.";
+}
+
+export function formatContentPublishedAt(publishedAt: Date | null): string {
+  if (publishedAt === null) {
+    return "Undated";
+  }
+
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(publishedAt);
+}
+
+export function formatContentDuration(durationSeconds: number | null): string {
+  if (durationSeconds === null) {
+    return "Video";
+  }
+
+  const hours = Math.floor(durationSeconds / 3_600);
+  const minutes = Math.floor((durationSeconds % 3_600) / 60);
+  const seconds = durationSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+  }
+
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+export function toContentStatusFlags(statuses: readonly UserContentStatus[], contentItemId: string): ContentStatusFlags {
+  let opened = false;
+  let played = false;
+
+  for (const status of statuses) {
+    if (status.contentItemId !== contentItemId) {
+      continue;
+    }
+
+    if (status.status === "opened") {
+      opened = true;
+    }
+    if (status.status === "played") {
+      played = true;
+    }
+  }
+
+  return { opened, played };
 }
 
 function compareContentItemsForDisplay(first: CatalogContentListItem, second: CatalogContentListItem): number {
