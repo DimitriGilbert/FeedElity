@@ -10,7 +10,8 @@
     }
   },
   "scripts": {
-    "check-types": "tsc --noEmit"
+    "check-types": "tsc --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
     "@FeedElity/auth": "workspace:*",
@@ -26,6 +27,7 @@
   },
   "devDependencies": {
     "@FeedElity/config": "workspace:*",
+    "@libsql/client": "0.15.15",
     "hono": "catalog:",
     "typescript": "catalog:"
   }

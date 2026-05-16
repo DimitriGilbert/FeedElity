@@ -2,6 +2,11 @@ import { ORPCError, os } from "@orpc/server";
 
 import type { Context } from "./context";
 
+export type * from "./domain/catalog";
+export type * from "./domain/overlays";
+export * from "./repositories/catalog";
+export * from "./repositories/overlays";
+
 export const o = os.$context<Context>();
 
 export const publicProcedure = o;
