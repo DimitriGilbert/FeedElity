@@ -98,6 +98,20 @@ export interface RecordMigrationMappingInput {
   readonly metadataJson?: string | null;
 }
 
+export interface UpdateMigrationRunInput {
+  readonly id: string;
+  readonly status: MigrationRunStatus;
+  readonly completedAt?: Date | null;
+  readonly usersImportedCount?: number;
+  readonly creatorsImportedCount?: number;
+  readonly feedsImportedCount?: number;
+  readonly contentItemsImportedCount?: number;
+  readonly subscriptionsImportedCount?: number;
+  readonly playlistsImportedCount?: number;
+  readonly warningsJson?: string | null;
+  readonly failuresJson?: string | null;
+}
+
 export async function findOrCreateSubscription(
   db: RepositoryDb,
   input: SaveSubscriptionInput,
@@ -642,6 +656,30 @@ export async function listMigrationRuns(db: RepositoryDb): Promise<readonly Migr
   });
 
   return rows.map(toMigrationRun);
+}
+
+export async function updateMigrationRun(db: RepositoryDb, input: UpdateMigrationRunInput): Promise<MigrationRun> {
+  await db
+    .update(schema.migrationRun)
+    .set({
+      status: input.status,
+      completedAt: input.completedAt,
+      usersImportedCount: input.usersImportedCount,
+      creatorsImportedCount: input.creatorsImportedCount,
+      feedsImportedCount: input.feedsImportedCount,
+      contentItemsImportedCount: input.contentItemsImportedCount,
+      subscriptionsImportedCount: input.subscriptionsImportedCount,
+      playlistsImportedCount: input.playlistsImportedCount,
+      warningsJson: input.warningsJson,
+      failuresJson: input.failuresJson,
+    })
+    .where(eq(schema.migrationRun.id, input.id));
+
+  const row = await db.query.migrationRun.findFirst({ where: eq(schema.migrationRun.id, input.id) });
+  if (row === undefined) {
+    throw new Error("Migration run update did not produce a readable migration run record.");
+  }
+  return toMigrationRun(row);
 }
 
 export async function recordMigrationMapping(

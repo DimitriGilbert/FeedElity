@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import type { AuthenticatedSession } from "../context";
 import { protectedProcedure, publicProcedure } from "../index";
+import { runImportMigration } from "../migration/run-migration";
 import {
   getCatalogContentDetail,
   getCatalogContentItemById,
@@ -136,6 +137,11 @@ const settingValueInput = z.string().max(4_096);
 const saveSettingInput = z.object({
   key: settingKeyInput,
   value: settingValueInput,
+});
+
+const migrationImportInput = z.object({
+  exportData: z.unknown(),
+  sourceFilename: z.string().trim().min(1).max(255).nullable().optional(),
 });
 
 const deleteSettingInput = z.object({
@@ -376,6 +382,14 @@ export const appRouter = {
     }),
     deleteSetting: protectedProcedure.input(deleteSettingInput).handler(async ({ input, context }) => {
       return { deleted: await deleteUserSettingForUser(context.db, context.session.user.id, input.key) };
+    }),
+  },
+  migration: {
+    runImport: protectedProcedure.input(migrationImportInput).handler(({ input, context }) => {
+      return runImportMigration(context.db, {
+        exportData: input.exportData,
+        sourceFilename: input.sourceFilename,
+      });
     }),
   },
 };
