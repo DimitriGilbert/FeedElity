@@ -69,6 +69,7 @@ const changedUiSourceFiles = [
   "./app-shell-content-column.tsx",
   "./app-shell-rows.tsx",
   "./app-shell-source-sections.tsx",
+  "./app-shell-viewer.tsx",
   "./source-indicator.tsx",
   "./header.tsx",
   "./user-menu.tsx",
@@ -87,7 +88,7 @@ async function readChangedUiSource() {
 
 async function readAppShellSource() {
   const sources = await Promise.all(
-    ["./app-shell.tsx", "./app-shell-rows.tsx", "./app-shell-source-sections.tsx", "./app-shell-content-column.tsx"].map(async (filePath) => Bun.file(new URL(filePath, import.meta.url)).text()),
+    ["./app-shell.tsx", "./app-shell-rows.tsx", "./app-shell-source-sections.tsx", "./app-shell-content-column.tsx", "./app-shell-viewer.tsx"].map(async (filePath) => Bun.file(new URL(filePath, import.meta.url)).text()),
   );
 
   return sources.join("\n");
