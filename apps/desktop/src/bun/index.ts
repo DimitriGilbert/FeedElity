@@ -21,7 +21,7 @@ async function getMainViewUrl(): Promise<string> {
   }
 
   if (startedBackend.config.mode === "desktop-local") {
-    return addDesktopRuntimeQuery(`${startedBackend.config.serverUrl}/index.html`, startedBackend.config);
+    return addDesktopRuntimeQuery(`${startedBackend.config.serverUrl}/`, startedBackend.config);
   }
 
   return addDesktopRuntimeQuery("views://mainview/index.html", startedBackend.config);

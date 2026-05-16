@@ -701,13 +701,7 @@ export async function recordMigrationMapping(
       message: input.message ?? null,
       metadataJson: input.metadataJson ?? null,
     })
-    .onConflictDoNothing({
-      target: [
-        schema.migrationMapping.migrationRunId,
-        schema.migrationMapping.oldEntityType,
-        schema.migrationMapping.oldEntityId,
-      ],
-    });
+    .onConflictDoNothing();
 
   const row = await db.query.migrationMapping.findFirst({
     where: and(
@@ -716,10 +710,21 @@ export async function recordMigrationMapping(
       eq(schema.migrationMapping.oldEntityId, input.oldEntityId),
     ),
   });
-  if (row === undefined) {
+  if (row !== undefined) {
+    return toMigrationMapping(row);
+  }
+
+  const existingNewEntityRow = await db.query.migrationMapping.findFirst({
+    where: and(
+      eq(schema.migrationMapping.migrationRunId, input.migrationRunId),
+      eq(schema.migrationMapping.newEntityType, input.newEntityType),
+      eq(schema.migrationMapping.newEntityId, input.newEntityId),
+    ),
+  });
+  if (existingNewEntityRow === undefined) {
     throw new Error("Migration mapping write did not produce a readable user overlay record.");
   }
-  return toMigrationMapping(row);
+  return toMigrationMapping(existingNewEntityRow);
 }
 
 export async function listMigrationMappingsForRun(

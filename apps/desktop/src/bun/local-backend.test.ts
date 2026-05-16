@@ -174,7 +174,7 @@ describe("desktop local backend startup", () => {
 
     const response = await fetch(`${startedBackend.config.serverUrl}/`);
     expect(response.status).toBe(200);
-    expect(await response.text()).toBe("OK");
+    expect(await response.text()).toBe("<main>desktop shell</main>");
 
     const shellResponse = await fetch(`${startedBackend.config.serverUrl}/index.html`);
     expect(shellResponse.status).toBe(200);

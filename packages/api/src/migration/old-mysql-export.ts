@@ -221,7 +221,80 @@ export function buildStrapiExportFromOldMysqlRows(
   rows: OldStrapiMysqlRows,
   metadataInput: OldMysqlExportMetadataInput,
 ): StrapiExport {
+  return strapiExportSchema.parse(buildUnvalidatedStrapiExportFromOldMysqlRows(rows, metadataInput));
+}
+
+export function buildUnvalidatedStrapiExportFromOldMysqlRows(
+  rows: OldStrapiMysqlRows,
+  metadataInput: OldMysqlExportMetadataInput,
+): StrapiExport {
   validateOldMysqlRelationshipRows(rows);
+
+  const creatorOptionCreatorIndex = createRelationshipIndex(
+    "creatorOptionCreatorLinks",
+    "creator_option_id",
+    "creator_id",
+    rows.creatorOptionCreatorLinks,
+  );
+  const feedCreatorIndex = createRelationshipIndex("feedCreatorLinks", "feed_id", "creator_id", rows.feedCreatorLinks);
+  const feedOptionFeedIndex = createRelationshipIndex("feedOptionFeedLinks", "feed_option_id", "feed_id", rows.feedOptionFeedLinks);
+  const feedContentFeedIndex = createRelationshipIndex("feedContentFeedLinks", "feed_content_id", "feed_id", rows.feedContentFeedLinks);
+  const feedContentContentIndex = createRelationshipIndex(
+    "feedContentContentLinks",
+    "feed_content_id",
+    "content_id",
+    rows.feedContentContentLinks,
+  );
+  const creatorContentCreatorIndex = createRelationshipIndex(
+    "creatorContentCreatorLinks",
+    "creator_content_id",
+    "creator_id",
+    rows.creatorContentCreatorLinks,
+  );
+  const contentOptionContentIndex = createRelationshipIndex(
+    "contentOptionContentLinks",
+    "content_option_id",
+    "content_id",
+    rows.contentOptionContentLinks,
+  );
+  const subscriptionUserIndex = createRelationshipIndex("subscriptionUserLinks", "subscription_id", "user_id", rows.subscriptionUserLinks);
+  const subscriptionCreatorIndex = createRelationshipIndex(
+    "subscriptionCreatorLinks",
+    "subscription_id",
+    "creator_id",
+    rows.subscriptionCreatorLinks,
+  );
+  const subscriptionOptionSubscriptionIndex = createRelationshipIndex(
+    "subscriptionOptionSubscriptionLinks",
+    "subscription_option_id",
+    "subscription_id",
+    rows.subscriptionOptionSubscriptionLinks,
+  );
+  const subscriptionContentOptionSubscriptionIndex = createRelationshipIndex(
+    "subscriptionContentOptionSubscriptionLinks",
+    "subscription_content_option_id",
+    "subscription_id",
+    rows.subscriptionContentOptionSubscriptionLinks,
+  );
+  const subscriptionContentOptionContentIndex = createRelationshipIndex(
+    "subscriptionContentOptionContentLinks",
+    "subscription_content_option_id",
+    "content_id",
+    rows.subscriptionContentOptionContentLinks,
+  );
+  const playlistUserIndex = createRelationshipIndex("playlistUserLinks", "playlist_id", "user_id", rows.playlistUserLinks);
+  const playlistContentPlaylistIndex = createRelationshipIndex(
+    "playlistContentPlaylistLinks",
+    "playlist_content_id",
+    "playlist_id",
+    rows.playlistContentPlaylistLinks,
+  );
+  const playlistContentContentIndex = createRelationshipIndex(
+    "playlistContentContentLinks",
+    "playlist_content_id",
+    "content_id",
+    rows.playlistContentContentLinks,
+  );
 
   const exportData: StrapiExport = {
     metadata: {
@@ -242,22 +315,14 @@ export function buildStrapiExportFromOldMysqlRows(
     creatorOptions: sortByOldId(
       rows.creatorOptions.map((row) => ({
         ...mapOption(row),
-        creatorId: requiredRelatedId(
-          row.id,
-          createRelationshipIndex(
-            "creatorOptionCreatorLinks",
-            "creator_option_id",
-            "creator_id",
-            rows.creatorOptionCreatorLinks,
-          ),
-        ),
+        creatorId: requiredRelatedId(row.id, creatorOptionCreatorIndex),
       })),
     ),
     feeds: sortByOldId(
       rows.feeds.map((row) => ({
         ...auditFields(row),
         oldId: row.id,
-        creatorId: requiredRelatedId(row.id, createRelationshipIndex("feedCreatorLinks", "feed_id", "creator_id", rows.feedCreatorLinks)),
+        creatorId: requiredRelatedId(row.id, feedCreatorIndex),
         name: row.name,
         url: row.url,
         type: normalizeSourceType(row.type),
@@ -268,21 +333,15 @@ export function buildStrapiExportFromOldMysqlRows(
     feedOptions: sortByOldId(
       rows.feedOptions.map((row) => ({
         ...mapOption(row),
-        feedId: requiredRelatedId(row.id, createRelationshipIndex("feedOptionFeedLinks", "feed_option_id", "feed_id", rows.feedOptionFeedLinks)),
+        feedId: requiredRelatedId(row.id, feedOptionFeedIndex),
       })),
     ),
     feedContents: sortByOldId(
       rows.feedContents.map((row) => ({
         ...auditFields(row),
         oldId: row.id,
-        feedId: requiredRelatedId(
-          row.id,
-          createRelationshipIndex("feedContentFeedLinks", "feed_content_id", "feed_id", rows.feedContentFeedLinks),
-        ),
-        contentId: requiredRelatedId(
-          row.id,
-          createRelationshipIndex("feedContentContentLinks", "feed_content_id", "content_id", rows.feedContentContentLinks),
-        ),
+        feedId: requiredRelatedId(row.id, feedContentFeedIndex),
+        contentId: requiredRelatedId(row.id, feedContentContentIndex),
         externalId: row.external_id,
         raw: row.raw,
       })),
@@ -291,10 +350,7 @@ export function buildStrapiExportFromOldMysqlRows(
       rows.creatorContents.map((row) => ({
         ...auditFields(row),
         oldId: row.id,
-        creatorId: requiredRelatedId(
-          row.id,
-          createRelationshipIndex("creatorContentCreatorLinks", "creator_content_id", "creator_id", rows.creatorContentCreatorLinks),
-        ),
+        creatorId: requiredRelatedId(row.id, creatorContentCreatorIndex),
         title: row.title,
         type: row.type,
         publication: row.publication,
@@ -304,10 +360,7 @@ export function buildStrapiExportFromOldMysqlRows(
     contentOptions: sortByOldId(
       rows.contentOptions.map((row) => ({
         ...mapOption(row),
-        contentId: requiredRelatedId(
-          row.id,
-          createRelationshipIndex("contentOptionContentLinks", "content_option_id", "content_id", rows.contentOptionContentLinks),
-        ),
+        contentId: requiredRelatedId(row.id, contentOptionContentIndex),
         interpretedStatus: interpretStatusOption(row.name, row.value),
       })),
     ),
@@ -315,48 +368,21 @@ export function buildStrapiExportFromOldMysqlRows(
       rows.subscriptions.map((row) => ({
         ...auditFields(row),
         oldId: row.id,
-        userId: requiredRelatedId(row.id, createRelationshipIndex("subscriptionUserLinks", "subscription_id", "user_id", rows.subscriptionUserLinks)),
-        creatorId: requiredRelatedId(
-          row.id,
-          createRelationshipIndex("subscriptionCreatorLinks", "subscription_id", "creator_id", rows.subscriptionCreatorLinks),
-        ),
+        userId: requiredRelatedId(row.id, subscriptionUserIndex),
+        creatorId: requiredRelatedId(row.id, subscriptionCreatorIndex),
       })),
     ),
     subscriptionOptions: sortByOldId(
       rows.subscriptionOptions.map((row) => ({
         ...mapOption(row),
-        subscriptionId: requiredRelatedId(
-          row.id,
-          createRelationshipIndex(
-            "subscriptionOptionSubscriptionLinks",
-            "subscription_option_id",
-            "subscription_id",
-            rows.subscriptionOptionSubscriptionLinks,
-          ),
-        ),
+        subscriptionId: requiredRelatedId(row.id, subscriptionOptionSubscriptionIndex),
       })),
     ),
     subscriptionContentOptions: sortByOldId(
       rows.subscriptionContentOptions.map((row) => ({
         ...mapOption(row),
-        subscriptionId: requiredRelatedId(
-          row.id,
-          createRelationshipIndex(
-            "subscriptionContentOptionSubscriptionLinks",
-            "subscription_content_option_id",
-            "subscription_id",
-            rows.subscriptionContentOptionSubscriptionLinks,
-          ),
-        ),
-        contentId: requiredRelatedId(
-          row.id,
-          createRelationshipIndex(
-            "subscriptionContentOptionContentLinks",
-            "subscription_content_option_id",
-            "content_id",
-            rows.subscriptionContentOptionContentLinks,
-          ),
-        ),
+        subscriptionId: requiredRelatedId(row.id, subscriptionContentOptionSubscriptionIndex),
+        contentId: requiredRelatedId(row.id, subscriptionContentOptionContentIndex),
         interpretedStatus: requiredStatusOption(row.name, row.value),
       })),
     ),
@@ -364,7 +390,7 @@ export function buildStrapiExportFromOldMysqlRows(
       rows.playlists.map((row) => ({
         ...auditFields(row),
         oldId: row.id,
-        userId: requiredRelatedId(row.id, createRelationshipIndex("playlistUserLinks", "playlist_id", "user_id", rows.playlistUserLinks)),
+        userId: requiredRelatedId(row.id, playlistUserIndex),
         name: row.name,
         description: row.description,
       })),
@@ -373,21 +399,15 @@ export function buildStrapiExportFromOldMysqlRows(
       rows.playlistContents.map((row) => ({
         ...auditFields(row),
         oldId: row.id,
-        playlistId: requiredRelatedId(
-          row.id,
-          createRelationshipIndex("playlistContentPlaylistLinks", "playlist_content_id", "playlist_id", rows.playlistContentPlaylistLinks),
-        ),
-        contentId: requiredRelatedId(
-          row.id,
-          createRelationshipIndex("playlistContentContentLinks", "playlist_content_id", "content_id", rows.playlistContentContentLinks),
-        ),
+        playlistId: requiredRelatedId(row.id, playlistContentPlaylistIndex),
+        contentId: requiredRelatedId(row.id, playlistContentContentIndex),
         Added: row.Added,
         position: row.position,
       })),
     ),
   };
 
-  return strapiExportSchema.parse(exportData);
+  return exportData;
 }
 
 function mapUser(row: OldStrapiMysqlUserRow): StrapiUser {

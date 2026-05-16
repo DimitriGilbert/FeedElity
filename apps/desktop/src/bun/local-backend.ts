@@ -259,7 +259,7 @@ export async function findDesktopStaticDirectory(env: DesktopBackendEnvironment)
 }
 
 function toStaticPath(pathname: string): string | null {
-  if (pathname === "/index.html") {
+  if (pathname === "/" || pathname === "/index.html") {
     return "index.html";
   }
 
