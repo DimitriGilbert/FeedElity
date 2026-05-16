@@ -67,6 +67,7 @@ const changedUiSourceFiles = [
   "./app-shell.contract.ts",
   "./app-shell.tsx",
   "./app-shell-rows.tsx",
+  "./app-shell-source-sections.tsx",
   "./source-indicator.tsx",
   "./header.tsx",
   "./user-menu.tsx",
@@ -85,7 +86,7 @@ async function readChangedUiSource() {
 
 async function readAppShellSource() {
   const sources = await Promise.all(
-    ["./app-shell.tsx", "./app-shell-rows.tsx"].map(async (filePath) => Bun.file(new URL(filePath, import.meta.url)).text()),
+    ["./app-shell.tsx", "./app-shell-rows.tsx", "./app-shell-source-sections.tsx"].map(async (filePath) => Bun.file(new URL(filePath, import.meta.url)).text()),
   );
 
   return sources.join("\n");
@@ -99,7 +100,7 @@ test("shell exposes the required three-pane RSS reader contract", () => {
 });
 
 test("shell renders exactly three top-level pane sections", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const paneMatches = source.match(/data-shell-column=/g) ?? [];
 
   expect(paneMatches).toHaveLength(3);
@@ -110,7 +111,7 @@ test("shell renders exactly three top-level pane sections", async () => {
 });
 
 test("shell panes use the base responsive column classes without mobile pane state", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(shellPaneIds).toEqual(["creators", "content", "viewer"]);
   expect(shellColumns.map((column) => `${column.id}:${column.title}`)).toEqual([
@@ -144,7 +145,7 @@ test("desktop shell panes keep viewport height and hide outer overflow", () => {
 });
 
 test("source and content panes expose stable headers and scroll bodies", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(sourceHeaderRegionClass).toContain("lg:shrink-0");
   expect(sourceCatalogRegionClass).toContain("min-h-0");
@@ -170,7 +171,7 @@ test("source and content panes expose stable headers and scroll bodies", async (
 });
 
 test("phase 1 layout repair keeps no fourth pane dialogs or fake source actions", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const paneMatches = source.match(/data-shell-column=/g) ?? [];
   const forbiddenControls = [
     "data-shell-column=\"settings\"",
@@ -296,7 +297,7 @@ test("creator pane is wired to anonymous catalog creators and feeds", async () =
 });
 
 test("creator source-type filter scopes the creator list without changing playback source switching", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("const [sourceType, setSourceType] = createSignal<SourceType | null>(null)");
   expect(source).toContain("() => toCreatorListInput(search(), sourceType())");
@@ -322,7 +323,7 @@ test("selected feed is explicit and shapes catalog content input", async () => {
 });
 
 test("feed selection exposes real protected feed refresh controls", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(toRefreshStatusResourceKey(false, 0)).toBeNull();
   expect(toRefreshStatusResourceKey(true, 0)).toBe(0);
@@ -358,7 +359,7 @@ test("feed rows expose selected state icon source metadata and real creator imag
 });
 
 test("content pane is wired to anonymous catalog content items", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(showsCatalogFilters("catalog")).toBe(true);
   expect(showsCatalogFilters("subscribed")).toBe(true);
@@ -378,7 +379,7 @@ test("content pane is wired to anonymous catalog content items", async () => {
 });
 
 test("content filters are Solid state backed and avoid class-name filtering", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const forbiddenDomFilteringSnippets = [
     "querySelector",
     "getElementsByClassName",
@@ -398,7 +399,7 @@ test("content filters are Solid state backed and avoid class-name filtering", as
 });
 
 test("content list exposes no no-op filter controls", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const filtersIndex = source.indexOf("aria-label={visibleFiltersLabel()}");
   const favoritesBranchIndex = source.indexOf("return client.overlays.favoriteContentItems()");
   const historyBranchIndex = source.indexOf("return listOpenedHistoryContentItems()");
@@ -415,7 +416,7 @@ test("content list exposes no no-op filter controls", async () => {
 });
 
 test("refresh UI is wired to real API procedures without background polling", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(refreshStatusRegionId).toBe("refresh-status-history");
   expect(source).toContain("client.refresh.status({ limit: 5, feedResultsLimit: 3 })");
@@ -437,7 +438,7 @@ test("refresh UI is wired to real API procedures without background polling", as
 });
 
 test("refresh results expose feed labels errors and skipped reasons", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const report: RefreshRunReport = {
     runId: "refresh-run-1",
     scope: "all",
@@ -494,7 +495,7 @@ test("refresh results expose feed labels errors and skipped reasons", async () =
 });
 
 test("refresh completion invalidates source pane resources and catalog content", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("onRefreshCompleted={async () => {");
   expect(source).toContain("await refreshSourcePaneResources();");
@@ -530,7 +531,7 @@ test("refresh run summary labels all supported refresh scopes", () => {
 });
 
 test("add source UI is authenticated and wired to the real ingestion procedure", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(addSourceInputId).toBe("creator-source-add-input");
   expect(addSourceHelpId).toBe("creator-source-add-help");
@@ -552,7 +553,7 @@ test("add source UI is authenticated and wired to the real ingestion procedure",
 });
 
 test("add source UI reports real ingestion success and failure shapes", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("function formatIngestionCounts(value: AddSourceValue): string");
   expect(source).toContain("Creators: ${value.created.creators} created, ${reusedCreators} reused");
@@ -567,7 +568,7 @@ test("add source UI reports real ingestion success and failure shapes", async ()
 });
 
 test("selected viewer is wired to anonymous catalog content detail", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("client.catalog.contentDetail({ id })");
   expect(source).toContain("const selectedContentItemId = createMemo(() => props.selectedContent()?.id ?? null)");
@@ -577,7 +578,7 @@ test("selected viewer is wired to anonymous catalog content detail", async () =>
 });
 
 test("viewer has no internal metadata aside or rejected selection bar copy", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).not.toContain("function ContentDetailAside");
   expect(source).not.toContain("<ContentDetailAside");
@@ -587,7 +588,7 @@ test("viewer has no internal metadata aside or rejected selection bar copy", asy
 });
 
 test("selected viewer places playback before metadata in source order", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const playbackIndex = source.indexOf("<PlaybackSurface\n                  source={selectedPlayableSource()}");
   const bodyIndex = source.indexOf("<ContentDetailBody detail={detail()} />");
   const metadataIndex = source.indexOf("<ContentDetailMetadata detail={detail()} playableSources={playableSources()} />");
@@ -671,7 +672,7 @@ test("selected viewer derives playable sources only from safe API source URLs", 
 });
 
 test("selected viewer supports source switching and real playback render contracts", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("id=\"viewer-source-switcher\"");
   expect(source).toContain("onChange={(event) => setSelectedSourceId(event.currentTarget.value)}");
@@ -681,7 +682,7 @@ test("selected viewer supports source switching and real playback render contrac
 });
 
 test("native video playback marks selected content played after authenticated guard", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("onNativePlay={markSelectedContentPlayed}");
   expect(source).toContain("readonly onNativePlay: () => Promise<void>;");
@@ -695,7 +696,7 @@ test("native video playback marks selected content played after authenticated gu
 });
 
 test("iframe playback has explicit real mark played workflow", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("<iframe");
   expect(source).toContain("<ContentStatusActionControls");
@@ -707,7 +708,7 @@ test("iframe playback has explicit real mark played workflow", async () => {
 });
 
 test("anonymous users never call protected played procedure from viewer or playback", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("<Show when={props.isAuthenticated()}>\n                  <Show when={props.statusSelectionError()}");
   expect(source).toContain("if (!props.isAuthenticated() || contentItemId === null) {\n      return null;\n    }");
@@ -718,7 +719,7 @@ test("anonymous users never call protected played procedure from viewer or playb
 });
 
 test("playlist controls are protected behind authenticated session state", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("const session = authClient.useSession()");
   expect(source).toContain("const isAuthenticated = createMemo(() => !session().isPending && session().data !== null)");
@@ -728,7 +729,7 @@ test("playlist controls are protected behind authenticated session state", async
 });
 
 test("playlist UI uses real protected API procedures for full playlist flow", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(playlistNameInputId).toBe("playlist-name");
   expect(playlistDescriptionInputId).toBe("playlist-description");
@@ -744,7 +745,7 @@ test("playlist UI uses real protected API procedures for full playlist flow", as
 });
 
 test("playlist management is compact and collapsible inside existing panes", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("data-compact-playlist-selector");
   expect(source).toContain("data-playlist-management-panel");
@@ -781,7 +782,7 @@ test("manual reorder controls render only for manual playlist order", async () =
 });
 
 test("playlist items reload through resource key without effect refetch loop", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const playlistItemsInputStart = source.indexOf("const selectedPlaylistItemsInput = createMemo(() => {");
   const playlistItemsResourceEnd = source.indexOf("const selectedPlaylist = createMemo(", playlistItemsInputStart);
   const playlistItemsResourceSource = source.slice(playlistItemsInputStart, playlistItemsResourceEnd);
@@ -797,7 +798,7 @@ test("playlist items reload through resource key without effect refetch loop", a
 });
 
 test("playlist edit form changes only through explicit playlist selection", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("const editPlaylist = (playlist: Playlist | null) => {");
   expect(source).toContain("props.onSelectPlaylist(playlist?.id ?? null);");
@@ -806,7 +807,7 @@ test("playlist edit form changes only through explicit playlist selection", asyn
 });
 
 test("playlist UI remains inside the approved three-pane shell", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("<PlaylistColumnSection");
   expect(source).toContain("<PlaylistAddControls");
@@ -817,7 +818,7 @@ test("playlist UI remains inside the approved three-pane shell", async () => {
 });
 
 test("settings UI uses real protected API procedures for list save and delete", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(settingKeyInputId).toBe("setting-key");
   expect(settingValueInputId).toBe("setting-value");
@@ -829,7 +830,7 @@ test("settings UI uses real protected API procedures for list save and delete", 
 });
 
 test("typed settings expose bounded known reader density controls", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const compactSetting: UserSetting = {
     id: "setting-1",
     userId: "user-1",
@@ -865,7 +866,7 @@ test("reader density setting is applied to real row spacing", async () => {
 });
 
 test("raw settings editor is retained only as collapsed advanced settings", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const typedSettingsIndex = source.indexOf("data-typed-settings");
   const advancedSettingsIndex = source.indexOf("data-advanced-settings");
   const rawKeyInputIndex = source.indexOf("id={settingKeyInputId}");
@@ -879,7 +880,7 @@ test("raw settings editor is retained only as collapsed advanced settings", asyn
 });
 
 test("settings UI is authenticated-only and remains in the source column", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("data-source-actions-region");
   expect(source).toContain("<SettingsColumnSection");
@@ -892,7 +893,7 @@ test("settings UI is authenticated-only and remains in the source column", async
 });
 
 test("settings UI has no fake defaults and displays only stored API values", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(formatSettingValue(JSON.stringify("compact"))).toBe("compact");
   expect(formatSettingValue("not-json")).toBe("not-json");
@@ -904,7 +905,7 @@ test("settings UI has no fake defaults and displays only stored API values", asy
 });
 
 test("favorites view is an authenticated content-pane filter using protected procedures", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(contentViewModeAllId).toBe("content-view-all");
   expect(contentViewModeFavoritesId).toBe("content-view-favorites");
@@ -921,7 +922,7 @@ test("favorites view is an authenticated content-pane filter using protected pro
 });
 
 test("history and played views use protected contentHistory procedures", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("async function listOpenedHistoryContentItems(): Promise<readonly CatalogContentListItem[]>");
   expect(source).toContain("client.overlays.contentHistory({ status: \"opened\" })");
@@ -933,7 +934,7 @@ test("history and played views use protected contentHistory procedures", async (
 });
 
 test("anonymous users do not call protected status or history procedures", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("if (props.isAuthenticated() && viewMode() === \"history-opened\")");
   expect(source).toContain("if (props.isAuthenticated() && viewMode() === \"played\")");
@@ -945,7 +946,7 @@ test("anonymous users do not call protected status or history procedures", async
 });
 
 test("hide played is state filtering and not DOM filtering", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("const [hidePlayed, setHidePlayed] = createSignal(false)");
   expect(source).toContain("return locallyFilteredItems.filter((contentItem) => !toContentStatusFlags(statuses, contentItem.id).played)");
@@ -956,7 +957,7 @@ test("hide played is state filtering and not DOM filtering", async () => {
 });
 
 test("favorite toggles are real authenticated actions in list rows and viewer", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("client.overlays.toggleContentFavorite({ contentItemId })");
   expect(source).toContain("<ContentListItemRow");
@@ -967,7 +968,7 @@ test("favorite toggles are real authenticated actions in list rows and viewer", 
 });
 
 test("favorite-only row actions reconcile favorites without refetching catalog content", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const toggleFavoriteStart = source.indexOf("const toggleFavorite = async (contentItemId: string) => {");
   const markOpenedStart = source.indexOf("const markOpened = async (contentItemId: string) => {");
   const favoriteActionSource = source.slice(toggleFavoriteStart, markOpenedStart);
@@ -992,7 +993,7 @@ test("anonymous users do not see favorite controls or protected favorite calls",
 });
 
 test("content statuses load only for authenticated users", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const statusProcedureMatches = source.match(/client\.overlays\.contentStatuses\(\)/g) ?? [];
 
   expect(source).toContain("client.overlays.contentStatuses()");
@@ -1006,7 +1007,7 @@ test("content statuses load only for authenticated users", async () => {
 });
 
 test("resource reload dependencies use stable primitive source keys", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("function toCreatorListResourceKey(input: CreatorListInput): string");
   expect(source).toContain("function toFeedListResourceKey(input: FeedListInput | null): string | null");
@@ -1022,7 +1023,7 @@ test("resource reload dependencies use stable primitive source keys", async () =
 });
 
 test("mobile navigation adds no timers observers or unstable resource source objects", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).not.toContain("IntersectionObserver");
   expect(source).not.toContain("ResizeObserver");
@@ -1034,7 +1035,7 @@ test("mobile navigation adds no timers observers or unstable resource source obj
 });
 
 test("load-more controls page creators feeds and content without timers or observers", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("function LoadMoreControl(props: LoadMoreControlProps)");
   expect(source).toContain("data-load-more-control");
@@ -1063,7 +1064,7 @@ test("load-more controls page creators feeds and content without timers or obser
 });
 
 test("app shell uses stable module-level empty arrays for fallback accessors", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("const emptyUserSettings: readonly UserSetting[] = [];");
   expect(source).toContain("const emptyUserContentStatuses: readonly UserContentStatus[] = [];");
@@ -1079,7 +1080,7 @@ test("app shell uses stable module-level empty arrays for fallback accessors", a
 });
 
 test("selecting content marks opened only after authenticated guard", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("const selectContent = async (contentItem: CatalogContentListItem) => {");
   expect(source).toContain("setSelectedContent(contentItem);\n    setStatusSelectionError(null);");
@@ -1090,7 +1091,7 @@ test("selecting content marks opened only after authenticated guard", async () =
 });
 
 test("opened and played actions reconcile status state", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const reconcileStatusStart = source.indexOf("const reconcileStatusState = async () => {");
   const markOpenedStart = source.indexOf("const markContentOpened = async (contentItemId: string) => {");
   const reconcileStatusSource = source.slice(reconcileStatusStart, markOpenedStart);
@@ -1106,7 +1107,7 @@ test("opened and played actions reconcile status state", async () => {
 });
 
 test("status-only row actions do not manually refetch catalog content", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const markOpenedStart = source.indexOf("const markOpened = async (contentItemId: string) => {");
   const markPlayedEnd = source.indexOf("const addContentToPlaylist = async (contentItemId: string) => {");
   const statusActionSource = source.slice(markOpenedStart, markPlayedEnd);
@@ -1190,7 +1191,7 @@ test("creator rows avoid single-source claims while selected feed list shows fee
 });
 
 test("viewer playback source selector stays accessible for multiple playable sources", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("<Show when={playableSources().length > 1}>");
   expect(source).toContain("const playbackSourceSwitcherLabel = createMemo(() => `Playback source, ${playableSources().length} options`);");
@@ -1217,7 +1218,7 @@ test("subscription UI is authenticated and wired to real protected procedures", 
 });
 
 test("creator pane keeps refresh API actions beside subscription actions", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("client.refresh.runCreator({ creatorId: creator.id, force })");
   expect(source).toContain("client.refresh.runAll({ force })");
@@ -1238,7 +1239,7 @@ test("catalog and library routes deliberately select distinct shell modes", asyn
 });
 
 test("library mode uses subscribed state without changing anonymous catalog reads", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(contentViewModeSubscribedId).toBe("content-view-subscribed");
   expect(contentViewModeHistoryId).toBe("content-view-history");
@@ -1258,7 +1259,7 @@ test("library mode uses subscribed state without changing anonymous catalog read
 });
 
 test("subscribed library content uses one protected endpoint without client fan-out", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("async function listSubscribedLibraryContentItems(input: ContentListInput): Promise<readonly CatalogContentListItem[]> {");
   expect(source).toContain("return client.overlays.subscribedContentItems(input);");
@@ -1268,14 +1269,14 @@ test("subscribed library content uses one protected endpoint without client fan-
 });
 
 test("viewer empty state uses neutral video copy", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
 
   expect(source).toContain("Pick a video to open the viewer.");
   expect(source).not.toContain("Pick a catalog video to open the viewer.");
 });
 
 test("visible shell copy avoids rejected product jargon", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const headerSource = await Bun.file(new URL("./header.tsx", import.meta.url)).text();
   const combinedSource = `${source}\n${headerSource}`.toLowerCase();
   const forbiddenProductJargon = [`private ${"overlay"}`, "cock" + "pit", "archi" + "tecture"];
@@ -1302,7 +1303,7 @@ test("phase 7A chrome does not show the rejected auth status block", async () =>
 });
 
 test("content list omits unauthenticated overlay controls and stale phase copy", async () => {
-  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const source = await readAppShellSource();
   const forbiddenContentListCopy = [
     `${"played"} only`,
     "Video rows will appear here when the content list is wired in the next phase.",
