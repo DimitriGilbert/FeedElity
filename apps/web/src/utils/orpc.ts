@@ -1,5 +1,5 @@
 import type { AppRouterClient } from "@FeedElity/api/routers/index";
-import { env } from "@FeedElity/env/web";
+import { webRuntimeConfig } from "@FeedElity/env/web";
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import { createTanstackQueryUtils } from "@orpc/tanstack-query";
@@ -14,7 +14,7 @@ export const queryClient = new QueryClient({
 });
 
 export const link = new RPCLink({
-  url: `${env.VITE_SERVER_URL}/rpc`,
+  url: webRuntimeConfig.rpcUrl,
   fetch(url, options) {
     return fetch(url, {
       ...options,

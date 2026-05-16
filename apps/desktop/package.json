@@ -3,20 +3,31 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "turbo -F web build && electrobun dev",
-    "dev": "electrobun dev --watch",
+    "prepare:linux-native": "bun ../../scripts/prepare-desktop-linux-native.ts",
+    "patch:linux-bundle": "bun ../../scripts/patch-desktop-linux-bundle.ts",
+    "start": "bun run prepare:linux-native && VITE_RUNTIME_MODE=desktop-local VITE_SERVER_URL=http://127.0.0.1:3217 turbo -F web build && NODE_PATH=$(pwd)/../../node_modules/.bun/@libsql+linux-x64-gnu@0.5.22/node_modules:$(pwd)/../../node_modules LD_LIBRARY_PATH=$(pwd)/../../.native/linux-x64/extracted/usr/lib64:${LD_LIBRARY_PATH:-} electrobun dev",
+    "start:remote": "bun run prepare:linux-native && VITE_RUNTIME_MODE=desktop-remote VITE_SERVER_URL=$FEELITY_DESKTOP_REMOTE_SERVER_URL turbo -F web build && VITE_RUNTIME_MODE=desktop-remote FEELITY_DESKTOP_REMOTE_SERVER_URL=$FEELITY_DESKTOP_REMOTE_SERVER_URL NODE_PATH=$(pwd)/../../node_modules/.bun/@libsql+linux-x64-gnu@0.5.22/node_modules:$(pwd)/../../node_modules LD_LIBRARY_PATH=$(pwd)/../../.native/linux-x64/extracted/usr/lib64:${LD_LIBRARY_PATH:-} electrobun dev",
+    "dev": "bun run prepare:linux-native && NODE_PATH=$(pwd)/../../node_modules/.bun/@libsql+linux-x64-gnu@0.5.22/node_modules:$(pwd)/../../node_modules LD_LIBRARY_PATH=$(pwd)/../../.native/linux-x64/extracted/usr/lib64:${LD_LIBRARY_PATH:-} electrobun dev --watch",
     "dev:hmr": "concurrently \"bun run hmr\" \"bun run start\"",
-    "hmr": "turbo -F web dev",
-    "build": "turbo -F web build && electrobun build",
-    "build:stable": "turbo -F web build && electrobun build --env=stable",
-    "build:canary": "turbo -F web build && electrobun build --env=canary",
-    "check-types": "tsc --noEmit"
+    "dev:hmr:remote": "concurrently \"bun run hmr:remote\" \"bun run start:remote\"",
+    "hmr": "VITE_RUNTIME_MODE=desktop-local VITE_SERVER_URL=http://127.0.0.1:3217 turbo -F web dev",
+    "hmr:remote": "VITE_RUNTIME_MODE=desktop-remote VITE_SERVER_URL=$FEELITY_DESKTOP_REMOTE_SERVER_URL turbo -F web dev",
+    "build": "bun run prepare:linux-native && VITE_RUNTIME_MODE=desktop-local VITE_SERVER_URL=http://127.0.0.1:3217 turbo -F web build && NODE_PATH=$(pwd)/../../node_modules/.bun/@libsql+linux-x64-gnu@0.5.22/node_modules:$(pwd)/../../node_modules LD_LIBRARY_PATH=$(pwd)/../../.native/linux-x64/extracted/usr/lib64:${LD_LIBRARY_PATH:-} electrobun build && bun run patch:linux-bundle",
+    "build:remote": "bun run prepare:linux-native && VITE_RUNTIME_MODE=desktop-remote VITE_SERVER_URL=$FEELITY_DESKTOP_REMOTE_SERVER_URL turbo -F web build && VITE_RUNTIME_MODE=desktop-remote FEELITY_DESKTOP_REMOTE_SERVER_URL=$FEELITY_DESKTOP_REMOTE_SERVER_URL NODE_PATH=$(pwd)/../../node_modules/.bun/@libsql+linux-x64-gnu@0.5.22/node_modules:$(pwd)/../../node_modules LD_LIBRARY_PATH=$(pwd)/../../.native/linux-x64/extracted/usr/lib64:${LD_LIBRARY_PATH:-} electrobun build && bun run patch:linux-bundle",
+    "build:stable": "bun run prepare:linux-native && VITE_RUNTIME_MODE=desktop-local VITE_SERVER_URL=http://127.0.0.1:3217 turbo -F web build && NODE_PATH=$(pwd)/../../node_modules/.bun/@libsql+linux-x64-gnu@0.5.22/node_modules:$(pwd)/../../node_modules LD_LIBRARY_PATH=$(pwd)/../../.native/linux-x64/extracted/usr/lib64:${LD_LIBRARY_PATH:-} electrobun build --env=stable && bun run patch:linux-bundle",
+    "build:canary": "bun run prepare:linux-native && VITE_RUNTIME_MODE=desktop-local VITE_SERVER_URL=http://127.0.0.1:3217 turbo -F web build && NODE_PATH=$(pwd)/../../node_modules/.bun/@libsql+linux-x64-gnu@0.5.22/node_modules:$(pwd)/../../node_modules LD_LIBRARY_PATH=$(pwd)/../../.native/linux-x64/extracted/usr/lib64:${LD_LIBRARY_PATH:-} electrobun build --env=canary && bun run patch:linux-bundle",
+    "check-types": "tsc --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
+    "@FeedElity/db": "workspace:*",
+    "@FeedElity/env": "workspace:*",
+    "server": "workspace:*",
     "electrobun": "^1.15.1"
   },
   "devDependencies": {
     "@types/bun": "catalog:",
+    "@libsql/client": "0.15.15",
     "concurrently": "^9.1.0",
     "typescript": "catalog:"
   }

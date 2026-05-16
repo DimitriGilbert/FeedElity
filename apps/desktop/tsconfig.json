@@ -7,7 +7,8 @@
     "moduleResolution": "bundler",
     "noEmit": true,
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "server": ["../server/src/index.ts"]
     }
   },
   "include": ["src/**/*.ts", "electrobun.config.ts"]

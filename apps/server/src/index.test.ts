@@ -1,6 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 
 beforeAll(() => {
+  process.env.RUNTIME_MODE = "local";
   process.env.DATABASE_URL = "file::memory:";
   process.env.BETTER_AUTH_SECRET = "server-smoke-test-secret-minimum-32";
   process.env.BETTER_AUTH_URL = "http://localhost:3002";

@@ -17,6 +17,7 @@ export default {
     },
     copy: {
       [webBuildDir]: "views/mainview",
+      "../../packages/db/src/migrations": "db-migrations",
     },
     watchIgnore: [`${webBuildDir}/**`],
     mac: {

@@ -53,6 +53,21 @@ bun run dev
 Open [http://localhost:3001](http://localhost:3001) in your browser to see the web application.
 The API is running at [http://localhost:3002](http://localhost:3002).
 
+## Runtime Configuration
+
+The web app reads `VITE_RUNTIME_MODE` and `VITE_SERVER_URL` from `apps/web/.env`. Use `local` for local browser development, `web` for deployed web builds, `desktop-local` for a desktop shell talking to a local server, and `desktop-remote` for a desktop shell talking to a configured remote server. The server reads `RUNTIME_MODE`, `BETTER_AUTH_URL`, `CORS_ORIGIN`, and `PORT` from `apps/server/.env`; the default server port is `3002`.
+
+For local development, keep `VITE_SERVER_URL` and `BETTER_AUTH_URL` at `http://localhost:3002`, with `CORS_ORIGIN=http://localhost:3001`. For deployed web builds, set `VITE_SERVER_URL` to the public API origin and set `CORS_ORIGIN` to the deployed web origin.
+
+Desktop defaults to `desktop-local`, starts its embedded backend on `http://127.0.0.1:3217`, and stores its local SQLite database outside the packaged app. To run the desktop shell against a shared backend, set an explicit HTTP(S) remote URL and use the remote desktop scripts:
+
+```bash
+FEELITY_DESKTOP_REMOTE_SERVER_URL=https://api.feedelity.example bun --filter desktop run dev:hmr:remote
+FEELITY_DESKTOP_REMOTE_SERVER_URL=https://api.feedelity.example bun --filter desktop run build:remote
+```
+
+In `desktop-remote` mode the desktop app does not start the embedded backend or open a local database; it injects the normalized remote URL into the web view so auth and oRPC target that server.
+
 ## Project Structure
 
 ```

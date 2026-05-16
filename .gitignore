@@ -55,5 +55,6 @@ local.db-*
 # Misc
 *.tgz
 .cache
+.native
 tmp
 temp

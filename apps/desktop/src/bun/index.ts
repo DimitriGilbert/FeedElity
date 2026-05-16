@@ -1,7 +1,10 @@
 import { BrowserWindow, Updater } from "electrobun/bun";
 
+import { addDesktopRuntimeQuery, startConfiguredDesktopBackend } from "./local-backend";
+
 const DEV_SERVER_PORT = 3001;
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`;
+const startedBackend = await startConfiguredDesktopBackend();
 
 // Check if the web dev server is running for HMR
 async function getMainViewUrl(): Promise<string> {
@@ -9,14 +12,19 @@ async function getMainViewUrl(): Promise<string> {
   if (channel === "dev") {
     try {
       await fetch(DEV_SERVER_URL, { method: "HEAD" });
-      console.log(`HMR enabled: Using web dev server at ${DEV_SERVER_URL}`);
-      return DEV_SERVER_URL;
-    } catch {
-      console.log('Web dev server not running. Run "bun run dev:hmr" for HMR support.');
+      return addDesktopRuntimeQuery(DEV_SERVER_URL, startedBackend.config);
+    } catch (error) {
+      if (!(error instanceof Error)) {
+        throw new Error(`Desktop HMR probe failed with an unknown error: ${String(error)}`);
+      }
     }
   }
 
-  return "views://mainview/index.html";
+  if (startedBackend.config.mode === "desktop-local") {
+    return addDesktopRuntimeQuery(`${startedBackend.config.serverUrl}/index.html`, startedBackend.config);
+  }
+
+  return addDesktopRuntimeQuery("views://mainview/index.html", startedBackend.config);
 }
 
 const url = await getMainViewUrl();
@@ -31,5 +39,3 @@ new BrowserWindow({
     y: 120,
   },
 });
-
-console.log("Electrobun desktop shell started.");

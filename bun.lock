@@ -18,9 +18,13 @@
     "apps/desktop": {
       "name": "desktop",
       "dependencies": {
+        "@FeedElity/db": "workspace:*",
+        "@FeedElity/env": "workspace:*",
         "electrobun": "^1.15.1",
+        "server": "workspace:*",
       },
       "devDependencies": {
+        "@libsql/client": "0.15.15",
         "@types/bun": "catalog:",
         "concurrently": "^9.1.0",
         "typescript": "catalog:",

@@ -4,11 +4,13 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./runtime": "./src/runtime.ts",
     "./server": "./src/server.ts",
     "./web": "./src/web.ts"
   },
   "scripts": {
-    "check-types": "tsc --noEmit"
+    "check-types": "tsc --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
     "@t3-oss/env-core": "^0.13.1",
