@@ -22,6 +22,8 @@ import {
   creatorSearchInputId,
   creatorSourceFilterId,
   desktopShellGridClass,
+  feedListLimit,
+  firstPageOffset,
   formatRefreshReportSummary,
   formatRefreshRunSummary,
   formatSettingValue,
@@ -49,6 +51,7 @@ import {
   sourceFeedListRegionClass,
   sourceHeaderRegionClass,
   toContentListInput,
+  toFeedListInput,
   toPlayableSources,
   toReaderDensityFromSettings,
   toRefreshStatusResourceKey,
@@ -94,6 +97,24 @@ test("shell renders exactly three top-level pane sections", async () => {
   expect(source).toContain('data-shell-column="content"');
   expect(source).toContain('data-shell-column="viewer"');
   expect(shellGridClass).toContain("lg:grid-cols-[1fr_3fr_8fr]");
+});
+
+test("shell panes use the base responsive column classes without mobile pane state", async () => {
+  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  expect(shellPaneIds).toEqual(["creators", "content", "viewer"]);
+  expect(shellColumns.map((column) => `${column.id}:${column.title}`)).toEqual([
+    "creators:Sources",
+    "content:Feed",
+    "viewer:Viewer",
+  ]);
+  expect(source).toContain("class={sourceColumnClass}");
+  expect(source).toContain("class={contentColumnClass}");
+  expect(source).toContain("class={viewerColumnClass}");
+  expect(source).not.toContain("data-mobile-pane-navigation");
+  expect(source).not.toContain("activeMobilePaneId");
+  expect(source).not.toContain("mobilePaneClass");
+  expect(source).not.toContain("reader-pane-");
 });
 
 test("desktop shell panes keep viewport height and hide outer overflow", () => {
@@ -186,13 +207,28 @@ test("shell uses the full viewport width without outer gutters or centered frame
 test("creator search builds bounded public catalog input", () => {
   expect(creatorSearchInputId).toBe("creator-source-search");
   expect(creatorSourceFilterId).toBe("creator-source-type-filter");
-  expect(toCreatorListInput("   ")).toEqual({ limit: creatorListLimit });
-  expect(toCreatorListInput("   ", "youtube")).toEqual({ sourceType: "youtube", limit: creatorListLimit });
-  expect(toCreatorListInput("  alpha creator  ")).toEqual({ search: "alpha creator", limit: creatorListLimit });
+  expect(firstPageOffset).toBe(0);
+  expect(toCreatorListInput("   ")).toEqual({ limit: creatorListLimit, offset: firstPageOffset });
+  expect(toCreatorListInput("   ", "youtube")).toEqual({ sourceType: "youtube", limit: creatorListLimit, offset: firstPageOffset });
+  expect(toCreatorListInput("  alpha creator  ")).toEqual({ search: "alpha creator", limit: creatorListLimit, offset: firstPageOffset });
   expect(toCreatorListInput("  alpha creator  ", "peertube")).toEqual({
     search: "alpha creator",
     sourceType: "peertube",
     limit: creatorListLimit,
+    offset: firstPageOffset,
+  });
+  expect(toCreatorListInput("next", null, 50)).toEqual({ search: "next", limit: creatorListLimit, offset: 50 });
+});
+
+test("selected creator feed list builds bounded paginated input", () => {
+  expect(feedListLimit).toBe(25);
+  expect(toFeedListInput(null)).toBeNull();
+  expect(toFeedListInput("creator-1")).toEqual({ creatorId: "creator-1", limit: feedListLimit, offset: firstPageOffset });
+  expect(toFeedListInput("creator-1", "youtube", 25)).toEqual({
+    creatorId: "creator-1",
+    sourceType: "youtube",
+    limit: feedListLimit,
+    offset: 25,
   });
 });
 
@@ -205,17 +241,19 @@ test("content list builds bounded public catalog input", () => {
   expect(contentCatalogFiltersLabel).toBe("Catalog filters");
   expect(contentSearchInputId).toBe("content-list-search");
   expect(contentSourceFilterId).toBe("content-source-filter");
-  expect(toContentListInput("   ", null, null, null)).toEqual({ limit: contentListLimit });
-  expect(toContentListInput("   ", null, "feed-1", null)).toEqual({ feedId: "feed-1", limit: contentListLimit });
+  expect(toContentListInput("   ", null, null, null)).toEqual({ limit: contentListLimit, offset: firstPageOffset });
+  expect(toContentListInput("   ", null, "feed-1", null)).toEqual({ feedId: "feed-1", limit: contentListLimit, offset: firstPageOffset });
   expect(toContentListInput(" livestream ", null, null, "peertube")).toEqual({
     search: "livestream",
     sourceType: "peertube",
     limit: contentListLimit,
+    offset: firstPageOffset,
   });
   expect(toContentListInput(" documentary ", "creator-2", null, null)).toEqual({
     search: "documentary",
     creatorId: "creator-2",
     limit: contentListLimit,
+    offset: firstPageOffset,
   });
   expect(toContentListInput("  matrix  ", "creator-1", "feed-2", "youtube")).toEqual({
     search: "matrix",
@@ -223,7 +261,9 @@ test("content list builds bounded public catalog input", () => {
     feedId: "feed-2",
     sourceType: "youtube",
     limit: contentListLimit,
+    offset: firstPageOffset,
   });
+  expect(toContentListInput("more", null, null, null, 100)).toEqual({ search: "more", limit: contentListLimit, offset: 100 });
 });
 
 test("content selection updates shell state contract", () => {
@@ -238,7 +278,7 @@ test("creator pane is wired to anonymous catalog creators and feeds", async () =
   const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
 
   expect(source).toContain("client.catalog.creators(untrack(creatorListInput))");
-  expect(source).toContain("client.catalog.feeds({ creatorId, limit: 25 })");
+  expect(source).toContain("return input === null ? emptyCatalogFeeds : client.catalog.feeds(input);");
   expect(source).toContain("type=\"search\"");
   expect(source).toContain("isSelected={props.selectedCreatorId() === creator.id}");
   expect(source).toContain("aria-pressed={props.isSelected}");
@@ -735,13 +775,15 @@ test("playlist items reload through resource key without effect refetch loop", a
   const playlistItemsInputStart = source.indexOf("const selectedPlaylistItemsInput = createMemo(() => {");
   const playlistItemsResourceEnd = source.indexOf("const selectedPlaylist = createMemo(", playlistItemsInputStart);
   const playlistItemsResourceSource = source.slice(playlistItemsInputStart, playlistItemsResourceEnd);
+  const playlistSectionEnd = source.indexOf("interface PlaylistItemRowProps", playlistItemsInputStart);
+  const playlistSectionSource = source.slice(playlistItemsInputStart, playlistSectionEnd);
   const refetchEffectPattern = /createEffect\(\(\) => \{[\s\S]*props\.playlistItemsReloadKey\(\)[\s\S]*refetchSelectedPlaylistItems\(/;
 
   expect(playlistItemsResourceSource).toContain("const playlistId = props.selectedPlaylistId();");
   expect(playlistItemsResourceSource).toContain("return `${playlistId}\\u001f${props.playlistItemsReloadKey().toString()}`;");
   expect(playlistItemsResourceSource).toContain("createResource(\n    selectedPlaylistItemsInput,");
   expect(playlistItemsResourceSource).toContain("return client.overlays.playlistItems({ playlistId });");
-  expect(source).not.toMatch(refetchEffectPattern);
+  expect(playlistSectionSource).not.toMatch(refetchEffectPattern);
 });
 
 test("playlist edit form only resets when selected playlist id changes", async () => {
@@ -957,7 +999,9 @@ test("resource reload dependencies use stable primitive source keys", async () =
   const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
 
   expect(source).toContain("function toCreatorListResourceKey(input: CreatorListInput): string");
+  expect(source).toContain("function toFeedListResourceKey(input: FeedListInput | null): string | null");
   expect(source).toContain("function toContentItemsResourceKey(mode: ContentItemsResourceMode, input: ContentListInput, reloadKey: number): string");
+  expect(source).toContain("input.offset.toString()");
   expect(source).toContain("createResource(contentItemsResourceKey, () =>");
   expect(source).toContain("return statusReloadKey();");
   expect(source).toContain("return `${contentItemId}\\u001f${props.favoritesReloadKey().toString()}`;");
@@ -965,6 +1009,40 @@ test("resource reload dependencies use stable primitive source keys", async () =
   expect(source).not.toContain("return { mode: \"subscribed\", input: contentListInput(), reloadKey: props.catalogReloadKey() }");
   expect(source).not.toContain("return { contentItemId, reloadKey: props.favoritesReloadKey() }");
   expect(source).not.toContain("return { reloadKey: statusReloadKey() };");
+});
+
+test("mobile navigation adds no timers observers or unstable resource source objects", async () => {
+  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  expect(source).not.toContain("IntersectionObserver");
+  expect(source).not.toContain("ResizeObserver");
+  expect(source).not.toContain("MutationObserver");
+  expect(source).not.toContain("setInterval");
+  expect(source).not.toContain("setTimeout");
+  expect(source).not.toMatch(/createResource\(\s*\(\) => \(\{/);
+  expect(source).not.toMatch(/createResource\(\s*\(\) => \{/);
+});
+
+test("load-more controls page creators feeds and content without timers or observers", async () => {
+  const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  expect(source).toContain("function LoadMoreControl(props: LoadMoreControlProps)");
+  expect(source).toContain("data-load-more-control");
+  expect(source).toContain("data-loaded-count");
+  expect(source).toContain("{props.shownCount} loaded");
+  expect(source).toContain("Load more creators");
+  expect(source).toContain("Load more feeds");
+  expect(source).toContain("Load more videos");
+  expect(source).toContain("const nextCreators = await client.catalog.creators({ ...creatorListInput(), offset: catalogCreators().length });");
+  expect(source).toContain("const nextFeeds = await client.catalog.feeds({ ...input, offset: loadedFeeds().length });");
+  expect(source).toContain("const input = { ...contentListInput(), offset: loadedContentItems().length };");
+  expect(source).toContain("setCreatorPageHasMore(nextCreators.length === creatorListLimit);");
+  expect(source).toContain("setFeedPageHasMore(nextFeeds.length === feedListLimit);");
+  expect(source).toContain("setContentPageHasMore(nextContentItems.length === contentListLimit);");
+  expect(source).toContain("data-content-loaded-count");
+  expect(source).not.toContain("IntersectionObserver");
+  expect(source).not.toContain("setInterval");
+  expect(source).not.toContain("setTimeout");
 });
 
 test("app shell uses stable module-level empty arrays for fallback accessors", async () => {
@@ -1082,7 +1160,7 @@ test("creator rows avoid single-source claims while selected feed list shows fee
   expect(source).toContain("Feeds");
   expect(source).toContain("Catalog creator");
   expect(source).toContain("aria-label=\"Feeds for selected creator\"");
-  expect(source).toContain("<For each={loadedFeeds()}>");
+  expect(source).toContain("<For each={visibleFeeds()}>");
   expect(source).toContain("<FeedRow");
   expect(source).toContain("<SourceIconBadge sourceType={props.feed.sourceType} context=\"feed\" />");
   expect(source).not.toContain("Catalog source");
@@ -1146,6 +1224,7 @@ test("library mode uses subscribed state without changing anonymous catalog read
   expect(source).toContain('props.mode === "library" ? "subscribed" : "catalog"');
   expect(source).toContain("return \"catalog\";");
   expect(source).toContain("return listSubscribedLibraryContentItems(input)");
+  expect(source).toContain("return client.overlays.subscribedContentItems(input)");
   expect(source).toContain("client.overlays.contentHistory({ status: \"opened\" })");
   expect(source).toContain("client.overlays.contentHistory({ status: \"played\" })");
   expect(source).toContain("Your subscribed Library has no videos yet. Subscribe from the Catalog or refresh your sources.");
@@ -1155,12 +1234,13 @@ test("library mode uses subscribed state without changing anonymous catalog read
   expect(source).toContain("Subscribed creators appear in your Library after you subscribe from the Catalog.");
 });
 
-test("library creator-scoped content is subscription validated", async () => {
+test("subscribed library content uses one protected endpoint without client fan-out", async () => {
   const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
 
-  expect(source).toContain("const subscriptions = await client.overlays.subscriptions();\n\n  if (input.creatorId !== undefined) {");
-  expect(source).toContain("if (!subscriptions.some((subscription) => subscription.creator.id === input.creatorId)) {");
-  expect(source).toContain("return [];\n    }\n\n    return client.catalog.contentItems(input);");
+  expect(source).toContain("async function listSubscribedLibraryContentItems(input: ContentListInput): Promise<readonly CatalogContentListItem[]> {");
+  expect(source).toContain("return client.overlays.subscribedContentItems(input);");
+  expect(source).not.toContain("subscriptions.flatMap");
+  expect(source).not.toContain("toSubscribedCreatorContentListInputs");
   expect(source).toContain("if (props.mode === \"library\") {\n              await client.overlays.subscribeToCreator({ creatorId: value.creator.id });\n            }");
 });
 

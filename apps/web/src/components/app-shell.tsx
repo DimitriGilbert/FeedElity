@@ -40,12 +40,15 @@ import {
   contentViewModeHistoryId,
   contentViewModePlayedId,
   contentViewModeSubscribedId,
+  creatorListLimit,
   creatorSearchInputId,
   creatorSourceFilterId,
+  feedListLimit,
   formatRefreshReportSummary,
   formatRefreshRunSummary,
   formatSettingValue,
   formatSourceLabel,
+  mergeUniqueContentItemsForDisplay,
   playlistDescriptionInputId,
   playlistNameInputId,
   playlistSortInputId,
@@ -66,6 +69,7 @@ import {
   sourceFeedListRegionClass,
   sourceHeaderRegionClass,
   toContentListInput,
+  toFeedListInput,
   toCreatorListInput,
   toReaderDensityFromSettings,
   toRefreshStatusResourceKey,
@@ -75,6 +79,7 @@ import {
   type ContentViewMode,
   type CreatorListInput,
   type ContentListInput,
+  type FeedListInput,
   type PlayableSource,
   type ReaderDensity,
   type ShellMode,
@@ -88,6 +93,7 @@ export {
   contentHeaderRegionClass,
   contentHidePlayedInputId,
   contentListLimit,
+  feedListLimit,
   contentScrollRegionClass,
   contentSearchInputId,
   contentSourceFilterId,
@@ -127,6 +133,7 @@ export {
   sourceFeedListRegionClass,
   sourceHeaderRegionClass,
   toContentListInput,
+  toFeedListInput,
   toCreatorListInput,
   toReaderDensityFromSettings,
   toRefreshStatusResourceKey,
@@ -306,6 +313,20 @@ function toCreatorListResourceKey(input: CreatorListInput): string {
     input.search ?? "",
     input.sourceType ?? "",
     input.limit.toString(),
+    input.offset.toString(),
+  ].join("\u001f");
+}
+
+function toFeedListResourceKey(input: FeedListInput | null): string | null {
+  if (input === null) {
+    return null;
+  }
+
+  return [
+    input.creatorId ?? "",
+    input.sourceType ?? "",
+    input.limit.toString(),
+    input.offset.toString(),
   ].join("\u001f");
 }
 
@@ -318,22 +339,41 @@ function toContentItemsResourceKey(mode: ContentItemsResourceMode, input: Conten
     input.feedId ?? "",
     input.sourceType ?? "",
     input.limit.toString(),
+    input.offset.toString(),
   ].join("\u001f");
 }
 
-function getContentItemPublishedTime(contentItem: CatalogContentListItem): number {
-  return contentItem.publishedAt?.getTime() ?? Number.NEGATIVE_INFINITY;
-}
-
-function mergeUniqueContentItems(contentItems: readonly CatalogContentListItem[]): readonly CatalogContentListItem[] {
-  const contentById = new Map<string, CatalogContentListItem>();
-  for (const contentItem of contentItems) {
-    if (!contentById.has(contentItem.id)) {
-      contentById.set(contentItem.id, contentItem);
-    }
+function appendUniqueCreators(
+  existingCreators: readonly BrowsableCreator[],
+  nextCreators: readonly BrowsableCreator[],
+): readonly BrowsableCreator[] {
+  const creatorById = new Map(existingCreators.map((creator) => [creator.id, creator]));
+  for (const creator of nextCreators) {
+    creatorById.set(creator.id, creator);
   }
 
-  return [...contentById.values()].sort((first, second) => getContentItemPublishedTime(second) - getContentItemPublishedTime(first));
+  return [...creatorById.values()];
+}
+
+function appendUniqueFeeds(existingFeeds: readonly CatalogFeed[], nextFeeds: readonly CatalogFeed[]): readonly CatalogFeed[] {
+  const feedById = new Map(existingFeeds.map((feed) => [feed.id, feed]));
+  for (const feed of nextFeeds) {
+    feedById.set(feed.id, feed);
+  }
+
+  return [...feedById.values()];
+}
+
+function appendUniqueContentItems(
+  existingContentItems: readonly CatalogContentListItem[],
+  nextContentItems: readonly CatalogContentListItem[],
+): readonly CatalogContentListItem[] {
+  const contentItemById = new Map(existingContentItems.map((contentItem) => [contentItem.id, contentItem]));
+  for (const contentItem of nextContentItems) {
+    contentItemById.set(contentItem.id, contentItem);
+  }
+
+  return [...contentItemById.values()];
 }
 
 function toContentStatusFlags(statuses: readonly UserContentStatus[], contentItemId: string): ContentStatusFlags {
@@ -357,42 +397,19 @@ function toContentStatusFlags(statuses: readonly UserContentStatus[], contentIte
 }
 
 async function listSubscribedLibraryContentItems(input: ContentListInput): Promise<readonly CatalogContentListItem[]> {
-  const subscriptions = await client.overlays.subscriptions();
-
-  if (input.creatorId !== undefined) {
-    if (!subscriptions.some((subscription) => subscription.creator.id === input.creatorId)) {
-      return [];
-    }
-
-    return client.catalog.contentItems(input);
-  }
-
-  if (subscriptions.length === 0) {
-    return [];
-  }
-
-  const subscribedContentLists = await Promise.all(
-    subscriptions.map((subscription) =>
-      client.catalog.contentItems({
-        ...input,
-        creatorId: subscription.creator.id,
-      }),
-    ),
-  );
-
-  return mergeUniqueContentItems(subscribedContentLists.flat()).slice(0, contentListLimit);
+  return client.overlays.subscribedContentItems(input);
 }
 
 async function listOpenedHistoryContentItems(): Promise<readonly CatalogContentListItem[]> {
   const historyEntries = await client.overlays.contentHistory({ status: "opened" });
 
-  return mergeUniqueContentItems(historyEntries.map((entry) => entry.content)).slice(0, contentListLimit);
+  return mergeUniqueContentItemsForDisplay(historyEntries.map((entry) => entry.content)).slice(0, contentListLimit);
 }
 
 async function listPlayedHistoryContentItems(): Promise<readonly CatalogContentListItem[]> {
   const historyEntries = await client.overlays.contentHistory({ status: "played" });
 
-  return mergeUniqueContentItems(historyEntries.map((entry) => entry.content)).slice(0, contentListLimit);
+  return mergeUniqueContentItemsForDisplay(historyEntries.map((entry) => entry.content)).slice(0, contentListLimit);
 }
 
 function contentItemMatchesLocalFilters(contentItem: CatalogContentListItem, input: ContentListInput): boolean {
@@ -487,9 +504,56 @@ interface CreatorSourceColumnProps {
   readonly onSelectContent: (contentItem: CatalogContentListItem) => Promise<void>;
 }
 
+interface LoadMoreControlProps {
+  readonly shownCount: number;
+  readonly pageSize: number;
+  readonly hasMore: boolean;
+  readonly busy: boolean;
+  readonly errorMessage: string | null;
+  readonly label: string;
+  readonly onLoadMore: () => Promise<void>;
+}
+
+function LoadMoreControl(props: LoadMoreControlProps) {
+  return (
+    <div class="mt-2 border border-border bg-background px-2 py-1.5" data-load-more-control>
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-[0.68rem] text-muted-foreground" data-loaded-count>
+          {props.shownCount} loaded
+        </span>
+        <Show when={props.hasMore}>
+          <button
+            type="button"
+            class="border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={props.busy}
+            onClick={async () => {
+              await props.onLoadMore();
+            }}
+          >
+            {props.busy ? "Loading" : props.label}
+          </button>
+        </Show>
+      </div>
+      <p class="mt-1 text-[0.62rem] text-muted-foreground">Pages load {props.pageSize} rows at a time.</p>
+      <Show when={props.errorMessage}>
+        {(message) => <p class="mt-1 text-[0.68rem] text-destructive">{message()}</p>}
+      </Show>
+    </div>
+  );
+}
+
 function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [search, setSearch] = createSignal("");
   const [sourceType, setSourceType] = createSignal<SourceType | null>(null);
+  const [catalogCreators, setCatalogCreators] = createSignal<readonly BrowsableCreator[]>(emptyBrowsableCreators);
+  const [creatorPageHasMore, setCreatorPageHasMore] = createSignal(false);
+  const [creatorPageBusy, setCreatorPageBusy] = createSignal(false);
+  const [creatorPageError, setCreatorPageError] = createSignal<string | null>(null);
+  const [loadedFeeds, setLoadedFeeds] = createSignal<readonly CatalogFeed[]>(emptyCatalogFeeds);
+  const [feedPageHasMore, setFeedPageHasMore] = createSignal(false);
+  const [feedPageBusy, setFeedPageBusy] = createSignal(false);
+  const [feedPageError, setFeedPageError] = createSignal<string | null>(null);
+  const [libraryCreatorLimit, setLibraryCreatorLimit] = createSignal(creatorListLimit);
   const creatorListInput = createMemo(() => toCreatorListInput(search(), sourceType()));
   const [creators, { refetch: refetchCreators }] = createResource(
     () => toCreatorListResourceKey(creatorListInput()),
@@ -505,8 +569,13 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [subscriptions, { refetch: refetchSubscriptions }] = createResource(subscriptionsResourceInput, () =>
     client.overlays.subscriptions(),
   );
-  const [feeds, { refetch: refetchFeeds }] = createResource(props.selectedCreatorId, (creatorId) =>
-    client.catalog.feeds({ creatorId, limit: 25 }),
+  const feedListInput = createMemo(() => toFeedListInput(props.selectedCreatorId()));
+  const [feeds, { refetch: refetchFeeds }] = createResource(
+    () => toFeedListResourceKey(feedListInput()),
+    () => {
+      const input = untrack(feedListInput);
+      return input === null ? emptyCatalogFeeds : client.catalog.feeds(input);
+    },
   );
   const subscriptionCreatorIds = createMemo(() => new Set((subscriptions() ?? emptySubscriptions).map((subscription) => subscription.creator.id)));
   const listedCreators = createMemo<readonly BrowsableCreator[]>(() => {
@@ -517,12 +586,93 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
         const matchesSearch = trimmedSearch.length === 0 || creator.displayName.toLowerCase().includes(trimmedSearch);
         const matchesSourceType = sourceType() === null || creator.sourceType === sourceType();
         return matchesSearch && matchesSourceType;
-      });
+      }).slice(0, libraryCreatorLimit());
     }
 
-    return creators() ?? emptyBrowsableCreators;
+    return catalogCreators();
   });
   const creatorCount = createMemo(() => listedCreators().length);
+  const libraryCreatorHasMore = createMemo(() => {
+    if (props.mode !== "library") {
+      return false;
+    }
+
+    const trimmedSearch = search().trim().toLowerCase();
+    const matchingCreators = (subscriptions() ?? emptySubscriptions).filter((subscription) => {
+      const creator = subscription.creator;
+      const matchesSearch = trimmedSearch.length === 0 || creator.displayName.toLowerCase().includes(trimmedSearch);
+      const matchesSourceType = sourceType() === null || creator.sourceType === sourceType();
+      return matchesSearch && matchesSourceType;
+    });
+
+    return matchingCreators.length > libraryCreatorLimit();
+  });
+
+  createEffect(() => {
+    const loadedCreators = creators();
+    if (loadedCreators === undefined) {
+      return;
+    }
+
+    setCatalogCreators(loadedCreators);
+    setCreatorPageHasMore(loadedCreators.length === creatorListLimit);
+    setCreatorPageError(null);
+  });
+
+  createEffect(() => {
+    search();
+    sourceType();
+    setLibraryCreatorLimit(creatorListLimit);
+  });
+
+  createEffect(() => {
+    const loadedFirstPageFeeds = feeds();
+    if (loadedFirstPageFeeds === undefined) {
+      return;
+    }
+
+    setLoadedFeeds(loadedFirstPageFeeds);
+    setFeedPageHasMore(loadedFirstPageFeeds.length === feedListLimit);
+    setFeedPageError(null);
+  });
+
+  const loadMoreCreators = async () => {
+    if (props.mode === "library") {
+      setLibraryCreatorLimit((limit) => limit + creatorListLimit);
+      return;
+    }
+
+    setCreatorPageBusy(true);
+    setCreatorPageError(null);
+    try {
+      const nextCreators = await client.catalog.creators({ ...creatorListInput(), offset: catalogCreators().length });
+      setCatalogCreators((currentCreators) => appendUniqueCreators(currentCreators, nextCreators));
+      setCreatorPageHasMore(nextCreators.length === creatorListLimit);
+    } catch (error) {
+      setCreatorPageError(formatError(error));
+    } finally {
+      setCreatorPageBusy(false);
+    }
+  };
+
+  const loadMoreFeeds = async () => {
+    const input = feedListInput();
+    if (input === null) {
+      return;
+    }
+
+    setFeedPageBusy(true);
+    setFeedPageError(null);
+    try {
+      const nextFeeds = await client.catalog.feeds({ ...input, offset: loadedFeeds().length });
+      setLoadedFeeds((currentFeeds) => appendUniqueFeeds(currentFeeds, nextFeeds));
+      setFeedPageHasMore(nextFeeds.length === feedListLimit);
+    } catch (error) {
+      setFeedPageError(formatError(error));
+    } finally {
+      setFeedPageBusy(false);
+    }
+  };
 
   const refreshSourcePaneResources = async () => {
     await refetchCreators();
@@ -557,7 +707,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
             {props.mode === "library" ? "Library" : "Catalog"}
           </h2>
           <span class="text-[0.68rem] text-muted-foreground" data-creator-count>
-            {creatorCount()} shown
+            {creatorCount()} loaded
           </span>
         </div>
         <label class="sr-only" for={creatorSearchInputId}>
@@ -620,6 +770,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
             </Match>
             <Match when={listedCreators()}>
               {(loadedCreators) => (
+                <>
                 <ol class="space-y-1" aria-label="Creator sources">
                   <For each={loadedCreators()}>
                     {(creator) => (
@@ -638,6 +789,16 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
                     )}
                   </For>
                 </ol>
+                <LoadMoreControl
+                  shownCount={creatorCount()}
+                  pageSize={creatorListLimit}
+                  hasMore={props.mode === "library" ? libraryCreatorHasMore() : creatorPageHasMore()}
+                  busy={creatorPageBusy()}
+                  errorMessage={creatorPageError()}
+                  label="Load more creators"
+                  onLoadMore={loadMoreCreators}
+                />
+                </>
               )}
             </Match>
           </Switch>
@@ -670,10 +831,11 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
                 <Match when={(feeds()?.length ?? 0) === 0}>
                   <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">No feeds are attached to this creator.</p>
                 </Match>
-                <Match when={feeds()}>
-                  {(loadedFeeds) => (
+                <Match when={loadedFeeds()}>
+                  {(visibleFeeds) => (
+                    <>
                     <ul class="mt-2 space-y-1" aria-label="Feeds for selected creator">
-                      <For each={loadedFeeds()}>
+                      <For each={visibleFeeds()}>
                         {(feed) => (
                           <FeedRow
                             feed={feed}
@@ -685,6 +847,16 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
                         )}
                       </For>
                     </ul>
+                    <LoadMoreControl
+                      shownCount={visibleFeeds().length}
+                      pageSize={feedListLimit}
+                      hasMore={feedPageHasMore()}
+                      busy={feedPageBusy()}
+                      errorMessage={feedPageError()}
+                      label="Load more feeds"
+                      onLoadMore={loadMoreFeeds}
+                    />
+                    </>
                   )}
                 </Match>
               </Switch>
@@ -1937,6 +2109,10 @@ function ContentListColumn(props: ContentListColumnProps) {
   const [viewMode, setViewMode] = createSignal<ContentViewMode>(props.mode === "library" ? "subscribed" : "catalog");
   const [hidePlayed, setHidePlayed] = createSignal(false);
   const [playlistActionError, setPlaylistActionError] = createSignal<string | null>(null);
+  const [loadedContentItems, setLoadedContentItems] = createSignal<readonly CatalogContentListItem[]>(emptyCatalogContentItems);
+  const [contentPageHasMore, setContentPageHasMore] = createSignal(false);
+  const [contentPageBusy, setContentPageBusy] = createSignal(false);
+  const [contentPageError, setContentPageError] = createSignal<string | null>(null);
   const authenticatedPlaylistSource = createMemo(() => (props.isAuthenticated() ? "content-list-playlists" : null));
   const [playlists] = createResource(authenticatedPlaylistSource, () => client.overlays.playlists());
   const contentListInput = createMemo(() =>
@@ -2014,12 +2190,12 @@ function ContentListColumn(props: ContentListColumnProps) {
     return loadedPlaylists[0]?.id ?? null;
   });
   const displayedContentItems = createMemo(() => {
-    const loadedContentItems = contentItems() ?? emptyCatalogContentItems;
+    const currentContentItems = loadedContentItems();
     const input = contentListInput();
     const statuses = props.contentStatuses();
     const locallyFilteredItems = showsCatalogFilters(viewMode())
-      ? loadedContentItems
-      : loadedContentItems.filter((contentItem) => contentItemMatchesLocalFilters(contentItem, input));
+      ? currentContentItems
+      : currentContentItems.filter((contentItem) => contentItemMatchesLocalFilters(contentItem, input));
 
     if (!props.isAuthenticated() || !hidePlayed()) {
       return locallyFilteredItems;
@@ -2028,6 +2204,17 @@ function ContentListColumn(props: ContentListColumnProps) {
     return locallyFilteredItems.filter((contentItem) => !toContentStatusFlags(statuses, contentItem.id).played);
   });
   const contentCount = createMemo(() => displayedContentItems().length);
+
+  createEffect(() => {
+    const firstPageContentItems = contentItems();
+    if (firstPageContentItems === undefined) {
+      return;
+    }
+
+    setLoadedContentItems(firstPageContentItems);
+    setContentPageHasMore(showsCatalogFilters(viewMode()) && firstPageContentItems.length === contentListLimit);
+    setContentPageError(null);
+  });
 
   createEffect(() => {
     if (!props.isAuthenticated() && viewMode() === "favorites") {
@@ -2139,6 +2326,28 @@ function ContentListColumn(props: ContentListColumnProps) {
     }
   };
 
+  const loadMoreContentItems = async () => {
+    const mode = contentItemsResourceMode();
+    if (!showsCatalogFilters(viewMode()) || (mode !== "catalog" && mode !== "subscribed")) {
+      return;
+    }
+
+    const input = { ...contentListInput(), offset: loadedContentItems().length };
+    setContentPageBusy(true);
+    setContentPageError(null);
+    try {
+      const nextContentItems = mode === "subscribed"
+        ? await listSubscribedLibraryContentItems(input)
+        : await client.catalog.contentItems(input);
+      setLoadedContentItems((currentItems) => appendUniqueContentItems(currentItems, nextContentItems));
+      setContentPageHasMore(nextContentItems.length === contentListLimit);
+    } catch (error) {
+      setContentPageError(formatError(error));
+    } finally {
+      setContentPageBusy(false);
+    }
+  };
+
   return (
     <section
       aria-labelledby="content-list-title"
@@ -2156,6 +2365,9 @@ function ContentListColumn(props: ContentListColumnProps) {
             {contentContextLabel()}
           </span>
         </div>
+        <p class="mt-2 text-[0.68rem] text-muted-foreground" data-content-loaded-count>
+          {contentCount()} loaded
+        </p>
         <Show when={props.isAuthenticated()}>
           <div class="mt-2 grid grid-cols-4 gap-2" aria-label="Content view">
             <button
@@ -2323,6 +2535,15 @@ function ContentListColumn(props: ContentListColumnProps) {
                   )}
                 </For>
               </ol>
+              <LoadMoreControl
+                shownCount={contentCount()}
+                pageSize={contentListLimit}
+                hasMore={contentPageHasMore()}
+                busy={contentPageBusy()}
+                errorMessage={contentPageError()}
+                label="Load more videos"
+                onLoadMore={loadMoreContentItems}
+              />
           </Match>
         </Switch>
       </div>

@@ -13,6 +13,8 @@ import {
   findOrCreateFeed,
   linkFeedContent,
   listCatalogContentItems,
+  listCatalogCreators,
+  listCatalogFeedsForBrowsing,
   listRefreshFeedResultsForRun,
   listRefreshRuns,
   recordRefreshFeedResult,
@@ -455,6 +457,55 @@ describe("catalog and overlay repositories", () => {
 
     expect(refreshRuns.map((run) => run.id)).toEqual([latestRun.id, secondRun.id]);
     expect(refreshFeedResults).toHaveLength(2);
+  });
+
+  test("catalog repository pagination uses explicit offsets and stable tie-breakers", async () => {
+    const alphaCreator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "repo-pagination-alpha",
+      displayName: "Alpha Repository",
+    });
+    const betaCreator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "repo-pagination-beta",
+      displayName: "Beta Repository",
+    });
+    const firstFeed = await findOrCreateFeed(testDatabase.db, {
+      creatorId: alphaCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "repo-pagination-feed-first",
+      url: "https://youtube.example.test/repo/first.xml",
+    });
+    const secondFeed = await findOrCreateFeed(testDatabase.db, {
+      creatorId: alphaCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "repo-pagination-feed-second",
+      url: "https://youtube.example.test/repo/second.xml",
+    });
+    const newestItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: alphaCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "repo-pagination-newest",
+      title: "Repository newest",
+      publishedAt: new Date("2026-04-03T00:00:00.000Z"),
+    });
+    const olderItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: betaCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "repo-pagination-older",
+      title: "Repository older",
+      publishedAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+
+    const creators = await listCatalogCreators(testDatabase.db, { limit: 1, offset: 1 });
+    const feeds = await listCatalogFeedsForBrowsing(testDatabase.db, { creatorId: alphaCreator.id, limit: 1, offset: 1 });
+    const contentItems = await listCatalogContentItems(testDatabase.db, { limit: 1, offset: 1 });
+
+    expect(creators.map((creator) => creator.id)).toEqual([betaCreator.id]);
+    expect(feeds.map((feed) => feed.id)).toEqual([secondFeed.id]);
+    expect(contentItems.map((contentItem) => contentItem.id)).toEqual([olderItem.id]);
+    expect(firstFeed.id).not.toBe(secondFeed.id);
+    expect(newestItem.id).not.toBe(olderItem.id);
   });
 });
 

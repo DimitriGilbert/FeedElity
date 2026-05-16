@@ -26,6 +26,7 @@ import {
   getNextPlaylistItemPositionForUserPlaylist,
   getPlaylistForUser,
   getSubscriptionWithCreatorForUser,
+  listSubscribedContentItemsForUser,
   listContentStatusWithContentForUser,
   listContentStatusesForUser,
   listPlaylistItemsWithContentForUserPlaylist,
@@ -95,11 +96,14 @@ const boundedSearchInput = z.string().trim().min(1).max(120);
 
 const catalogLimitInput = z.number().int().min(1).max(100).default(50);
 
+const catalogOffsetInput = z.number().int().min(0).max(100_000).default(0);
+
 const creatorListInput = z
   .object({
     search: boundedSearchInput.optional(),
     sourceType: sourceTypeInput.optional(),
     limit: catalogLimitInput,
+    offset: catalogOffsetInput,
   })
   .optional();
 
@@ -108,6 +112,7 @@ const feedListInput = z
     creatorId: z.string().min(1).optional(),
     sourceType: sourceTypeInput.optional(),
     limit: catalogLimitInput,
+    offset: catalogOffsetInput,
   })
   .optional();
 
@@ -118,6 +123,7 @@ const contentListInput = z
     feedId: z.string().min(1).optional(),
     sourceType: sourceTypeInput.optional(),
     limit: catalogLimitInput,
+    offset: catalogOffsetInput,
   })
   .optional();
 
@@ -331,6 +337,12 @@ export const appRouter = {
   overlays: {
     subscriptions: protectedProcedure.handler(({ context }) => {
       return listSubscriptionsWithCreatorsForUser(context.db, context.session.user.id);
+    }),
+    subscribedContentItems: protectedProcedure.input(contentListInput).handler(({ input, context }) => {
+      return listSubscribedContentItemsForUser(context.db, {
+        ...(input ?? { limit: 50 }),
+        userId: context.session.user.id,
+      });
     }),
     subscribeToCreator: protectedProcedure.input(subscriptionCreatorInput).handler(async ({ input, context }) => {
       if ((await getCatalogCreatorSummaryById(context.db, input.creatorId)) === null) {

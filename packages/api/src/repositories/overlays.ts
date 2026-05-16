@@ -2,7 +2,7 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 
 import * as schema from "@FeedElity/db/schema";
 
-import type { CatalogContentItem, ContentStatusKind } from "../domain/catalog";
+import type { CatalogContentItem, CatalogContentListItem, CatalogCreatorSummary, ContentStatusKind, SourceType } from "../domain/catalog";
 import type {
   MigrationMapping,
   MigrationRun,
@@ -25,6 +25,16 @@ export interface SaveSubscriptionInput {
   readonly creatorId: string;
   readonly titleOverride?: string | null;
   readonly settingsJson?: string | null;
+}
+
+export interface ListSubscribedContentItemsForUserInput {
+  readonly userId: string;
+  readonly search?: string;
+  readonly creatorId?: string;
+  readonly feedId?: string;
+  readonly sourceType?: SourceType;
+  readonly limit: number;
+  readonly offset?: number;
 }
 
 export interface SaveContentStatusInput {
@@ -163,6 +173,47 @@ export async function listSubscriptionsWithCreatorsForUser(
   return rows.map((row) => ({
     ...toUserSubscription(row.subscription),
     creator: toCatalogCreatorSummary(row.creator),
+  }));
+}
+
+export async function listSubscribedContentItemsForUser(
+  db: RepositoryDb,
+  input: ListSubscribedContentItemsForUserInput,
+): Promise<readonly CatalogContentListItem[]> {
+  const conditions = [
+    eq(schema.subscription.userId, input.userId),
+    input.creatorId === undefined ? undefined : eq(schema.contentItem.creatorId, input.creatorId),
+    input.feedId === undefined ? undefined : eq(schema.feedContent.feedId, input.feedId),
+    input.sourceType === undefined ? undefined : eq(schema.contentItem.sourceType, input.sourceType),
+    input.search === undefined ? undefined : containsContentTitleNormalized(input.search),
+  ].filter(isDefined);
+
+  const contentQuery = db
+    .select({
+      contentItem: schema.contentItem,
+      creator: schema.creator,
+      sourceCount: sql<number>`(
+        select count(*)
+        from ${schema.contentSource}
+        where ${schema.contentSource.contentItemId} = ${schema.contentItem.id}
+      )`,
+    })
+    .from(schema.contentItem)
+    .innerJoin(schema.creator, eq(schema.contentItem.creatorId, schema.creator.id))
+    .innerJoin(schema.subscription, eq(schema.subscription.creatorId, schema.contentItem.creatorId));
+
+  const rows = await (input.feedId === undefined
+    ? contentQuery
+    : contentQuery.innerJoin(schema.feedContent, eq(schema.feedContent.contentItemId, schema.contentItem.id)))
+    .where(and(...conditions))
+    .orderBy(desc(schema.contentItem.publishedAt), desc(schema.contentItem.createdAt), desc(schema.contentItem.id))
+    .limit(input.limit)
+    .offset(input.offset ?? 0);
+
+  return rows.map((row) => ({
+    ...toCatalogContentItem(row.contentItem),
+    creator: toCatalogCreatorSummary(row.creator),
+    sourceCount: row.sourceCount,
   }));
 }
 
@@ -781,7 +832,7 @@ function toUserSubscription(row: typeof schema.subscription.$inferSelect): UserS
   };
 }
 
-function toCatalogCreatorSummary(row: typeof schema.creator.$inferSelect): UserSubscriptionWithCreator["creator"] {
+function toCatalogCreatorSummary(row: typeof schema.creator.$inferSelect): CatalogCreatorSummary {
   return {
     id: row.id,
     sourceType: row.sourceType,
@@ -817,6 +868,14 @@ function toCatalogContentItem(row: typeof schema.contentItem.$inferSelect): Cata
     canonicalUrl: row.canonicalUrl,
     metadataJson: row.metadataJson,
   };
+}
+
+function containsContentTitleNormalized(value: string) {
+  return sql`instr(lower(${schema.contentItem.title}), lower(${value})) > 0`;
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
 }
 
 function toPlaylist(row: typeof schema.playlist.$inferSelect): Playlist {

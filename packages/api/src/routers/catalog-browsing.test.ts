@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createClient } from "@libsql/client";
 import type { Client } from "@libsql/client";
 import { call } from "@orpc/server";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/libsql";
 
 import * as schema from "@FeedElity/db/schema";
@@ -138,6 +139,206 @@ describe("catalog browsing router", () => {
     expect(contentItems.map((contentItem) => contentItem.id)).toEqual([selectedFeedItem.id]);
   });
 
+  test("anonymous catalog browsing supports bounded offset pagination with stable ordering", async () => {
+    const betaCreator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "pagination-beta",
+      displayName: "Beta Pagination",
+    });
+    const alphaCreator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "pagination-alpha",
+      displayName: "Alpha Pagination",
+    });
+    const alphaFirstFeed = await findOrCreateFeed(testDatabase.db, {
+      creatorId: alphaCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "pagination-alpha-feed-1",
+      url: "https://youtube.example.test/alpha/1.xml",
+    });
+    const alphaSecondFeed = await findOrCreateFeed(testDatabase.db, {
+      creatorId: alphaCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "pagination-alpha-feed-2",
+      url: "https://youtube.example.test/alpha/2.xml",
+    });
+    await testDatabase.db
+      .update(schema.feed)
+      .set({ createdAt: new Date("2026-03-01T00:00:00.000Z") })
+      .where(eq(schema.feed.id, alphaFirstFeed.id));
+    await testDatabase.db
+      .update(schema.feed)
+      .set({ createdAt: new Date("2026-03-02T00:00:00.000Z") })
+      .where(eq(schema.feed.id, alphaSecondFeed.id));
+    const newestItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: alphaCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "pagination-video-newest",
+      title: "Newest pagination video",
+      publishedAt: new Date("2026-03-03T00:00:00.000Z"),
+    });
+    const middleItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: alphaCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "pagination-video-middle",
+      title: "Middle pagination video",
+      publishedAt: new Date("2026-03-02T00:00:00.000Z"),
+    });
+    const oldestItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: betaCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "pagination-video-oldest",
+      title: "Oldest pagination video",
+      publishedAt: new Date("2026-03-01T00:00:00.000Z"),
+    });
+
+    const secondCreatorPage = await call(
+      appRouter.catalog.creators,
+      { limit: 1, offset: 1 },
+      { context: anonymousContext(testDatabase.db) },
+    );
+    const secondFeedPage = await call(
+      appRouter.catalog.feeds,
+      { creatorId: alphaCreator.id, limit: 1, offset: 1 },
+      { context: anonymousContext(testDatabase.db) },
+    );
+    const secondContentPage = await call(
+      appRouter.catalog.contentItems,
+      { limit: 2, offset: 1 },
+      { context: anonymousContext(testDatabase.db) },
+    );
+
+    expect(secondCreatorPage.map((creator) => creator.id)).toEqual([betaCreator.id]);
+    expect(secondFeedPage.map((feed) => feed.id)).toEqual([alphaSecondFeed.id]);
+    expect(secondContentPage.map((contentItem) => contentItem.id)).toEqual([middleItem.id, oldestItem.id]);
+    expect(newestItem.id).not.toBe(middleItem.id);
+    expect(alphaFirstFeed.id).not.toBe(alphaSecondFeed.id);
+  });
+
+  test("authenticated subscribed content paginates across subscribed creators with stable ordering", async () => {
+    await insertUser(testDatabase.db, "library-user", "library-user@example.test");
+    const firstCreator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "subscribed-pagination-first",
+      displayName: "Subscribed Pagination First",
+    });
+    const secondCreator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "peertube",
+      sourceExternalId: "subscribed-pagination-second",
+      displayName: "Subscribed Pagination Second",
+    });
+    const firstFeed = await findOrCreateFeed(testDatabase.db, {
+      creatorId: firstCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "subscribed-pagination-feed",
+      url: "https://youtube.example.test/subscribed-pagination.xml",
+    });
+    const newestItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: firstCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "subscribed-pagination-newest",
+      title: "Newest subscribed page item",
+      publishedAt: new Date("2026-04-04T00:00:00.000Z"),
+    });
+    const middleItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: secondCreator.id,
+      sourceType: "peertube",
+      sourceExternalId: "subscribed-pagination-middle",
+      title: "Middle subscribed page item",
+      publishedAt: new Date("2026-04-03T00:00:00.000Z"),
+    });
+    const oldestItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: firstCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "subscribed-pagination-oldest",
+      title: "Oldest subscribed page item",
+      publishedAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+    await findOrCreateContentSource(testDatabase.db, {
+      contentItemId: middleItem.id,
+      sourceType: "peertube",
+      canonicalUrl: "https://peertube.example.test/w/middle",
+      priority: 0,
+    });
+    await findOrCreateContentSource(testDatabase.db, {
+      contentItemId: middleItem.id,
+      sourceType: "youtube",
+      canonicalUrl: "https://youtube.example.test/watch?v=middle-mirror",
+      priority: 1,
+    });
+    await linkFeedContent(testDatabase.db, {
+      feedId: firstFeed.id,
+      contentItemId: newestItem.id,
+      sourceExternalId: "subscribed-pagination-newest",
+    });
+    await linkFeedContent(testDatabase.db, {
+      feedId: firstFeed.id,
+      contentItemId: oldestItem.id,
+      sourceExternalId: "subscribed-pagination-oldest",
+    });
+    await findOrCreateSubscription(testDatabase.db, { userId: "library-user", creatorId: firstCreator.id });
+    await findOrCreateSubscription(testDatabase.db, { userId: "library-user", creatorId: secondCreator.id });
+
+    const secondPage = await call(
+      appRouter.overlays.subscribedContentItems,
+      { limit: 2, offset: 1 },
+      { context: authenticatedContext(testDatabase.db, "library-user") },
+    );
+    const feedPage = await call(
+      appRouter.overlays.subscribedContentItems,
+      { feedId: firstFeed.id, limit: 10, offset: 0 },
+      { context: authenticatedContext(testDatabase.db, "library-user") },
+    );
+
+    expect(secondPage.map((contentItem) => contentItem.id)).toEqual([middleItem.id, oldestItem.id]);
+    expect(secondPage[0]?.sourceCount).toBe(2);
+    expect(feedPage.map((contentItem) => contentItem.id)).toEqual([newestItem.id, oldestItem.id]);
+  });
+
+  test("authenticated subscribed content excludes unsubscribed creators", async () => {
+    await insertUser(testDatabase.db, "scoped-user", "scoped-user@example.test");
+    const subscribedCreator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "subscribed-scope-included",
+      displayName: "Subscribed Scope Included",
+    });
+    const unsubscribedCreator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "odysee",
+      sourceExternalId: "subscribed-scope-excluded",
+      displayName: "Subscribed Scope Excluded",
+    });
+    const includedItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: subscribedCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "subscribed-scope-included-video",
+      title: "Included subscribed video",
+      publishedAt: new Date("2026-04-05T00:00:00.000Z"),
+    });
+    const excludedItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: unsubscribedCreator.id,
+      sourceType: "odysee",
+      sourceExternalId: "subscribed-scope-excluded-video",
+      title: "Excluded unsubscribed video",
+      publishedAt: new Date("2026-04-06T00:00:00.000Z"),
+    });
+    await findOrCreateSubscription(testDatabase.db, { userId: "scoped-user", creatorId: subscribedCreator.id });
+
+    const contentItems = await call(
+      appRouter.overlays.subscribedContentItems,
+      { limit: 10, offset: 0 },
+      { context: authenticatedContext(testDatabase.db, "scoped-user") },
+    );
+    const unsubscribedCreatorPage = await call(
+      appRouter.overlays.subscribedContentItems,
+      { creatorId: unsubscribedCreator.id, limit: 10, offset: 0 },
+      { context: authenticatedContext(testDatabase.db, "scoped-user") },
+    );
+
+    expect(contentItems.map((contentItem) => contentItem.id)).toEqual([includedItem.id]);
+    expect(contentItems.map((contentItem) => contentItem.id)).not.toContain(excludedItem.id);
+    expect(unsubscribedCreatorPage).toEqual([]);
+  });
+
   test("refresh status is public and manual refresh procedures are protected", async () => {
     const run = await createRefreshRun(testDatabase.db, {
       scope: "all",
@@ -205,9 +406,24 @@ describe("catalog browsing router", () => {
       startedAt: new Date("2026-05-16T12:00:00.000Z"),
     });
 
-    await recordRefreshFeedResult(testDatabase.db, { refreshRunId: latestRun.id, feedId: firstFeed.id, status: "succeeded" });
-    await recordRefreshFeedResult(testDatabase.db, { refreshRunId: latestRun.id, feedId: secondFeed.id, status: "failed" });
-    await recordRefreshFeedResult(testDatabase.db, { refreshRunId: latestRun.id, feedId: thirdFeed.id, status: "partial" });
+    await recordRefreshFeedResult(testDatabase.db, {
+      refreshRunId: latestRun.id,
+      feedId: firstFeed.id,
+      status: "succeeded",
+      startedAt: new Date("2026-05-16T12:00:01.000Z"),
+    });
+    await recordRefreshFeedResult(testDatabase.db, {
+      refreshRunId: latestRun.id,
+      feedId: secondFeed.id,
+      status: "failed",
+      startedAt: new Date("2026-05-16T12:00:02.000Z"),
+    });
+    await recordRefreshFeedResult(testDatabase.db, {
+      refreshRunId: latestRun.id,
+      feedId: thirdFeed.id,
+      status: "partial",
+      startedAt: new Date("2026-05-16T12:00:03.000Z"),
+    });
 
     const status = await call(
       appRouter.refresh.status,
@@ -340,6 +556,9 @@ describe("catalog browsing router", () => {
   test("invalid catalog browsing input is rejected before repository access", async () => {
     await expect(
       call(appRouter.catalog.contentItems, { limit: 101 }, { context: anonymousContext(testDatabase.db) }),
+    ).rejects.toBeDefined();
+    await expect(
+      call(appRouter.catalog.creators, { limit: 10, offset: -1 }, { context: anonymousContext(testDatabase.db) }),
     ).rejects.toBeDefined();
   });
 });

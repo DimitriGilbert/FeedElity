@@ -128,6 +128,7 @@ export interface ListCatalogCreatorsInput {
   readonly search?: string;
   readonly sourceType?: SourceType;
   readonly limit: number;
+  readonly offset?: number;
 }
 
 export interface ListCatalogContentItemsInput {
@@ -136,12 +137,14 @@ export interface ListCatalogContentItemsInput {
   readonly feedId?: string;
   readonly sourceType?: SourceType;
   readonly limit: number;
+  readonly offset?: number;
 }
 
 export interface ListCatalogFeedsInput {
   readonly creatorId?: string;
   readonly sourceType?: SourceType;
   readonly limit: number;
+  readonly offset?: number;
 }
 
 export interface ListRefreshRunsInput {
@@ -381,8 +384,9 @@ export async function listCatalogCreators(
   ].filter(isDefined);
   const rows = await db.query.creator.findMany({
     where: conditions.length === 0 ? undefined : and(...conditions),
-    orderBy: (creator, { asc }) => [asc(creator.displayName), asc(creator.createdAt)],
+    orderBy: (creator, { asc }) => [asc(creator.displayName), asc(creator.createdAt), asc(creator.id)],
     limit: input.limit,
+    offset: input.offset ?? 0,
   });
 
   return rows.map(toCatalogCreator);
@@ -416,8 +420,9 @@ export async function listCatalogContentItems(
     ? contentQuery
     : contentQuery.innerJoin(schema.feedContent, eq(schema.feedContent.contentItemId, schema.contentItem.id)))
     .where(conditions.length === 0 ? undefined : and(...conditions))
-    .orderBy(desc(schema.contentItem.publishedAt), desc(schema.contentItem.createdAt))
-    .limit(input.limit);
+    .orderBy(desc(schema.contentItem.publishedAt), desc(schema.contentItem.createdAt), desc(schema.contentItem.id))
+    .limit(input.limit)
+    .offset(input.offset ?? 0);
 
   return rows.map((row) => ({
     ...toCatalogContentItem(row.contentItem),
@@ -444,8 +449,9 @@ export async function listCatalogFeedsForBrowsing(
   ].filter(isDefined);
   const rows = await db.query.feed.findMany({
     where: conditions.length === 0 ? undefined : and(...conditions),
-    orderBy: (feed, { asc }) => [asc(feed.createdAt)],
+    orderBy: (feed, { asc }) => [asc(feed.createdAt), asc(feed.id)],
     limit: input.limit,
+    offset: input.offset ?? 0,
   });
 
   return rows.map(toCatalogFeed);

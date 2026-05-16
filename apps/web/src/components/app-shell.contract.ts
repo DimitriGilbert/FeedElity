@@ -1,4 +1,5 @@
 import type {
+  CatalogContentListItem,
   CatalogContentSource,
   CatalogCreator,
   RefreshRun,
@@ -13,10 +14,20 @@ export interface ShellColumnDefinition {
   readonly description: string;
 }
 
+export type ShellPaneId = ShellColumnDefinition["id"];
+
 export interface CreatorListInput {
   readonly search?: string;
   readonly sourceType?: SourceType;
   readonly limit: number;
+  readonly offset: number;
+}
+
+export interface FeedListInput {
+  readonly creatorId?: string;
+  readonly sourceType?: SourceType;
+  readonly limit: number;
+  readonly offset: number;
 }
 
 export interface ContentListInput {
@@ -25,6 +36,7 @@ export interface ContentListInput {
   readonly feedId?: string;
   readonly sourceType?: SourceType;
   readonly limit: number;
+  readonly offset: number;
 }
 
 export type ShellMode = "catalog" | "library";
@@ -49,7 +61,11 @@ export const addSourceHelpId = "creator-source-add-help";
 
 export const creatorListLimit = 50;
 
+export const feedListLimit = 25;
+
 export const contentListLimit = 50;
+
+export const firstPageOffset = 0;
 
 export const contentSearchInputId = "content-list-search";
 
@@ -167,13 +183,27 @@ export function getShellColumnCount() {
   return shellColumns.length;
 }
 
-export function toCreatorListInput(search: string, sourceType: SourceType | null = null): CreatorListInput {
+export function toCreatorListInput(search: string, sourceType: SourceType | null = null, offset = firstPageOffset): CreatorListInput {
   const trimmedSearch = search.trim();
 
   return {
     ...(trimmedSearch.length === 0 ? {} : { search: trimmedSearch }),
     ...(sourceType === null ? {} : { sourceType }),
     limit: creatorListLimit,
+    offset,
+  };
+}
+
+export function toFeedListInput(creatorId: string | null, sourceType: SourceType | null = null, offset = firstPageOffset): FeedListInput | null {
+  if (creatorId === null) {
+    return null;
+  }
+
+  return {
+    creatorId,
+    ...(sourceType === null ? {} : { sourceType }),
+    limit: feedListLimit,
+    offset,
   };
 }
 
@@ -182,6 +212,7 @@ export function toContentListInput(
   creatorId: string | null,
   feedId: string | null,
   sourceType: SourceType | null,
+  offset = firstPageOffset,
 ): ContentListInput {
   const trimmedSearch = search.trim();
   return {
@@ -190,7 +221,34 @@ export function toContentListInput(
     ...(feedId === null ? {} : { feedId }),
     ...(sourceType === null ? {} : { sourceType }),
     limit: contentListLimit,
+    offset,
   };
+}
+
+export function mergeUniqueContentItemsForDisplay(
+  contentItems: readonly CatalogContentListItem[],
+): readonly CatalogContentListItem[] {
+  const contentById = new Map<string, CatalogContentListItem>();
+  for (const contentItem of contentItems) {
+    if (!contentById.has(contentItem.id)) {
+      contentById.set(contentItem.id, contentItem);
+    }
+  }
+
+  return [...contentById.values()].sort(compareContentItemsForDisplay);
+}
+
+function compareContentItemsForDisplay(first: CatalogContentListItem, second: CatalogContentListItem): number {
+  const publishedDifference = getContentItemPublishedTime(second) - getContentItemPublishedTime(first);
+  if (publishedDifference !== 0) {
+    return publishedDifference;
+  }
+
+  return second.id.localeCompare(first.id);
+}
+
+function getContentItemPublishedTime(contentItem: CatalogContentListItem): number {
+  return contentItem.publishedAt?.getTime() ?? Number.NEGATIVE_INFINITY;
 }
 
 export function showsCatalogFilters(viewMode: ContentViewMode): boolean {
