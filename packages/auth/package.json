@@ -1,0 +1,24 @@
+{
+  "name": "@FeedElity/auth",
+  "type": "module",
+  "exports": {
+    ".": {
+      "default": "./src/index.ts"
+    },
+    "./*": {
+      "default": "./src/*.ts"
+    }
+  },
+  "scripts": {},
+  "dependencies": {
+    "@FeedElity/db": "workspace:*",
+    "@FeedElity/env": "workspace:*",
+    "better-auth": "catalog:",
+    "dotenv": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@FeedElity/config": "workspace:*",
+    "typescript": "catalog:"
+  }
+}

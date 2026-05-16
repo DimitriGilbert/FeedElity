@@ -1,0 +1,3 @@
+{
+  "extends": "@FeedElity/config/tsconfig.base.json"
+}
