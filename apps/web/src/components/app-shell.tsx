@@ -187,6 +187,24 @@ const emptyUserContentStatuses: readonly UserContentStatus[] = [];
 
 const emptyUserSettings: readonly UserSetting[] = [];
 
+interface AppendedPageState<TItem> {
+  readonly key: string;
+  readonly items: readonly TItem[];
+  readonly hasMore: boolean;
+}
+
+function emptyAppendedPageState<TItem>(): AppendedPageState<TItem> {
+  return { key: "", items: [], hasMore: false };
+}
+
+function pageItemsForKey<TItem>(state: AppendedPageState<TItem>, key: string): readonly TItem[] {
+  return state.key === key ? state.items : [];
+}
+
+function pageHasMoreForKey<TItem>(state: AppendedPageState<TItem>, key: string, firstPageLength: number, pageSize: number): boolean {
+  return state.key === key ? state.hasMore : firstPageLength === pageSize;
+}
+
 const playlistSortOptions: readonly { readonly value: PlaylistSortMode; readonly label: string }[] = [
   { value: "manual", label: "Manual" },
   { value: "published_at_desc", label: "Newest published" },
@@ -545,18 +563,17 @@ function LoadMoreControl(props: LoadMoreControlProps) {
 function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [search, setSearch] = createSignal("");
   const [sourceType, setSourceType] = createSignal<SourceType | null>(null);
-  const [catalogCreators, setCatalogCreators] = createSignal<readonly BrowsableCreator[]>(emptyBrowsableCreators);
-  const [creatorPageHasMore, setCreatorPageHasMore] = createSignal(false);
+  const [appendedCatalogCreatorPage, setAppendedCatalogCreatorPage] = createSignal<AppendedPageState<BrowsableCreator>>(emptyAppendedPageState());
   const [creatorPageBusy, setCreatorPageBusy] = createSignal(false);
   const [creatorPageError, setCreatorPageError] = createSignal<string | null>(null);
-  const [loadedFeeds, setLoadedFeeds] = createSignal<readonly CatalogFeed[]>(emptyCatalogFeeds);
-  const [feedPageHasMore, setFeedPageHasMore] = createSignal(false);
+  const [appendedFeedPage, setAppendedFeedPage] = createSignal<AppendedPageState<CatalogFeed>>(emptyAppendedPageState());
   const [feedPageBusy, setFeedPageBusy] = createSignal(false);
   const [feedPageError, setFeedPageError] = createSignal<string | null>(null);
   const [libraryCreatorLimit, setLibraryCreatorLimit] = createSignal(creatorListLimit);
   const creatorListInput = createMemo(() => toCreatorListInput(search(), sourceType()));
+  const creatorListResourceKey = createMemo(() => toCreatorListResourceKey(creatorListInput()));
   const [creators, { refetch: refetchCreators }] = createResource(
-    () => toCreatorListResourceKey(creatorListInput()),
+    creatorListResourceKey,
     () => client.catalog.creators(untrack(creatorListInput)),
   );
   const subscriptionsResourceInput = createMemo(() => {
@@ -570,8 +587,9 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     client.overlays.subscriptions(),
   );
   const feedListInput = createMemo(() => toFeedListInput(props.selectedCreatorId()));
+  const feedListResourceKey = createMemo(() => toFeedListResourceKey(feedListInput()));
   const [feeds, { refetch: refetchFeeds }] = createResource(
-    () => toFeedListResourceKey(feedListInput()),
+    feedListResourceKey,
     () => {
       const input = untrack(feedListInput);
       return input === null ? emptyCatalogFeeds : client.catalog.feeds(input);
@@ -589,9 +607,17 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
       }).slice(0, libraryCreatorLimit());
     }
 
-    return catalogCreators();
+    return appendUniqueCreators(creators() ?? emptyBrowsableCreators, pageItemsForKey(appendedCatalogCreatorPage(), creatorListResourceKey()));
   });
   const creatorCount = createMemo(() => listedCreators().length);
+  const catalogCreatorHasMore = createMemo(() =>
+    pageHasMoreForKey(
+      appendedCatalogCreatorPage(),
+      creatorListResourceKey(),
+      (creators() ?? emptyBrowsableCreators).length,
+      creatorListLimit,
+    ),
+  );
   const libraryCreatorHasMore = createMemo(() => {
     if (props.mode !== "library") {
       return false;
@@ -609,31 +635,19 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   });
 
   createEffect(() => {
-    const loadedCreators = creators();
-    if (loadedCreators === undefined) {
-      return;
-    }
-
-    setCatalogCreators(loadedCreators);
-    setCreatorPageHasMore(loadedCreators.length === creatorListLimit);
-    setCreatorPageError(null);
-  });
-
-  createEffect(() => {
     search();
     sourceType();
     setLibraryCreatorLimit(creatorListLimit);
   });
 
-  createEffect(() => {
-    const loadedFirstPageFeeds = feeds();
-    if (loadedFirstPageFeeds === undefined) {
-      return;
+  const visibleFeeds = createMemo(() => appendUniqueFeeds(feeds() ?? emptyCatalogFeeds, pageItemsForKey(appendedFeedPage(), feedListResourceKey() ?? "")));
+  const feedPageHasMore = createMemo(() => {
+    const key = feedListResourceKey();
+    if (key === null) {
+      return false;
     }
 
-    setLoadedFeeds(loadedFirstPageFeeds);
-    setFeedPageHasMore(loadedFirstPageFeeds.length === feedListLimit);
-    setFeedPageError(null);
+    return pageHasMoreForKey(appendedFeedPage(), key, (feeds() ?? emptyCatalogFeeds).length, feedListLimit);
   });
 
   const loadMoreCreators = async () => {
@@ -645,9 +659,14 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     setCreatorPageBusy(true);
     setCreatorPageError(null);
     try {
-      const nextCreators = await client.catalog.creators({ ...creatorListInput(), offset: catalogCreators().length });
-      setCatalogCreators((currentCreators) => appendUniqueCreators(currentCreators, nextCreators));
-      setCreatorPageHasMore(nextCreators.length === creatorListLimit);
+      const key = creatorListResourceKey();
+      const loadedCreators = listedCreators();
+      const nextCreators = await client.catalog.creators({ ...creatorListInput(), offset: loadedCreators.length });
+      setAppendedCatalogCreatorPage((currentPage) => ({
+        key,
+        items: appendUniqueCreators(pageItemsForKey(currentPage, key), nextCreators),
+        hasMore: nextCreators.length === creatorListLimit,
+      }));
     } catch (error) {
       setCreatorPageError(formatError(error));
     } finally {
@@ -664,9 +683,17 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     setFeedPageBusy(true);
     setFeedPageError(null);
     try {
-      const nextFeeds = await client.catalog.feeds({ ...input, offset: loadedFeeds().length });
-      setLoadedFeeds((currentFeeds) => appendUniqueFeeds(currentFeeds, nextFeeds));
-      setFeedPageHasMore(nextFeeds.length === feedListLimit);
+      const key = feedListResourceKey();
+      if (key === null) {
+        return;
+      }
+
+      const nextFeeds = await client.catalog.feeds({ ...input, offset: visibleFeeds().length });
+      setAppendedFeedPage((currentPage) => ({
+        key,
+        items: appendUniqueFeeds(pageItemsForKey(currentPage, key), nextFeeds),
+        hasMore: nextFeeds.length === feedListLimit,
+      }));
     } catch (error) {
       setFeedPageError(formatError(error));
     } finally {
@@ -789,10 +816,10 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
                     )}
                   </For>
                 </ol>
-                <LoadMoreControl
+                  <LoadMoreControl
                   shownCount={creatorCount()}
                   pageSize={creatorListLimit}
-                  hasMore={props.mode === "library" ? libraryCreatorHasMore() : creatorPageHasMore()}
+                  hasMore={props.mode === "library" ? libraryCreatorHasMore() : catalogCreatorHasMore()}
                   busy={creatorPageBusy()}
                   errorMessage={creatorPageError()}
                   label="Load more creators"
@@ -831,11 +858,11 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
                 <Match when={(feeds()?.length ?? 0) === 0}>
                   <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">No feeds are attached to this creator.</p>
                 </Match>
-                <Match when={loadedFeeds()}>
-                  {(visibleFeeds) => (
+                <Match when={visibleFeeds()}>
+                  {(selectedCreatorFeeds) => (
                     <>
                     <ul class="mt-2 space-y-1" aria-label="Feeds for selected creator">
-                      <For each={visibleFeeds()}>
+                      <For each={selectedCreatorFeeds()}>
                         {(feed) => (
                           <FeedRow
                             feed={feed}
@@ -848,7 +875,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
                       </For>
                     </ul>
                     <LoadMoreControl
-                      shownCount={visibleFeeds().length}
+                      shownCount={selectedCreatorFeeds().length}
                       pageSize={feedListLimit}
                       hasMore={feedPageHasMore()}
                       busy={feedPageBusy()}
@@ -2109,8 +2136,7 @@ function ContentListColumn(props: ContentListColumnProps) {
   const [viewMode, setViewMode] = createSignal<ContentViewMode>(props.mode === "library" ? "subscribed" : "catalog");
   const [hidePlayed, setHidePlayed] = createSignal(false);
   const [playlistActionError, setPlaylistActionError] = createSignal<string | null>(null);
-  const [loadedContentItems, setLoadedContentItems] = createSignal<readonly CatalogContentListItem[]>(emptyCatalogContentItems);
-  const [contentPageHasMore, setContentPageHasMore] = createSignal(false);
+  const [appendedContentPage, setAppendedContentPage] = createSignal<AppendedPageState<CatalogContentListItem>>(emptyAppendedPageState());
   const [contentPageBusy, setContentPageBusy] = createSignal(false);
   const [contentPageError, setContentPageError] = createSignal<string | null>(null);
   const authenticatedPlaylistSource = createMemo(() => (props.isAuthenticated() ? "content-list-playlists" : null));
@@ -2189,6 +2215,13 @@ function ContentListColumn(props: ContentListColumnProps) {
 
     return loadedPlaylists[0]?.id ?? null;
   });
+  const loadedContentItems = createMemo(() =>
+    appendUniqueContentItems(contentItems() ?? emptyCatalogContentItems, pageItemsForKey(appendedContentPage(), contentItemsResourceKey())),
+  );
+  const contentPageHasMore = createMemo(() =>
+    showsCatalogFilters(viewMode())
+      && pageHasMoreForKey(appendedContentPage(), contentItemsResourceKey(), (contentItems() ?? emptyCatalogContentItems).length, contentListLimit),
+  );
   const displayedContentItems = createMemo(() => {
     const currentContentItems = loadedContentItems();
     const input = contentListInput();
@@ -2204,17 +2237,6 @@ function ContentListColumn(props: ContentListColumnProps) {
     return locallyFilteredItems.filter((contentItem) => !toContentStatusFlags(statuses, contentItem.id).played);
   });
   const contentCount = createMemo(() => displayedContentItems().length);
-
-  createEffect(() => {
-    const firstPageContentItems = contentItems();
-    if (firstPageContentItems === undefined) {
-      return;
-    }
-
-    setLoadedContentItems(firstPageContentItems);
-    setContentPageHasMore(showsCatalogFilters(viewMode()) && firstPageContentItems.length === contentListLimit);
-    setContentPageError(null);
-  });
 
   createEffect(() => {
     if (!props.isAuthenticated() && viewMode() === "favorites") {
@@ -2332,6 +2354,7 @@ function ContentListColumn(props: ContentListColumnProps) {
       return;
     }
 
+    const key = contentItemsResourceKey();
     const input = { ...contentListInput(), offset: loadedContentItems().length };
     setContentPageBusy(true);
     setContentPageError(null);
@@ -2339,8 +2362,11 @@ function ContentListColumn(props: ContentListColumnProps) {
       const nextContentItems = mode === "subscribed"
         ? await listSubscribedLibraryContentItems(input)
         : await client.catalog.contentItems(input);
-      setLoadedContentItems((currentItems) => appendUniqueContentItems(currentItems, nextContentItems));
-      setContentPageHasMore(nextContentItems.length === contentListLimit);
+      setAppendedContentPage((currentPage) => ({
+        key,
+        items: appendUniqueContentItems(pageItemsForKey(currentPage, key), nextContentItems),
+        hasMore: nextContentItems.length === contentListLimit,
+      }));
     } catch (error) {
       setContentPageError(formatError(error));
     } finally {
