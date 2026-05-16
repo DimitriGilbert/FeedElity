@@ -18,7 +18,7 @@ import type {
   UserSubscriptionWithCreator,
 } from "@FeedElity/api";
 import { CirclePlay, RadioTower, SquarePlay } from "lucide-solid";
-import { For, Match, Show, Switch, createEffect, createMemo, createResource, createSignal, untrack } from "solid-js";
+import { For, Match, Show, Switch, createMemo, createResource, createSignal, untrack } from "solid-js";
 
 import { authClient } from "@/lib/auth-client";
 import { client } from "@/utils/orpc";
@@ -634,12 +634,6 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     return matchingCreators.length > libraryCreatorLimit();
   });
 
-  createEffect(() => {
-    search();
-    sourceType();
-    setLibraryCreatorLimit(creatorListLimit);
-  });
-
   const visibleFeeds = createMemo(() => appendUniqueFeeds(feeds() ?? emptyCatalogFeeds, pageItemsForKey(appendedFeedPage(), feedListResourceKey() ?? "")));
   const feedPageHasMore = createMemo(() => {
     const key = feedListResourceKey();
@@ -747,7 +741,10 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
           value={search()}
           placeholder="Search creators"
           autocomplete="off"
-          onInput={(event) => setSearch(event.currentTarget.value)}
+          onInput={(event) => {
+            setSearch(event.currentTarget.value);
+            setLibraryCreatorLimit(creatorListLimit);
+          }}
         />
         <label class="sr-only" for={creatorSourceFilterId}>
           Filter creators by source type
@@ -758,7 +755,10 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
           value={sourceType() ?? allCreatorSourceFilterValue}
           aria-label="Creator source-type filter"
           title="Filters creator rows by catalog source type. Select a creator to inspect all feeds."
-          onChange={(event) => setSourceType(toSourceFilterValue(event.currentTarget.value))}
+          onChange={(event) => {
+            setSourceType(toSourceFilterValue(event.currentTarget.value));
+            setLibraryCreatorLimit(creatorListLimit);
+          }}
         >
           <option value={allCreatorSourceFilterValue}>All creator sources</option>
           <For each={sourceFilterOptions}>
@@ -1646,36 +1646,13 @@ function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
   );
   const selectedPlaylistUsesManualOrder = createMemo(() => selectedPlaylist()?.sortMode === "manual");
 
-  let lastFormPlaylistId: string | null | undefined;
-  createEffect(() => {
-    const playlistId = props.selectedPlaylistId();
-    const loadedPlaylists = playlists();
-    if (playlistId !== null && loadedPlaylists === undefined) {
-      return;
-    }
-
-    if (playlistId === lastFormPlaylistId) {
-      return;
-    }
-
-    lastFormPlaylistId = playlistId;
-    const playlist = playlistId === null ? null : loadedPlaylists?.find((candidate) => candidate.id === playlistId) ?? null;
+  const editPlaylist = (playlist: Playlist | null) => {
+    props.onSelectPlaylist(playlist?.id ?? null);
     setEditingPlaylist(playlist);
     setPlaylistName(playlist?.name ?? "");
     setPlaylistDescription(playlist?.description ?? "");
     setPlaylistSortMode(playlist?.sortMode ?? "manual");
-  });
-
-  createEffect(() => {
-    const loadedPlaylists = playlists();
-    if (loadedPlaylists === undefined) {
-      return;
-    }
-
-    if (props.selectedPlaylistId() !== null && !loadedPlaylists.some((playlist) => playlist.id === props.selectedPlaylistId())) {
-      props.onSelectPlaylist(null);
-    }
-  });
+  };
 
   const createPlaylist = async () => {
     const name = playlistName().trim();
@@ -1693,7 +1670,7 @@ function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
         sortMode: playlistSortMode(),
       });
       await refetchPlaylists();
-      props.onSelectPlaylist(playlist.id);
+      editPlaylist(playlist);
     } catch (error) {
       setPlaylistError(formatError(error));
     } finally {
@@ -1731,7 +1708,7 @@ function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
     setPlaylistError(null);
     try {
       await client.overlays.deletePlaylist({ playlistId });
-      props.onSelectPlaylist(null);
+      editPlaylist(null);
       await refetchPlaylists();
     } catch (error) {
       setPlaylistError(formatError(error));
@@ -1797,7 +1774,10 @@ function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
             id="source-playlist-selector"
             class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
             value={props.selectedPlaylistId() ?? ""}
-            onChange={(event) => props.onSelectPlaylist(event.currentTarget.value.length === 0 ? null : event.currentTarget.value)}
+            onChange={(event) => {
+              const playlistId = event.currentTarget.value;
+              editPlaylist(playlistId.length === 0 ? null : playlists()?.find((playlist) => playlist.id === playlistId) ?? null);
+            }}
             data-compact-playlist-selector
           >
             <option value="">No playlist selected</option>
@@ -1861,10 +1841,7 @@ function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
             type="button"
             class="border border-border bg-card px-2 py-1.5 text-xs font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             onClick={() => {
-              props.onSelectPlaylist(null);
-              setPlaylistName("");
-              setPlaylistDescription("");
-              setPlaylistSortMode("manual");
+              editPlaylist(null);
             }}
           >
             New
@@ -1891,7 +1868,7 @@ function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
                       type="button"
                       class="w-full text-left text-card-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                       aria-pressed={props.selectedPlaylistId() === playlist.id}
-                      onClick={() => props.onSelectPlaylist(props.selectedPlaylistId() === playlist.id ? null : playlist.id)}
+                      onClick={() => editPlaylist(props.selectedPlaylistId() === playlist.id ? null : playlist)}
                     >
                       <span class="block truncate text-xs font-semibold">{playlist.name}</span>
                       <span class="mt-1 block truncate text-[0.68rem] text-muted-foreground">
@@ -2237,34 +2214,6 @@ function ContentListColumn(props: ContentListColumnProps) {
     return locallyFilteredItems.filter((contentItem) => !toContentStatusFlags(statuses, contentItem.id).played);
   });
   const contentCount = createMemo(() => displayedContentItems().length);
-
-  createEffect(() => {
-    if (!props.isAuthenticated() && viewMode() === "favorites") {
-      setViewMode("catalog");
-    }
-    if (!props.isAuthenticated() && (viewMode() === "history-opened" || viewMode() === "played")) {
-      setViewMode("catalog");
-    }
-    if (!props.isAuthenticated() && hidePlayed()) {
-      setHidePlayed(false);
-    }
-  });
-
-  createEffect(() => {
-    setViewMode(props.mode === "library" ? "subscribed" : "catalog");
-    setSourceType(null);
-    setSearch("");
-    setHidePlayed(false);
-  });
-
-  createEffect(() => {
-    if (props.mode === "catalog" && viewMode() === "subscribed") {
-      setViewMode("catalog");
-    }
-    if (props.mode === "library" && viewMode() === "catalog") {
-      setViewMode("subscribed");
-    }
-  });
 
   const contentSectionTitle = createMemo(() => {
     if (viewMode() === "favorites") {
@@ -2826,40 +2775,34 @@ function SelectedContentViewer(props: SelectedContentViewerProps) {
   const [statusActionError, setStatusActionError] = createSignal<string | null>(null);
   const [statusActionBusy, setStatusActionBusy] = createSignal<"opened" | "played" | null>(null);
 
-  createEffect(() => {
-    const sourceIds = playableSourceIds();
-    const sources = untrack(playableSources);
-    const currentSourceId = selectedSourceId();
-    if (sourceIds.length === 0) {
-      setSelectedSourceId(null);
-      return;
-    }
-
-    if (!sources.some((source) => source.id === currentSourceId)) {
-      setSelectedSourceId(sources[0]?.id ?? null);
-    }
-  });
-
-  createEffect(() => {
-    const loadedPlaylists = playlists() ?? emptyPlaylists;
-    if (loadedPlaylists.length === 0) {
-      setTargetPlaylistId(null);
-      return;
-    }
-
-    if (!loadedPlaylists.some((playlist) => playlist.id === targetPlaylistId())) {
-      setTargetPlaylistId(props.selectedPlaylistId() ?? loadedPlaylists[0]?.id ?? null);
-    }
-  });
-
   const selectedPlayableSource = createMemo(() => {
+    const sourceIds = playableSourceIds();
     const sources = playableSources();
-    return sources.find((source) => source.id === selectedSourceId()) ?? sources[0] ?? null;
+    const selectedId = selectedSourceId();
+    if (sourceIds.length === 0) {
+      return null;
+    }
+
+    return selectedId === null ? sources[0] ?? null : sources.find((source) => source.id === selectedId) ?? sources[0] ?? null;
+  });
+  const effectiveTargetPlaylistId = createMemo(() => {
+    const loadedPlaylists = playlists() ?? emptyPlaylists;
+    const explicitTargetId = targetPlaylistId();
+    const selectedPlaylistId = props.selectedPlaylistId();
+
+    if (explicitTargetId !== null && loadedPlaylists.some((playlist) => playlist.id === explicitTargetId)) {
+      return explicitTargetId;
+    }
+    if (selectedPlaylistId !== null && loadedPlaylists.some((playlist) => playlist.id === selectedPlaylistId)) {
+      return selectedPlaylistId;
+    }
+
+    return loadedPlaylists[0]?.id ?? null;
   });
 
   const addSelectedContentToPlaylist = async () => {
     const contentItemId = selectedContentItemId();
-    const playlistId = targetPlaylistId();
+    const playlistId = effectiveTargetPlaylistId();
     if (contentItemId === null || playlistId === null) {
       setPlaylistActionError("Choose a playlist before adding this video.");
       return;
@@ -3012,7 +2955,7 @@ function SelectedContentViewer(props: SelectedContentViewerProps) {
                     playlists={playlists() ?? emptyPlaylists}
                     loading={playlists.loading}
                     error={playlists.error}
-                    selectedPlaylistId={targetPlaylistId()}
+                    selectedPlaylistId={effectiveTargetPlaylistId()}
                     busy={playlistActionBusy()}
                     actionError={playlistActionError()}
                     onSelectPlaylist={setTargetPlaylistId}

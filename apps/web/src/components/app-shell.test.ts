@@ -786,13 +786,13 @@ test("playlist items reload through resource key without effect refetch loop", a
   expect(playlistSectionSource).not.toMatch(refetchEffectPattern);
 });
 
-test("playlist edit form only resets when selected playlist id changes", async () => {
+test("playlist edit form changes only through explicit playlist selection", async () => {
   const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
 
-  expect(source).toContain("let lastFormPlaylistId: string | null | undefined;");
-  expect(source).toContain("if (playlistId === lastFormPlaylistId) {\n      return;\n    }");
-  expect(source).toContain("lastFormPlaylistId = playlistId;");
-  expect(source).toContain("const playlist = playlistId === null ? null : loadedPlaylists?.find((candidate) => candidate.id === playlistId) ?? null;");
+  expect(source).toContain("const editPlaylist = (playlist: Playlist | null) => {");
+  expect(source).toContain("props.onSelectPlaylist(playlist?.id ?? null);");
+  expect(source).toContain("setEditingPlaylist(playlist);");
+  expect(source).not.toContain("lastFormPlaylistId");
 });
 
 test("playlist UI remains inside the approved three-pane shell", async () => {
@@ -925,11 +925,11 @@ test("history and played views use protected contentHistory procedures", async (
 test("anonymous users do not call protected status or history procedures", async () => {
   const source = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
 
-  expect(source).toContain("if (!props.isAuthenticated() && (viewMode() === \"history-opened\" || viewMode() === \"played\"))");
-  expect(source).toContain("if (!props.isAuthenticated() && hidePlayed())");
   expect(source).toContain("if (props.isAuthenticated() && viewMode() === \"history-opened\")");
   expect(source).toContain("if (props.isAuthenticated() && viewMode() === \"played\")");
   expect(source).toContain("if (!isAuthenticated()) {\n      return null;\n    }\n\n    return statusReloadKey();");
+  expect(source).not.toContain("if (!props.isAuthenticated() && (viewMode() === \"history-opened\" || viewMode() === \"played\"))");
+  expect(source).not.toContain("if (!props.isAuthenticated() && hidePlayed())");
   expect(source).not.toContain("Sign in to view history");
   expect(source).not.toContain("Login to view history");
 });
@@ -975,7 +975,7 @@ test("anonymous users do not see favorite controls or protected favorite calls",
 
   expect(source).toContain("if (props.isAuthenticated() && viewMode() === \"favorites\")");
   expect(source).toContain("if (!props.isAuthenticated()) {\n      return null;\n    }");
-  expect(source).toContain("if (!props.isAuthenticated() && viewMode() === \"favorites\")");
+  expect(source).not.toContain("if (!props.isAuthenticated() && viewMode() === \"favorites\")");
   expect(source).toContain("<Show when={props.isAuthenticated}>\n        <div class=\"mt-2 flex items-center justify-end gap-2\">");
   expect(source).not.toContain("Sign in to favorite");
   expect(source).not.toContain("Login to favorite");
@@ -1045,6 +1045,7 @@ test("load-more controls page creators feeds and content without timers or obser
   expect(source).not.toContain("setCatalogCreators");
   expect(source).not.toContain("setLoadedFeeds");
   expect(source).not.toContain("setLoadedContentItems");
+  expect(source).not.toContain("createEffect");
   expect(source).toContain("data-content-loaded-count");
   expect(source).not.toContain("IntersectionObserver");
   expect(source).not.toContain("setInterval");
