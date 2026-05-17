@@ -1,0 +1,25 @@
+{
+  "pages": [
+    {
+      "path": "/"
+    },
+    {
+      "path": "/docs/developer"
+    },
+    {
+      "path": "/docs/getting-started"
+    },
+    {
+      "path": "/docs/self-hosting"
+    },
+    {
+      "path": "/docs/user-guide"
+    },
+    {
+      "path": "/#features",
+      "fromCrawl": true
+    }
+  ],
+  "host": "https://feedelity.dbuild.dev",
+  "lastBuilt": "2026-05-17T21:30:46.103Z"
+}
