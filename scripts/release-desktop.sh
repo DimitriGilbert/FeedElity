@@ -85,7 +85,8 @@ for artifact in "${REQUIRED_ARTIFACTS[@]}"; do
 done
 
 echo "--- Verifying ayatana libs in artifact ---"
-if ! tar --zstd -tf "${ARTIFACTS_DIR}/stable-linux-x64-FeedElity.tar.zst" | grep -q "libayatana-appindicator3"; then
+ARTIFACT_FILE_LIST="$(tar --zstd -tf "${ARTIFACTS_DIR}/stable-linux-x64-FeedElity.tar.zst")"
+if [[ "$ARTIFACT_FILE_LIST" != *"libayatana-appindicator3.so.1"* ]]; then
   echo "Error: libayatana-appindicator3.so.1 is missing from the artifact!"
   echo "  The patch step did not inject the native libraries."
   exit 1
