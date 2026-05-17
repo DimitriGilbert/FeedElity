@@ -36,7 +36,7 @@ function Nav() {
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="icon" asChild>
             <a
-              href="https://github.com/DimitriGilbert/Re-FeedElity"
+              href="https://github.com/DimitriGilbert/FeedElity"
               target="_blank"
               rel="noopener noreferrer"
               aria-label="GitHub"
@@ -86,7 +86,7 @@ function Nav() {
               Docs
             </Link>
             <a
-              href="https://github.com/DimitriGilbert/Re-FeedElity"
+              href="https://github.com/DimitriGilbert/FeedElity"
               target="_blank"
               rel="noopener noreferrer"
               className="text-sm text-neutral-400 transition-colors hover:text-neutral-50"

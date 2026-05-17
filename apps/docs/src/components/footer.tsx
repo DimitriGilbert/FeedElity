@@ -34,7 +34,7 @@ function Footer() {
               Documentation
             </Link>
             <a
-              href="https://github.com/DimitriGilbert/Re-FeedElity"
+              href="https://github.com/DimitriGilbert/FeedElity"
               target="_blank"
               rel="noopener noreferrer"
               className="text-neutral-400 transition-colors hover:text-neutral-50"
