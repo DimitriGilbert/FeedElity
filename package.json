@@ -36,7 +36,8 @@
     "db:studio": "turbo -F @FeedElity/db db:studio",
     "db:generate": "turbo -F @FeedElity/db db:generate",
     "db:migrate": "turbo -F @FeedElity/db db:migrate",
-    "db:local": "turbo -F @FeedElity/db db:local"
+    "db:local": "turbo -F @FeedElity/db db:local",
+    "deploy:docs": "bun run scripts/deploy-pages.ts"
   },
   "dependencies": {
     "@FeedElity/db": "workspace:*",
