@@ -1,0 +1,44 @@
+services:
+  db:
+    image: ghcr.io/tursodatabase/libsql-server:latest
+    profiles: ["local-db"]
+    volumes:
+      - libsql-data:/var/lib/sqld
+    ports:
+      - "8080:8080"
+      - "5000:5000"
+    environment:
+      SQLD_NODE: primary
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: server
+    env_file: .env
+    expose:
+      - "3002"
+    depends_on:
+      db:
+        condition: service_healthy
+        required: false
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    ports:
+      - "${WEB_PORT:-80}:80"
+    depends_on:
+      - server
+    restart: unless-stopped
+
+volumes:
+  libsql-data:
