@@ -241,7 +241,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
       return "played";
     }
 
-    if (props.mode === "library") {
+    if (props.isAuthenticated() && props.mode === "library") {
       return "subscribed";
     }
 

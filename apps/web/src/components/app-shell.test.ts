@@ -214,6 +214,14 @@ test("primary navigation preserves anonymous catalog access and authenticated wo
   expect(source).toContain('{ to: "/dashboard", label: "Library", helper: "Saved" }');
 });
 
+test("anonymous shell state gates protected overlays behind app session state", async () => {
+  const source = await readAppShellSource();
+
+  expect(source).toContain("const [appSession] = createResource(appSessionResourceInput, () => client.session.current())");
+  expect(source).toContain("appSession() !== null && appSession() !== undefined");
+  expect(source).toContain('props.isAuthenticated() && props.mode === "library"');
+});
+
 test("app shell keeps a single compact global header", () => {
   expect(hasInternalAppHeader).toBe(false);
 });
@@ -726,7 +734,7 @@ test("playlist controls are protected behind authenticated session state", async
   const source = await readAppShellSource();
 
   expect(source).toContain("const session = authClient.useSession()");
-  expect(source).toContain("const isAuthenticated = createMemo(() => !session().isPending && session().data !== null)");
+  expect(source).toContain("appSession() !== null && appSession() !== undefined");
   expect(source).toContain("<Show when={props.isAuthenticated()}>");
   expect(source).not.toContain("Sign in to create playlists");
   expect(source).not.toContain("Login to save playlists");

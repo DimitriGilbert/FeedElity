@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/solid-router";
 import { createSignal, Match, Switch } from "solid-js";
 
+import MigratedPasswordSetupForm from "@/components/migrated-password-setup-form";
 import SignInForm from "@/components/sign-in-form";
 import SignUpForm from "@/components/sign-up-form";
 
@@ -12,15 +13,18 @@ export const Route = createFileRoute("/login")({
 });
 
 function RouteComponent() {
-  const [showSignIn, setShowSignIn] = createSignal(true);
+  const [authMode, setAuthMode] = createSignal<"sign-in" | "sign-up" | "password-setup">("sign-in");
 
   return (
     <Switch>
-      <Match when={showSignIn()}>
-        <SignInForm onSwitchToSignUp={() => setShowSignIn(false)} />
+      <Match when={authMode() === "sign-in"}>
+        <SignInForm onSwitchToPasswordSetup={() => setAuthMode("password-setup")} onSwitchToSignUp={() => setAuthMode("sign-up")} />
       </Match>
-      <Match when={!showSignIn()}>
-        <SignUpForm onSwitchToSignIn={() => setShowSignIn(true)} />
+      <Match when={authMode() === "sign-up"}>
+        <SignUpForm onSwitchToSignIn={() => setAuthMode("sign-in")} />
+      </Match>
+      <Match when={authMode() === "password-setup"}>
+        <MigratedPasswordSetupForm onSwitchToSignIn={() => setAuthMode("sign-in")} />
       </Match>
     </Switch>
   );

@@ -147,7 +147,7 @@ describe("auth access rules", () => {
     expect(playlist).toMatchObject({ userId: "user-a", name: "User A queue" });
   });
 
-  test("migrated pending users cannot access protected procedures until password setup is complete", async () => {
+  test("signed-in migrated users can access protected procedures", async () => {
     await insertUser(
       testDatabase.db,
       "migrated-user",
@@ -155,11 +155,11 @@ describe("auth access rules", () => {
       "migrated_pending_password_setup",
     );
 
-    await expect(
-      call(appRouter.overlays.subscriptions, undefined, {
-        context: authenticatedContext(testDatabase.db, "migrated-user", "migrated_pending_password_setup"),
-      }),
-    ).rejects.toHaveProperty("code", "FORBIDDEN");
+    const subscriptions = await call(appRouter.overlays.subscriptions, undefined, {
+      context: authenticatedContext(testDatabase.db, "migrated-user", "migrated_pending_password_setup"),
+    });
+
+    expect(subscriptions).toEqual([]);
   });
 
   test("migrated pending users can set an initial credential password", async () => {

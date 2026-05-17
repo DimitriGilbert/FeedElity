@@ -859,7 +859,15 @@ export interface AppShellProps {
 export default function AppShell(props: AppShellProps) {
   const mode = props.mode ?? "catalog";
   const session = authClient.useSession();
-  const isAuthenticated = createMemo(() => !session().isPending && session().data !== null);
+  const appSessionResourceInput = createMemo(() => {
+    if (session().isPending) {
+      return null;
+    }
+
+    return `app-session\u001f${session().data?.user.id ?? "anonymous"}`;
+  });
+  const [appSession] = createResource(appSessionResourceInput, () => client.session.current());
+  const isAuthenticated = createMemo(() => appSession() !== null && appSession() !== undefined);
   const [selectedCreator, setSelectedCreator] = createSignal<BrowsableCreator | null>(null);
   const [selectedFeed, setSelectedFeed] = createSignal<CatalogFeed | null>(null);
   const [selectedContent, setSelectedContent] = createSignal<CatalogContentListItem | null>(null);

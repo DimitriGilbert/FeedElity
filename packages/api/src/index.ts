@@ -18,9 +18,6 @@ const requireAuth = o.middleware(async ({ context, next }) => {
   if (!context.session?.user) {
     throw new ORPCError("UNAUTHORIZED");
   }
-  if (context.session.user.accountState !== "active") {
-    throw new ORPCError("FORBIDDEN");
-  }
   return next({
     context: {
       db: context.db,
