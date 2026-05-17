@@ -10,11 +10,24 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as DocsUserGuideRouteImport } from './routes/docs/user-guide'
+import { Route as DocsSelfHostingRouteImport } from './routes/docs/self-hosting'
 import { Route as DocsGettingStartedRouteImport } from './routes/docs/getting-started'
+import { Route as DocsDeveloperRouteImport } from './routes/docs/developer'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DocsUserGuideRoute = DocsUserGuideRouteImport.update({
+  id: '/docs/user-guide',
+  path: '/docs/user-guide',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DocsSelfHostingRoute = DocsSelfHostingRouteImport.update({
+  id: '/docs/self-hosting',
+  path: '/docs/self-hosting',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DocsGettingStartedRoute = DocsGettingStartedRouteImport.update({
@@ -22,31 +35,64 @@ const DocsGettingStartedRoute = DocsGettingStartedRouteImport.update({
   path: '/docs/getting-started',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DocsDeveloperRoute = DocsDeveloperRouteImport.update({
+  id: '/docs/developer',
+  path: '/docs/developer',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/docs/developer': typeof DocsDeveloperRoute
   '/docs/getting-started': typeof DocsGettingStartedRoute
+  '/docs/self-hosting': typeof DocsSelfHostingRoute
+  '/docs/user-guide': typeof DocsUserGuideRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/docs/developer': typeof DocsDeveloperRoute
   '/docs/getting-started': typeof DocsGettingStartedRoute
+  '/docs/self-hosting': typeof DocsSelfHostingRoute
+  '/docs/user-guide': typeof DocsUserGuideRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/docs/developer': typeof DocsDeveloperRoute
   '/docs/getting-started': typeof DocsGettingStartedRoute
+  '/docs/self-hosting': typeof DocsSelfHostingRoute
+  '/docs/user-guide': typeof DocsUserGuideRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/docs/getting-started'
+  fullPaths:
+    | '/'
+    | '/docs/developer'
+    | '/docs/getting-started'
+    | '/docs/self-hosting'
+    | '/docs/user-guide'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/docs/getting-started'
-  id: '__root__' | '/' | '/docs/getting-started'
+  to:
+    | '/'
+    | '/docs/developer'
+    | '/docs/getting-started'
+    | '/docs/self-hosting'
+    | '/docs/user-guide'
+  id:
+    | '__root__'
+    | '/'
+    | '/docs/developer'
+    | '/docs/getting-started'
+    | '/docs/self-hosting'
+    | '/docs/user-guide'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  DocsDeveloperRoute: typeof DocsDeveloperRoute
   DocsGettingStartedRoute: typeof DocsGettingStartedRoute
+  DocsSelfHostingRoute: typeof DocsSelfHostingRoute
+  DocsUserGuideRoute: typeof DocsUserGuideRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -58,6 +104,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/docs/user-guide': {
+      id: '/docs/user-guide'
+      path: '/docs/user-guide'
+      fullPath: '/docs/user-guide'
+      preLoaderRoute: typeof DocsUserGuideRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/docs/self-hosting': {
+      id: '/docs/self-hosting'
+      path: '/docs/self-hosting'
+      fullPath: '/docs/self-hosting'
+      preLoaderRoute: typeof DocsSelfHostingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/docs/getting-started': {
       id: '/docs/getting-started'
       path: '/docs/getting-started'
@@ -65,12 +125,22 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DocsGettingStartedRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/docs/developer': {
+      id: '/docs/developer'
+      path: '/docs/developer'
+      fullPath: '/docs/developer'
+      preLoaderRoute: typeof DocsDeveloperRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  DocsDeveloperRoute: DocsDeveloperRoute,
   DocsGettingStartedRoute: DocsGettingStartedRoute,
+  DocsSelfHostingRoute: DocsSelfHostingRoute,
+  DocsUserGuideRoute: DocsUserGuideRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
