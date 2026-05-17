@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const rootDir = resolve(import.meta.dir, "..");
@@ -87,13 +87,14 @@ for (const artifactFile of artifactFiles) {
     continue;
   }
 
-  rmSync(artifactPath);
+  rmSync(artifactPath, { force: true });
+  const tempArtifactPath = `${artifactPath}.tmp`;
 
   const recompressProc = Bun.spawnSync([
     "tar",
     "--zstd",
     "-cf",
-    artifactPath,
+    tempArtifactPath,
     "-C",
     stagingDir,
     ".",
@@ -101,6 +102,8 @@ for (const artifactFile of artifactFiles) {
   if (!recompressProc.success) {
     throw new Error(`Failed to recompress ${artifactFile}`);
   }
+
+  renameSync(tempArtifactPath, artifactPath);
 
   rmSync(stagingDir, { recursive: true, force: true });
   console.log(`  Repacked: ${artifactFile}`);
