@@ -1,41 +1,16 @@
 import { createForm } from "@tanstack/solid-form";
-import { useNavigate } from "@tanstack/solid-router";
+import { useNavigate, useSearch } from "@tanstack/solid-router";
 import { createSignal, For, Show } from "solid-js";
 import z from "zod";
 
-import { authClient } from "@/lib/auth-client";
-import { client } from "@/utils/orpc";
-
-interface EmailPasswordValue {
-  readonly email: string;
-  readonly password: string;
-}
-
-function signInWithEmailPassword(value: EmailPasswordValue, onSuccess: () => void): Promise<void> {
-  return new Promise((resolve, reject) => {
-    authClient.signIn.email(
-      {
-        email: value.email,
-        password: value.password,
-      },
-      {
-        onSuccess: () => {
-          onSuccess();
-          resolve();
-        },
-        onError: (error) => {
-          reject(new Error(error.error.message));
-        },
-      },
-    );
-  });
-}
+import { getPostAuthRedirect, signInWithEmailPassword } from "@/lib/auth-helpers";
 
 export default function SignInForm({ onSwitchToSignUp }: { onSwitchToSignUp: () => void }) {
   const [submitError, setSubmitError] = createSignal<string | null>(null);
   const navigate = useNavigate({
-    from: "/",
+    from: "/login",
   });
+  const search = useSearch({ from: "/login" });
 
   const form = createForm(() => ({
     defaultValues: {
@@ -46,23 +21,15 @@ export default function SignInForm({ onSwitchToSignUp }: { onSwitchToSignUp: () 
       setSubmitError(null);
       const navigateToDashboard = () => {
         navigate({
-          to: "/dashboard",
+          to: getPostAuthRedirect(search().redirect),
+          search: { redirect: undefined },
         });
       };
 
       try {
         await signInWithEmailPassword(value, navigateToDashboard);
       } catch (error) {
-        const signInMessage = error instanceof Error ? error.message : "Sign in failed.";
-        try {
-          await client.auth.setupMigratedPassword({
-            email: value.email,
-            password: value.password,
-          });
-          await signInWithEmailPassword(value, navigateToDashboard);
-        } catch {
-          setSubmitError(signInMessage);
-        }
+        setSubmitError(error instanceof Error ? error.message : "Sign in failed.");
       }
     },
     validators: {

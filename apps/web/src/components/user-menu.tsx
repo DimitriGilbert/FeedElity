@@ -1,5 +1,5 @@
-import { useNavigate, Link } from "@tanstack/solid-router";
-import { createSignal, Show } from "solid-js";
+import { Link, useNavigate } from "@tanstack/solid-router";
+import { createEffect, createSignal, onCleanup, Show } from "solid-js";
 
 import { authClient } from "@/lib/auth-client";
 
@@ -9,9 +9,37 @@ export default function UserMenu() {
   const navigate = useNavigate();
   const session = authClient.useSession();
   const [isMenuOpen, setIsMenuOpen] = createSignal(false);
+  let menuRef: HTMLDivElement | undefined;
+
+  createEffect(() => {
+    if (!isMenuOpen()) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (menuRef !== undefined && target instanceof Node && !menuRef.contains(target)) {
+        setIsMenuOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    onCleanup(() => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    });
+  });
 
   return (
-    <div class="relative inline-block text-left">
+    <div ref={menuRef} class="relative inline-block text-left">
       <Show when={session().isPending}>
         <div class="h-8 w-28 animate-pulse border border-border bg-muted" />
       </Show>
@@ -19,6 +47,7 @@ export default function UserMenu() {
       <Show when={!session().isPending && !session().data}>
         <Link
           to="/login"
+          search={{ redirect: undefined }}
           class={`inline-flex min-h-8 items-center border border-border bg-primary px-3 text-sm font-semibold text-primary-foreground transition duration-200 hover:bg-accent hover:text-accent-foreground ${focusVisibleClass}`}
         >
           Sign in

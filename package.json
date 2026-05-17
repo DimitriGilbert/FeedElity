@@ -38,6 +38,7 @@
     "db:local": "turbo -F @FeedElity/db db:local"
   },
   "dependencies": {
+    "@FeedElity/db": "workspace:*",
     "@FeedElity/env": "workspace:*",
     "dotenv": "catalog:",
     "zod": "catalog:"

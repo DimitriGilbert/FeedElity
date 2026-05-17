@@ -1,6 +1,6 @@
 import type { CatalogContentListItem, CatalogFeed, PlaylistItemWithContent } from "@FeedElity/api";
 import type { JSX } from "solid-js";
-import { Show, createMemo, createSignal } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, on } from "solid-js";
 import ChevronDown from "lucide-solid/icons/chevron-down";
 import ChevronUp from "lucide-solid/icons/chevron-up";
 import CircleCheck from "lucide-solid/icons/circle-check";
@@ -258,6 +258,10 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
   const [playlistError, setPlaylistError] = createSignal<string | null>(null);
   const rowImageUrl = createMemo(() => props.contentItem.thumbnailUrl ?? props.contentItem.creator.imageUrl);
   const rowImageSource = createMemo(() => (props.contentItem.thumbnailUrl !== null ? "content" : props.contentItem.creator.imageUrl !== null ? "creator" : null));
+
+  createEffect(on(() => [props.contentItem.id, props.isFavorite], () => setFavoriteError(null)));
+  createEffect(on(() => [props.contentItem.id, props.status.opened, props.status.played], () => setStatusError(null)));
+  createEffect(on(() => [props.contentItem.id, props.targetPlaylistId], () => setPlaylistError(null)));
   const contentButtonClass = createMemo(() =>
     rowImageUrl() === null
       ? "group w-full text-left text-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"

@@ -5,11 +5,14 @@ import { authClient } from "@/lib/auth-client";
 
 export const Route = createFileRoute("/dashboard")({
   component: RouteComponent,
-  beforeLoad: async () => {
+  beforeLoad: async ({ location }) => {
     const session = await authClient.getSession();
     if (!session.data) {
       redirect({
         to: "/login",
+        search: {
+          redirect: location.href,
+        },
         throw: true,
       });
     }

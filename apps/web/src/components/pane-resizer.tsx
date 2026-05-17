@@ -14,6 +14,7 @@ const keyboardStep = 20;
 export function PaneResizer(props: PaneResizerProps) {
   const [isDragging, setIsDragging] = createSignal(false);
   let lastPointerX = 0;
+  let previousBodyUserSelect: string | null = null;
 
   function handleMouseMove(event: MouseEvent) {
     const deltaX = event.clientX - lastPointerX;
@@ -48,11 +49,17 @@ export function PaneResizer(props: PaneResizerProps) {
     window.removeEventListener("mouseup", handleMouseUp);
     window.removeEventListener("touchmove", handleTouchMove);
     window.removeEventListener("touchend", handleTouchEnd);
+    if (previousBodyUserSelect !== null) {
+      document.body.style.userSelect = previousBodyUserSelect;
+      previousBodyUserSelect = null;
+    }
   }
 
   const onMouseDown = (event: MouseEvent) => {
     event.preventDefault();
     lastPointerX = event.clientX;
+    previousBodyUserSelect = document.body.style.userSelect;
+    document.body.style.userSelect = "none";
     setIsDragging(true);
     window.addEventListener("mousemove", handleMouseMove);
     window.addEventListener("mouseup", handleMouseUp);
@@ -73,11 +80,13 @@ export function PaneResizer(props: PaneResizerProps) {
     if (event.key === "ArrowLeft") {
       event.preventDefault();
       props.onResize(-keyboardStep);
+      props.onDragEnd?.();
       return;
     }
     if (event.key === "ArrowRight") {
       event.preventDefault();
       props.onResize(keyboardStep);
+      props.onDragEnd?.();
       return;
     }
   };

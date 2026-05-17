@@ -8,7 +8,7 @@ import type { RepositoryDb } from "./repositories/catalog";
 import { createSourceAdapterRegistry, odyseeAdapter, peertubeAdapter, youtubeAdapter } from "./sources";
 import type { SourceAdapterRegistry } from "./sources";
 
-const defaultSourceRegistry = createSourceAdapterRegistry([youtubeAdapter, odyseeAdapter, peertubeAdapter]);
+export const defaultSourceRegistry = createSourceAdapterRegistry([youtubeAdapter, odyseeAdapter, peertubeAdapter]);
 
 export type AccountState = (typeof schema.accountStateValues)[number];
 
@@ -41,7 +41,7 @@ export interface AuthenticatedSession {
 export interface Context {
   readonly db: RepositoryDb;
   readonly session: AuthenticatedSession | null;
-  readonly sourceRegistry?: SourceAdapterRegistry;
+  readonly sourceRegistry: SourceAdapterRegistry;
 }
 
 export type CreateContextOptions = {

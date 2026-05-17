@@ -1,5 +1,4 @@
-import { createSourceAdapterRegistry, odyseeAdapter, peertubeAdapter, youtubeAdapter } from "@FeedElity/api";
-import { createContext } from "@FeedElity/api/context";
+import { createContext, defaultSourceRegistry } from "@FeedElity/api/context";
 import { appRouter } from "@FeedElity/api/routers/index";
 import { recoverRunningRefreshRuns } from "@FeedElity/api/services/refresh";
 import { auth } from "@FeedElity/auth";
@@ -16,20 +15,34 @@ import { logger } from "hono/logger";
 
 export const app = new Hono();
 
-recoverRunningRefreshRuns({
-  db,
-  sourceRegistry: createSourceAdapterRegistry([youtubeAdapter, odyseeAdapter, peertubeAdapter]),
-  now: () => new Date(),
-}).catch((error: unknown) => {
-  console.error("Refresh recovery failed.", error);
-});
+export async function startRefreshRecovery(): Promise<void> {
+  try {
+    await recoverRunningRefreshRuns({
+      db,
+      sourceRegistry: defaultSourceRegistry,
+      now: () => new Date(),
+    });
+  } catch (error: unknown) {
+    console.error("Refresh recovery failed.", error);
+  }
+}
+
+let refreshRecovery: Promise<void> | null = null;
+
+export function ensureRefreshRecoveryStarted(): Promise<void> {
+  if (refreshRecovery === null) {
+    refreshRecovery = startRefreshRecovery();
+  }
+
+  return refreshRecovery;
+}
 
 app.use(logger());
 app.use(
   "/*",
   cors({
     origin: env.CORS_ORIGIN,
-    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
     credentials: true,
   }),
@@ -88,5 +101,8 @@ app.get("/", (c) => {
 
 export default {
   port: env.PORT,
-  fetch: app.fetch,
+  fetch: async (request: Request): Promise<Response> => {
+    await ensureRefreshRecoveryStarted();
+    return app.fetch(request);
+  },
 };

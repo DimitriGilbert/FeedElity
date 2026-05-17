@@ -93,4 +93,31 @@ describe("Strapi export schema", () => {
       }),
     );
   });
+
+  test("rejects duplicate playlist content positions with old record ids", () => {
+    const playlistContent = validStrapiExportFixture.playlistContents[0];
+    if (playlistContent === undefined) {
+      throw new Error("Fixture must include one playlist content for duplicate position testing.");
+    }
+    const exportWithDuplicatePlaylistPosition: StrapiExport = {
+      ...validStrapiExportFixture,
+      playlistContents: [
+        ...validStrapiExportFixture.playlistContents,
+        { ...playlistContent, oldId: 72 },
+      ],
+    };
+
+    const result = strapiExportSchema.safeParse(exportWithDuplicatePlaylistPosition);
+
+    expect(result.success).toBe(false);
+    if (result.success) {
+      throw new Error("Expected duplicate playlist content position to fail validation.");
+    }
+    expect(result.error.issues).toContainEqual(
+      expect.objectContaining({
+        message: "playlistContents contains duplicate playlistId 70 position 0 for oldIds 71 and 72.",
+        path: ["playlistContents", 1, "position"],
+      }),
+    );
+  });
 });

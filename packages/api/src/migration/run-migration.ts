@@ -120,6 +120,7 @@ export async function runStrapiExportMigration(
     ? migrationRun
     : await updateMigrationRun(db, {
         id: migrationRun.id,
+        sourceFilename: input.sourceFilename,
         status: "running",
         completedAt: null,
         warningsJson: null,
@@ -286,20 +287,28 @@ function summarizeSeverity(records: readonly MigrationReportedRecord[]): Migrati
 }
 
 function countsFromRun(run: MigrationRun, mappingCounts: Readonly<Record<string, number>>): MigrationRunnerCounts {
+  const mappedContentItemsCount = mappingCounts["content-item"] ?? 0;
   const mappedContentSourceCount = mappingCounts["content-source"] ?? 0;
   return {
     ...emptyCounts,
-    users: run.usersImportedCount,
-    creators: run.creatorsImportedCount,
-    feeds: run.feedsImportedCount,
-    contentItems: run.contentItemsImportedCount,
-    contentSources: Math.max(mappedContentSourceCount, run.contentItemsImportedCount),
+    users: countFromRunOrMappings(run.usersImportedCount, mappingCounts.user),
+    creators: countFromRunOrMappings(run.creatorsImportedCount, mappingCounts.creator),
+    feeds: countFromRunOrMappings(run.feedsImportedCount, mappingCounts.feed),
+    contentItems: countFromRunOrMappings(run.contentItemsImportedCount, mappedContentItemsCount),
+    contentSources: Math.max(mappedContentSourceCount, countFromRunOrMappings(run.contentItemsImportedCount, mappedContentItemsCount)),
     feedContentLinks: mappingCounts["feed-content"] ?? 0,
-    subscriptions: run.subscriptionsImportedCount,
+    subscriptions: countFromRunOrMappings(run.subscriptionsImportedCount, mappingCounts.subscription),
     contentStatuses: mappingCounts["content-status"] ?? 0,
-    playlists: run.playlistsImportedCount,
+    playlists: countFromRunOrMappings(run.playlistsImportedCount, mappingCounts.playlist),
     playlistItems: mappingCounts["playlist-item"] ?? 0,
   };
+}
+
+function countFromRunOrMappings(runCount: number, mappingCount: number | undefined): number {
+  if (runCount > 0) {
+    return runCount;
+  }
+  return mappingCount ?? 0;
 }
 
 async function countMappingsByNewEntityType(db: RepositoryDb, migrationRunId: string): Promise<Record<string, number>> {

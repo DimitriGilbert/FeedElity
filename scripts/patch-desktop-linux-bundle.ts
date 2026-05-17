@@ -4,15 +4,7 @@ import { join, resolve } from "node:path";
 const rootDir = resolve(import.meta.dir, "..");
 const desktopBuildDir = join(rootDir, "apps", "desktop", "build");
 const ayatanaLibDir = join(rootDir, ".native", "linux-x64", "extracted", "usr", "lib64");
-const libsqlNativePackageDir = join(
-  rootDir,
-  "node_modules",
-  ".bun",
-  "@libsql+linux-x64-gnu@0.5.22",
-  "node_modules",
-  "@libsql",
-  "linux-x64-gnu",
-);
+const bunNodeModulesDir = join(rootDir, "node_modules", ".bun");
 
 const requiredLibraries = ["libayatana-appindicator3.so.1", "libayatana-indicator3.so.7", "libayatana-ido3-0.4.so.0"] as const;
 
@@ -24,9 +16,7 @@ if (!existsSync(desktopBuildDir)) {
   throw new Error(`Desktop build directory does not exist: ${desktopBuildDir}`);
 }
 
-if (!existsSync(libsqlNativePackageDir)) {
-  throw new Error(`libSQL native package is missing: ${libsqlNativePackageDir}`);
-}
+const libsqlNativePackageDir = findLibsqlNativePackageDir();
 
 const appDirs = readdirSync(desktopBuildDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
@@ -59,4 +49,23 @@ for (const appDir of appDirs) {
     mkdirSync(libsqlTargetDir, { recursive: true });
     cpSync(libsqlNativePackageDir, libsqlTargetDir, { recursive: true });
   }
+}
+
+function findLibsqlNativePackageDir(): string {
+  if (!existsSync(bunNodeModulesDir)) {
+    throw new Error(`Bun node_modules directory is missing: ${bunNodeModulesDir}`);
+  }
+
+  for (const entry of readdirSync(bunNodeModulesDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith("@libsql+linux-x64-gnu@")) {
+      continue;
+    }
+
+    const packageDir = join(bunNodeModulesDir, entry.name, "node_modules", "@libsql", "linux-x64-gnu");
+    if (existsSync(packageDir)) {
+      return packageDir;
+    }
+  }
+
+  throw new Error(`libSQL native package was not found under ${bunNodeModulesDir}. Expected @libsql+linux-x64-gnu@*/node_modules/@libsql/linux-x64-gnu.`);
 }

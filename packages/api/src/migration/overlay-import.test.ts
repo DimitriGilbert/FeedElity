@@ -161,6 +161,126 @@ describe("Strapi overlay import mapper", () => {
     expect(playlistItems).toHaveLength(1);
   });
 
+  test("reports migration mapping collisions for overlays resolving to the same new identity", async () => {
+    const openedOption = validStrapiExportFixture.subscriptionContentOptions.find((option) => option.interpretedStatus.statusName === "open");
+    if (openedOption === undefined) {
+      throw new Error("Expected opened status option for mapping collision test.");
+    }
+    const exportWithDuplicateStatus: StrapiExport = {
+      ...validStrapiExportFixture,
+      subscriptionContentOptions: [
+        ...validStrapiExportFixture.subscriptionContentOptions,
+        { ...openedOption, oldId: 63 },
+      ],
+    };
+    const migrationRun = await createCatalogBaseline("overlay-mapping-collision", exportWithDuplicateStatus);
+
+    const result = await importStrapiOverlays(testDatabase.db, {
+      migrationRunId: migrationRun.id,
+      exportData: exportWithDuplicateStatus,
+    });
+
+    const collisionReport = result.reportedRecords.find(
+      (record) => record.oldEntityType === "strapi-subscription-content-option" && record.oldEntityId === "63",
+    );
+    expect(collisionReport).toMatchObject({
+      severity: "warning",
+      reason: expect.stringContaining("already belongs to strapi-subscription-content-option 60"),
+    });
+  });
+
+  test("reports duplicate playlist item positions and continues importing overlays", async () => {
+    const content = validStrapiExportFixture.creatorContents[0];
+    const feedContent = validStrapiExportFixture.feedContents[0];
+    const playlistContent = validStrapiExportFixture.playlistContents[0];
+    if (content === undefined || feedContent === undefined || playlistContent === undefined) {
+      throw new Error("Expected playlist content fixture for duplicate position import test.");
+    }
+    const exportWithDuplicatePlaylistPosition: StrapiExport = {
+      ...validStrapiExportFixture,
+      creatorContents: [
+        ...validStrapiExportFixture.creatorContents,
+        { ...content, oldId: 44, title: "Fixture Video 2" },
+      ],
+      feedContents: [
+        ...validStrapiExportFixture.feedContents,
+        { ...feedContent, oldId: 31, contentId: 44, externalId: "yt-fixture-video-2" },
+      ],
+      playlistContents: [
+        ...validStrapiExportFixture.playlistContents,
+        { ...playlistContent, oldId: 72, contentId: 44 },
+      ],
+    };
+    const migrationRun = await createCatalogBaseline("overlay-playlist-position-collision", exportWithDuplicatePlaylistPosition);
+
+    const result = await importStrapiOverlays(testDatabase.db, {
+      migrationRunId: migrationRun.id,
+      exportData: exportWithDuplicatePlaylistPosition,
+    });
+
+    const playlistItems = await testDatabase.db.select().from(schema.playlistItem);
+
+    expect(result.counts.playlistItems).toBe(1);
+    expect(playlistItems).toHaveLength(1);
+    expect(result.reportedRecords).toContainEqual({
+      oldEntityType: "strapi-playlist-content",
+      oldEntityId: "72",
+      severity: "error",
+      reason: "Playlist item position is already occupied.",
+    });
+  });
+
+  test("reports thrown playlist item write failures and continues importing later playlist contents", async () => {
+    const content = validStrapiExportFixture.creatorContents[0];
+    const feedContent = validStrapiExportFixture.feedContents[0];
+    const playlistContent = validStrapiExportFixture.playlistContents[0];
+    if (content === undefined || feedContent === undefined || playlistContent === undefined) {
+      throw new Error("Expected fixture records for playlist item write failure test.");
+    }
+    const exportWithTwoPlaylistContents: StrapiExport = {
+      ...validStrapiExportFixture,
+      creatorContents: [
+        ...validStrapiExportFixture.creatorContents,
+        { ...content, oldId: 44, title: "Fixture Video 2" },
+      ],
+      feedContents: [
+        ...validStrapiExportFixture.feedContents,
+        { ...feedContent, oldId: 31, contentId: 44, externalId: "yt-fixture-video-2" },
+      ],
+      subscriptionContentOptions: [],
+      playlistContents: [
+        playlistContent,
+        { ...playlistContent, oldId: 72, contentId: 44, position: 10 },
+      ],
+    };
+    const migrationRun = await createCatalogBaseline("overlay-playlist-write-failure", exportWithTwoPlaylistContents);
+    const contentMappings = await listMigrationMappingsForRun(testDatabase.db, migrationRun.id);
+    const deletedContentMapping = contentMappings.find(
+      (mapping) => mapping.oldEntityType === "strapi-creator-content" && mapping.oldEntityId === "40" && mapping.newEntityType === "content-item",
+    );
+    if (deletedContentMapping === undefined) {
+      throw new Error("Expected content mapping before playlist item write failure test.");
+    }
+    await testDatabase.db.delete(schema.contentItem).where(eq(schema.contentItem.id, deletedContentMapping.newEntityId));
+
+    const result = await importStrapiOverlays(testDatabase.db, {
+      migrationRunId: migrationRun.id,
+      exportData: exportWithTwoPlaylistContents,
+    });
+
+    const playlistItems = await testDatabase.db.select().from(schema.playlistItem);
+
+    expect(result.counts.playlistItems).toBe(1);
+    expect(playlistItems).toHaveLength(1);
+    expect(playlistItems[0]?.position).toBe(10);
+    expect(result.reportedRecords).toContainEqual({
+      oldEntityType: "strapi-playlist-content",
+      oldEntityId: "71",
+      severity: "error",
+      reason: expect.stringContaining("Playlist item could not be imported:"),
+    });
+  });
+
   test("retry reuses an existing migrated playlist even when its mapping is missing", async () => {
     const migrationRun = await createCatalogBaseline("overlay-playlist-retry");
     const input = { migrationRunId: migrationRun.id, exportData: validStrapiExportFixture };

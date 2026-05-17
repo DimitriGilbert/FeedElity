@@ -204,6 +204,7 @@ function normalizeItem(item: string, fallbackChannelClaim: string): NormalizedCa
   const sources = buildContentSources(contentExternalId, canonicalUrl, enclosureUrl, enclosureType);
 
   return {
+    feedSourceExternalId: channelClaim,
     contentItem: {
       sourceType: ODYSEE_SOURCE_TYPE,
       sourceExternalId: contentExternalId,
@@ -327,8 +328,9 @@ function odyseeRssChannelClaim(url: URL): string | null {
   if (!url.pathname.startsWith(ODYSEE_RSS_PREFIX)) {
     return null;
   }
-  const rawClaim = decodePathSegment(url.pathname.slice(ODYSEE_RSS_PREFIX.length));
-  return isNonEmptyText(rawClaim) ? rawClaim : null;
+  const rawClaim = url.pathname.slice(ODYSEE_RSS_PREFIX.length).split("/").filter(isNonEmptyText)[0];
+  const channelClaim = isNonEmptyText(rawClaim) ? decodePathSegment(rawClaim) : null;
+  return isNonEmptyText(channelClaim) ? channelClaim : null;
 }
 
 interface OdyseePathParts {

@@ -48,6 +48,38 @@ describe("Odysee source adapter detection", () => {
     });
   });
 
+  test("detects Odysee RSS feed URLs with trailing slashes without encoding the slash", () => {
+    const result = odyseeAdapter.detect("https://odysee.com/$/rss/@fixture:abc123/");
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.error.message);
+    }
+    expect(result.value).toEqual({
+      sourceType: "odysee",
+      inputKind: "feed-url",
+      originalInput: "https://odysee.com/$/rss/@fixture:abc123/",
+      canonicalInput: "https://odysee.com/$/rss/@fixture:abc123",
+    });
+    expect(result.value.canonicalInput).not.toContain("%2F");
+  });
+
+  test("detects Odysee RSS feed URLs with extra path segments from the channel claim", () => {
+    const result = odyseeAdapter.detect("https://odysee.com/$/rss/@fixture:abc123/extra");
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.error.message);
+    }
+    expect(result.value).toEqual({
+      sourceType: "odysee",
+      inputKind: "feed-url",
+      originalInput: "https://odysee.com/$/rss/@fixture:abc123/extra",
+      canonicalInput: "https://odysee.com/$/rss/@fixture:abc123",
+    });
+    expect(result.value.canonicalInput).not.toContain("%2F");
+  });
+
   test("detects canonical creator and content URLs with claim IDs", () => {
     const creatorResult = odyseeAdapter.detect("https://odysee.com/@fixture:abc123");
     const contentResult = odyseeAdapter.detect("https://odysee.com/@fixture:abc123/fixture-video:def456?src=share");

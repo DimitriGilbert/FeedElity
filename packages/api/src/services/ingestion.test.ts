@@ -174,6 +174,25 @@ describe("source ingestion service", () => {
     expect(await listCatalogContentItems(testDatabase.db)).toHaveLength(3);
     expect(await listSubscriptionsForUser(testDatabase.db, "user-a")).toHaveLength(2);
   });
+
+  test("multi-feed payload items link only to their source feed", async () => {
+    const registry = createSourceAdapterRegistry([createFixtureAdapter()]);
+
+    const result = await addSource(
+      { db: testDatabase.db, sourceRegistry: registry },
+      { sourceInput: "https://ingest.example.test/multi-feed" },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.error.message);
+    }
+    const feedContentRows = await testDatabase.db.select().from(schema.feedContent);
+    expect(result.value.feeds).toHaveLength(2);
+    expect(result.value.contentItems).toHaveLength(8);
+    expect(result.value.feedContents).toHaveLength(8);
+    expect(feedContentRows).toHaveLength(8);
+  });
 });
 
 function createFixtureAdapter(): SourceAdapter {
@@ -226,6 +245,9 @@ function createFixtureAdapter(): SourceAdapter {
 }
 
 function payloadForSource(sourceExternalId: string): NormalizedCatalogPayload {
+  if (sourceExternalId === "multi-feed") {
+    return multiFeedPayload;
+  }
   if (sourceExternalId === "creator-two") {
     return creatorTwoPayload;
   }
@@ -324,6 +346,59 @@ const creatorTwoPayload: NormalizedCatalogPayload = {
     },
   ],
 };
+
+const multiFeedPayload: NormalizedCatalogPayload = {
+  creator: {
+    sourceType: "youtube",
+    sourceExternalId: "multi-feed",
+    displayName: "Multi Feed Creator",
+    canonicalUrl: "https://ingest.example.test/multi-feed",
+  },
+  feeds: [
+    {
+      sourceType: "youtube",
+      sourceExternalId: "multi-feed-a",
+      url: "https://ingest.example.test/multi-feed/a.xml",
+      title: "Multi Feed A",
+    },
+    {
+      sourceType: "youtube",
+      sourceExternalId: "multi-feed-b",
+      url: "https://ingest.example.test/multi-feed/b.xml",
+      title: "Multi Feed B",
+    },
+  ],
+  items: [
+    ...buildMultiFeedItems("multi-feed-a", 5),
+    ...buildMultiFeedItems("multi-feed-b", 3),
+  ],
+};
+
+function buildMultiFeedItems(feedSourceExternalId: string, count: number): NormalizedCatalogPayload["items"] {
+  return Array.from({ length: count }, (_, index) => {
+    const itemNumber = index + 1;
+    const sourceExternalId = `${feedSourceExternalId}-video-${itemNumber}`;
+    return {
+      feedSourceExternalId,
+      contentItem: {
+        sourceType: "youtube",
+        sourceExternalId,
+        title: `Multi feed video ${itemNumber}`,
+        canonicalUrl: `https://ingest.example.test/watch/${sourceExternalId}`,
+      },
+      feedContent: { sourceExternalId },
+      sources: [
+        {
+          sourceType: "youtube",
+          sourceExternalId,
+          canonicalUrl: `https://ingest.example.test/watch/${sourceExternalId}`,
+          embedUrl: `https://ingest.example.test/embed/${sourceExternalId}`,
+          priority: 0,
+        },
+      ],
+    };
+  });
+}
 
 function detected(value: DetectedSourceInput): SourceDetectionSuccess {
   return { ok: true, value };

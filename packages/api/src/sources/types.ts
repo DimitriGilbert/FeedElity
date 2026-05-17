@@ -75,6 +75,7 @@ export type NormalizedFeedContentInput = Omit<LinkFeedContentInput, "feedId" | "
 
 export interface NormalizedCatalogContentItem {
   readonly contentItem: NormalizedContentItemInput;
+  readonly feedSourceExternalId?: string | null;
   readonly feedContent: NormalizedFeedContentInput;
   readonly sources: readonly NormalizedContentSourceInput[];
 }

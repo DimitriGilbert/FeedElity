@@ -52,6 +52,7 @@ export interface SelectedContentViewerProps {
   readonly onFavoriteChanged: () => void;
   readonly onMarkContentOpened: (contentItemId: string) => Promise<void>;
   readonly onMarkContentPlayed: (contentItemId: string) => Promise<void>;
+  readonly onAutoMarkContentPlayed: (contentItemId: string) => Promise<void>;
 }
 
 export function SelectedContentViewer(props: SelectedContentViewerProps) {
@@ -209,6 +210,20 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
     }
   };
 
+  const autoMarkSelectedContentPlayed = async () => {
+    const contentItemId = selectedContentItemId();
+    if (!props.isAuthenticated() || contentItemId === null) {
+      return;
+    }
+
+    setStatusActionError(null);
+    try {
+      await props.onAutoMarkContentPlayed(contentItemId);
+    } catch (error) {
+      setStatusActionError(formatError(error));
+    }
+  };
+
   return (
     <section
       aria-label="Viewer"
@@ -262,7 +277,7 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                 <PlaybackSurface
                   source={selectedPlayableSource()}
                   title={detail().title}
-                  onNativePlay={toggleSelectedContentPlayed}
+                  onNativePlay={autoMarkSelectedContentPlayed}
                 />
                 <Show when={props.isAuthenticated()}>
                   <div class="mt-2 flex flex-wrap items-center gap-1.5">

@@ -49,7 +49,6 @@ import {
 } from "../repositories/overlays";
 import { addSource, batchAddSources } from "../services/ingestion";
 import { refreshAll, refreshCreator, refreshFeed, startRefreshAll } from "../services/refresh";
-import { createSourceAdapterRegistry } from "../sources";
 
 const playlistItemsInput = z.object({
   playlistId: z.string().min(1),
@@ -144,6 +143,7 @@ const contentStatusInput = z.object({
 
 const contentHistoryInput = z.object({
   status: z.enum(["opened", "played"]),
+  limit: catalogLimitInput,
 });
 
 const subscriptionCreatorInput = z.object({
@@ -199,6 +199,8 @@ const refreshStatusInput = z
 const deleteSettingInput = z.object({
   key: settingKeyInput,
 });
+
+type RefreshStatusRun = Awaited<ReturnType<typeof listRefreshRuns>>[number];
 
 const migratedPasswordSetupInput = z.object({
   email: z.email().transform((email) => email.toLowerCase()),
@@ -321,10 +323,17 @@ export const appRouter = {
     status: publicProcedure.input(refreshStatusInput).handler(async ({ input, context }) => {
       const runLimit = input?.limit ?? 5;
       const feedResultsLimit = input?.feedResultsLimit ?? 3;
-      const latestRun = input?.runId === undefined
-        ? (await listRefreshRuns(context.db, { limit: runLimit })).at(0) ?? null
-        : await getRefreshRunById(context.db, input.runId);
-      const runs = input?.runId === undefined ? await listRefreshRuns(context.db, { limit: runLimit }) : latestRun === null ? [] : [latestRun];
+      let latestRun: RefreshStatusRun | null;
+      let runs: readonly RefreshStatusRun[];
+
+      if (input?.runId === undefined) {
+        runs = await listRefreshRuns(context.db, { limit: runLimit });
+        latestRun = runs.at(0) ?? null;
+      } else {
+        latestRun = await getRefreshRunById(context.db, input.runId);
+        runs = latestRun === null ? [] : [latestRun];
+      }
+
       return {
         latestRun,
         recentRuns: runs,
@@ -338,7 +347,7 @@ export const appRouter = {
       const started = await startRefreshAll(
         {
           db: context.db,
-          sourceRegistry: context.sourceRegistry ?? createSourceAdapterRegistry(),
+          sourceRegistry: context.sourceRegistry,
           now: () => new Date(),
           wait: sleep,
         },
@@ -351,7 +360,7 @@ export const appRouter = {
       return refreshAll(
         {
           db: context.db,
-          sourceRegistry: context.sourceRegistry ?? createSourceAdapterRegistry(),
+          sourceRegistry: context.sourceRegistry,
           now: () => new Date(),
           wait: sleep,
         },
@@ -366,7 +375,7 @@ export const appRouter = {
       return refreshCreator(
         {
           db: context.db,
-          sourceRegistry: context.sourceRegistry ?? createSourceAdapterRegistry(),
+          sourceRegistry: context.sourceRegistry,
           now: () => new Date(),
           wait: sleep,
         },
@@ -381,7 +390,7 @@ export const appRouter = {
       return refreshFeed(
         {
           db: context.db,
-          sourceRegistry: context.sourceRegistry ?? createSourceAdapterRegistry(),
+          sourceRegistry: context.sourceRegistry,
           now: () => new Date(),
           wait: sleep,
         },
@@ -394,7 +403,7 @@ export const appRouter = {
       return addSource(
         {
           db: context.db,
-          sourceRegistry: context.sourceRegistry ?? createSourceAdapterRegistry(),
+          sourceRegistry: context.sourceRegistry,
         },
         {
           sourceInput: input.sourceInput,
@@ -406,7 +415,7 @@ export const appRouter = {
       return batchAddSources(
         {
           db: context.db,
-          sourceRegistry: context.sourceRegistry ?? createSourceAdapterRegistry(),
+          sourceRegistry: context.sourceRegistry,
         },
         {
           sourceInputs: input.sourceInputs,
@@ -536,11 +545,18 @@ export const appRouter = {
       return toggleFavoriteContentStatusForUser(context.db, context.session.user.id, input.contentItemId);
     }),
     favoriteContentItems: protectedProcedure.handler(async ({ context }) => {
-      const favorites = await listContentStatusWithContentForUser(context.db, context.session.user.id, "favorite");
+      const favorites = await listContentStatusWithContentForUser(context.db, {
+        userId: context.session.user.id,
+        status: "favorite",
+      });
       return favorites.map((favorite) => favorite.content);
     }),
     contentHistory: protectedProcedure.input(contentHistoryInput).handler(({ input, context }) => {
-      return listContentStatusWithContentForUser(context.db, context.session.user.id, input.status);
+      return listContentStatusWithContentForUser(context.db, {
+        userId: context.session.user.id,
+        status: input.status,
+        limit: input.limit,
+      });
     }),
     playlists: protectedProcedure.handler(({ context }) => {
       return listPlaylistsForUser(context.db, context.session.user.id);
@@ -591,12 +607,16 @@ export const appRouter = {
         throw new ORPCError("NOT_FOUND");
       }
 
-      return addPlaylistItem(context.db, {
+      const playlistItem = await addPlaylistItem(context.db, {
         userId: context.session.user.id,
         playlistId: input.playlistId,
         contentItemId: input.contentItemId,
         position,
       });
+      if (playlistItem === null) {
+        throw new ORPCError("CONFLICT", { message: "Position already occupied in playlist" });
+      }
+      return playlistItem;
     }),
     removePlaylistItem: protectedProcedure.input(removePlaylistItemInput).handler(async ({ input, context }) => {
       return {

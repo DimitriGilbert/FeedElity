@@ -322,6 +322,13 @@ export async function findOrCreateContentSource(
   db: RepositoryDb,
   input: SaveContentSourceInput,
 ): Promise<CatalogContentSource> {
+  const existingPriority = await db.query.contentSource.findFirst({
+    where: and(eq(schema.contentSource.contentItemId, input.contentItemId), eq(schema.contentSource.priority, input.priority)),
+  });
+  if (existingPriority !== undefined) {
+    return toCatalogContentSource(existingPriority);
+  }
+
   const id = crypto.randomUUID();
 
   await db
@@ -337,13 +344,27 @@ export async function findOrCreateContentSource(
       priority: input.priority,
       metadataJson: input.metadataJson ?? null,
     })
-    .onConflictDoNothing({ target: [schema.contentSource.sourceType, schema.contentSource.canonicalUrl] });
+    .onConflictDoNothing();
 
-  const existing = await findContentSourceByCanonicalUrl(db, input.sourceType, input.canonicalUrl);
+  const existing =
+    (await findContentSourceByCanonicalUrl(db, input.sourceType, input.canonicalUrl)) ??
+    (await findContentSourceByItemPriority(db, input.contentItemId, input.priority));
   if (existing === null) {
     throw new Error("Content source write did not produce a readable catalog record.");
   }
   return existing;
+}
+
+async function findContentSourceByItemPriority(
+  db: RepositoryDb,
+  contentItemId: string,
+  priority: number,
+): Promise<CatalogContentSource | null> {
+  const row = await db.query.contentSource.findFirst({
+    where: and(eq(schema.contentSource.contentItemId, contentItemId), eq(schema.contentSource.priority, priority)),
+  });
+
+  return row === undefined ? null : toCatalogContentSource(row);
 }
 
 export async function findContentSourceByCanonicalUrl(
@@ -463,7 +484,7 @@ export async function listCatalogFeedsForBrowsing(
   ].filter(isDefined);
   const rows = await db.query.feed.findMany({
     where: conditions.length === 0 ? undefined : and(...conditions),
-    orderBy: (feed, { asc }) => [asc(feed.createdAt), asc(feed.id)],
+    orderBy: (feed, { asc }) => [asc(feed.createdAt), asc(feed.sourceType), asc(feed.sourceExternalId)],
     limit: input.limit,
     offset: input.offset ?? 0,
   });

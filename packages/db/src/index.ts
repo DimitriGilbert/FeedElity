@@ -1,15 +1,11 @@
 import { env } from "@FeedElity/env/server";
-import { createClient } from "@libsql/client";
-import { drizzle } from "drizzle-orm/libsql";
 
-import * as schema from "./schema";
+import { createDbConnection } from "./connection";
+
+export { createDbConnection } from "./connection";
 
 export function createDb() {
-  const client = createClient({
-    url: env.DATABASE_URL,
-  });
-
-  return drizzle({ client, schema });
+  return createDbConnection(env.DATABASE_URL).db;
 }
 
 export const db = createDb();

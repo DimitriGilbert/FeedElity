@@ -349,6 +349,86 @@ describe("manual refresh orchestration", () => {
     expect(completed.run).toMatchObject({ status: "succeeded", feedsRequestedCount: 4, feedsSucceededCount: 4 });
     expect(completed.feedResults).toHaveLength(4);
   });
+
+  test("resume normal refresh reports feeds completed before crash after cadence metadata changes", async () => {
+    const feeds = await seedFeeds(testDatabase.db);
+    const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
+    const started = await startRefreshAll(refreshDependencies(registry), { force: false });
+    await recordRefreshFeedResult(testDatabase.db, {
+      refreshRunId: started.run.id,
+      feedId: feeds.dueFeedId,
+      status: "succeeded",
+      itemsDiscoveredCount: 1,
+      itemsCreatedCount: 1,
+      startedAt: fixedNow(),
+      completedAt: fixedNow(),
+    });
+    await setNextRefreshAfter(testDatabase.db, feeds.dueFeedId, new Date("2026-05-16T13:00:00.000Z"));
+
+    const completed = await resumeRefreshRun(refreshDependencies(registry), started.run);
+
+    expect(completed.run).toMatchObject({ status: "succeeded", feedsRequestedCount: 2, feedsSkippedCount: 2, feedsSucceededCount: 2 });
+    expect(completed.feedResults).toHaveLength(2);
+    expect(completed.report.feeds.find((feedReport) => feedReport.feedId === feeds.dueFeedId)).toMatchObject({
+      status: "succeeded",
+    });
+    expect(completed.report.feeds.filter((feedReport) => feedReport.feedId === feeds.dueFeedId)).toHaveLength(1);
+    expect(sorted(completed.skippedFeeds.map((skippedFeed) => skippedFeed.feed.id))).toEqual(sorted([feeds.notDueFeedId, feeds.noCadenceFeedId]));
+  });
+
+  test("catastrophic refresh failure includes deferred feeds in skipped counts and report", async () => {
+    const feeds = await seedFeeds(testDatabase.db);
+    let waitCount = 0;
+    const registry = createSourceAdapterRegistry([
+      createRefreshAdapter({
+        failingFeedExternalIds: ["due-feed"],
+        failureHttpStatus: 429,
+      }),
+    ]);
+
+    const result = await refreshAll(refreshDependencies(registry, async () => {
+      waitCount += 1;
+      if (waitCount === 2) {
+        throw new Error("Fixture wait failed after provider pause.");
+      }
+    }), { force: true });
+
+    expect(result.run).toMatchObject({ status: "failed", feedsRequestedCount: 4, feedsSkippedCount: 1, feedsSucceededCount: 0, feedsFailedCount: 2 });
+    expect(result.skippedFeeds).toHaveLength(1);
+    expect(result.skippedFeeds[0]).toMatchObject({ reason: "provider-paused" });
+    expect(result.report).toMatchObject({ skippedFeedCount: 1 });
+    expect(result.report.feeds.find((feedReport) => feedReport.feedId === feeds.notDueFeedId)).toMatchObject({
+      status: "skipped",
+      skipReason: "provider-paused",
+    });
+  });
+
+  test("resume catastrophic refresh failure reports partial when a recovered run has existing successes", async () => {
+    const feeds = await seedFeeds(testDatabase.db);
+    const registry = createSourceAdapterRegistry([
+      createRefreshAdapter({
+        failingFeedExternalIds: ["not-due-feed"],
+        failureHttpStatus: 429,
+      }),
+    ]);
+    const started = await startRefreshAll(refreshDependencies(registry), { force: true });
+    await recordRefreshFeedResult(testDatabase.db, {
+      refreshRunId: started.run.id,
+      feedId: feeds.dueFeedId,
+      status: "succeeded",
+      itemsDiscoveredCount: 1,
+      itemsCreatedCount: 1,
+      startedAt: fixedNow(),
+      completedAt: fixedNow(),
+    });
+
+    const completed = await resumeRefreshRun(refreshDependencies(registry, async () => {
+      throw new Error("Fixture wait failed after recovered failure.");
+    }), started.run);
+
+    expect(completed.run).toMatchObject({ status: "partial", feedsSucceededCount: 1, feedsFailedCount: 2 });
+    expect(completed.run.feedsSucceededCount).toBeGreaterThan(0);
+  });
 });
 
 function fixedNow(): Date {

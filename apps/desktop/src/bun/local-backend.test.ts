@@ -1,5 +1,5 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -188,7 +188,133 @@ describe("desktop local backend startup", () => {
       client.close();
     }
   });
+
+  test("rejects static symlinks that resolve outside the static root", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "feedelity-desktop-symlink-escape-"));
+    const staticDirectory = join(dataDirectory, "static");
+    const assetsDirectory = join(staticDirectory, "assets");
+    const outsideFile = join(dataDirectory, "outside.txt");
+    await mkdir(assetsDirectory, { recursive: true });
+    await writeFile(join(staticDirectory, "index.html"), "<main>desktop shell</main>");
+    await writeFile(outsideFile, "outside static root");
+    await symlink(outsideFile, join(assetsDirectory, "outside.txt"));
+
+    const port = await getAvailablePort();
+    startedBackend = await startDesktopLocalBackend(
+      {
+        FEELITY_DESKTOP_DATA_DIR: dataDirectory,
+        FEELITY_DESKTOP_MIGRATIONS_DIR: migrationsDirectory,
+        FEELITY_DESKTOP_STATIC_DIR: staticDirectory,
+      },
+      port,
+    );
+
+    const response = await fetch(`${startedBackend.config.serverUrl}/assets/outside.txt`);
+    expect(response.status).toBe(404);
+  });
+
+  test("returns 404 for broken static symlinks", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "feedelity-desktop-broken-symlink-"));
+    const staticDirectory = join(dataDirectory, "static");
+    const assetsDirectory = join(staticDirectory, "assets");
+    await mkdir(assetsDirectory, { recursive: true });
+    await writeFile(join(staticDirectory, "index.html"), "<main>desktop shell</main>");
+    await symlink(join(dataDirectory, "missing.txt"), join(assetsDirectory, "missing.txt"));
+
+    const port = await getAvailablePort();
+    startedBackend = await startDesktopLocalBackend(
+      {
+        FEELITY_DESKTOP_DATA_DIR: dataDirectory,
+        FEELITY_DESKTOP_MIGRATIONS_DIR: migrationsDirectory,
+        FEELITY_DESKTOP_STATIC_DIR: staticDirectory,
+      },
+      port,
+    );
+
+    const response = await fetch(`${startedBackend.config.serverUrl}/assets/missing.txt`);
+    expect(response.status).toBe(404);
+  });
+
+  test("falls back to the next available port when the configured port is occupied", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "feedelity-desktop-port-fallback-"));
+    const staticDirectory = join(dataDirectory, "static");
+    await mkdir(staticDirectory);
+    await writeFile(join(staticDirectory, "index.html"), "<main>desktop shell</main>");
+
+    const port = await getAvailablePortWithFreeNextPort();
+    const occupiedServer = await occupyPort(port);
+
+    try {
+      startedBackend = await startDesktopLocalBackend(
+        {
+          FEELITY_DESKTOP_DATA_DIR: dataDirectory,
+          FEELITY_DESKTOP_MIGRATIONS_DIR: migrationsDirectory,
+          FEELITY_DESKTOP_STATIC_DIR: staticDirectory,
+        },
+        port,
+      );
+
+      expect(startedBackend.config.port).toBe(port + 1);
+      expect(startedBackend.config.serverUrl).toBe(`http://127.0.0.1:${port + 1}`);
+      expect(process.env.BETTER_AUTH_URL).toBe(startedBackend.config.serverUrl);
+      expect(process.env.PORT).toBe(String(startedBackend.config.port));
+
+      const response = await fetch(`${startedBackend.config.serverUrl}/`);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("<main>desktop shell</main>");
+    } finally {
+      await closeServer(occupiedServer);
+    }
+  });
 });
+
+async function getAvailablePortWithFreeNextPort(): Promise<number> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const port = await getAvailablePort();
+    const nextPortServer = await tryOccupyPort(port + 1);
+    if (nextPortServer !== null) {
+      await closeServer(nextPortServer);
+      return port;
+    }
+  }
+
+  throw new Error("Could not allocate adjacent local test ports");
+}
+
+async function tryOccupyPort(port: number): Promise<Server | null> {
+  try {
+    return await occupyPort(port);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "EADDRINUSE") {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+async function occupyPort(port: number): Promise<Server> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.on("error", reject);
+    server.listen(port, "127.0.0.1", () => {
+      resolve(server);
+    });
+  });
+}
+
+async function closeServer(server: Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error !== undefined) {
+        reject(error);
+        return;
+      }
+
+      resolve();
+    });
+  });
+}
 
 async function getAvailablePort(): Promise<number> {
   return new Promise((resolve, reject) => {

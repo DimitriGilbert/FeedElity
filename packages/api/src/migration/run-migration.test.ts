@@ -9,6 +9,7 @@ import * as schema from "@FeedElity/db/schema";
 import type { AccountState, Context } from "../context";
 import type { RepositoryDb } from "../repositories/catalog";
 import { appRouter } from "../routers";
+import { createSourceAdapterRegistry } from "../sources/registry";
 import { runStrapiExportMigration } from "./run-migration";
 import { validStrapiExportFixture } from "./strapi-export.fixtures";
 import type { StrapiExport } from "./strapi-export";
@@ -19,6 +20,7 @@ interface TestDatabase {
 }
 
 let testDatabase: TestDatabase;
+const testSourceRegistry = createSourceAdapterRegistry();
 
 beforeEach(async () => {
   testDatabase = await createTestDatabase();
@@ -112,6 +114,73 @@ describe("Strapi migration runner", () => {
     expect(report.reportedRecords.length).toBe(report.warnings.length + report.failures.length);
   });
 
+  test("retries a partial run with existing imported rows idempotently", async () => {
+    const exportWithUnmappedRecords = buildExportWithUnmappedRecords();
+    const firstReport = await runStrapiExportMigration(testDatabase.db, {
+      exportData: exportWithUnmappedRecords,
+      sourceFilename: "partial-export.json",
+    });
+    const firstRunId = firstReport.migrationRun?.id;
+
+    expect(firstReport.status).toBe("partial");
+    expect(firstRunId).toBeString();
+    expect(firstReport.counts).toMatchObject({ users: 1, creators: 1, feeds: 1, contentItems: 1, subscriptions: 1 });
+
+    const retryReport = await runStrapiExportMigration(testDatabase.db, {
+      exportData: exportWithUnmappedRecords,
+      sourceFilename: "partial-export-retry.json",
+    });
+
+    expect(retryReport.status).toBe("partial");
+    expect(retryReport.alreadyImported).toBe(false);
+    expect(retryReport.migrationRun?.id).toBe(firstRunId);
+    expect(retryReport.migrationRun?.sourceFilename).toBe("partial-export-retry.json");
+    expect(retryReport.counts).toEqual(firstReport.counts);
+    expect(retryReport.mappingCounts).toEqual(firstReport.mappingCounts);
+    expect(retryReport.counts).toEqual({
+      users: 1,
+      creators: 1,
+      feeds: 1,
+      contentItems: 1,
+      contentSources: 1,
+      feedContentLinks: 1,
+      subscriptions: 1,
+      contentStatuses: 3,
+      playlists: 1,
+      playlistItems: 1,
+    });
+    expect(retryReport.mappingCounts).toEqual({
+      creator: 1,
+      "creator-image": 1,
+      feed: 1,
+      "feed-refresh-cadence": 1,
+      "content-item": 1,
+      "content-item-duration": 1,
+      "content-item-thumbnail": 1,
+      "content-source": 1,
+      "feed-content": 1,
+      user: 1,
+      subscription: 1,
+      "subscription-setting": 1,
+      "content-status": 3,
+      playlist: 1,
+      "playlist-item": 1,
+    });
+    expect(retryReport.failures.map((failure) => `${failure.oldEntityType}:${failure.oldEntityId}`)).toEqual(
+      firstReport.failures.map((failure) => `${failure.oldEntityType}:${failure.oldEntityId}`),
+    );
+    expect(await testDatabase.db.select().from(schema.migrationRun)).toHaveLength(1);
+    expect(await testDatabase.db.select().from(schema.creator)).toHaveLength(1);
+    expect(await testDatabase.db.select().from(schema.feed)).toHaveLength(1);
+    expect(await testDatabase.db.select().from(schema.contentItem)).toHaveLength(1);
+    expect(await testDatabase.db.select().from(schema.user)).toHaveLength(1);
+    expect(await testDatabase.db.select().from(schema.subscription)).toHaveLength(1);
+    expect(await testDatabase.db.select().from(schema.contentStatus)).toHaveLength(3);
+    expect(await testDatabase.db.select().from(schema.playlist)).toHaveLength(1);
+    expect(await testDatabase.db.select().from(schema.playlistItem)).toHaveLength(1);
+    expect(await testDatabase.db.select().from(schema.migrationMapping)).toHaveLength(17);
+  });
+
   test("protected migration API rejects anonymous callers and derives authorization from the session", async () => {
     await expect(
       call(appRouter.migration.runImport, { exportData: validStrapiExportFixture }, { context: anonymousContext(testDatabase.db) }),
@@ -149,12 +218,13 @@ function buildExportWithoutSourceOption(): StrapiExport {
 }
 
 function anonymousContext(db: RepositoryDb): Context {
-  return { db, session: null };
+  return { db, session: null, sourceRegistry: testSourceRegistry };
 }
 
 function authenticatedContext(db: RepositoryDb, userId: string, accountState: AccountState): Context {
   return {
     db,
+    sourceRegistry: testSourceRegistry,
     session: {
       session: {
         id: `session-${userId}`,

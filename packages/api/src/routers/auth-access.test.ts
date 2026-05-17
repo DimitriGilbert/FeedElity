@@ -11,7 +11,10 @@ import type { AccountState, Context } from "../context";
 import type { RepositoryDb } from "../repositories/catalog";
 import { findOrCreateContentItem, findOrCreateCreator } from "../repositories/catalog";
 import { createPlaylist, findOrCreateSubscription } from "../repositories/overlays";
+import { createSourceAdapterRegistry } from "../sources";
 import { appRouter } from "./index";
+
+const testSourceRegistry = createSourceAdapterRegistry();
 
 interface TestDatabase {
   readonly client: Client;
@@ -469,6 +472,7 @@ describe("auth access rules", () => {
 function anonymousContext(db: RepositoryDb): Context {
   return {
     db,
+    sourceRegistry: testSourceRegistry,
     session: null,
   };
 }
@@ -477,6 +481,7 @@ function authenticatedContext(db: RepositoryDb, userId: string, accountState: Ac
   const now = new Date("2026-01-01T00:00:00.000Z");
   return {
     db,
+    sourceRegistry: testSourceRegistry,
     session: {
       session: {
         id: `session-${userId}`,

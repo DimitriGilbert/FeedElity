@@ -688,15 +688,15 @@ test("selected viewer supports source switching and real playback render contrac
 test("native video playback marks selected content played after authenticated guard", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("onNativePlay={toggleSelectedContentPlayed}");
+  expect(source).toContain("onNativePlay={autoMarkSelectedContentPlayed}");
   expect(source).toContain("readonly onNativePlay: () => Promise<void>;");
   expect(source).toContain("onPlay={props.onNativePlay}");
-  expect(source).toContain("const toggleSelectedContentPlayed = async () => {");
-  expect(source).toContain("if (!props.isAuthenticated() || contentItemId === null) {\n      return;\n    }\n\n    setStatusActionBusy(\"played\");");
-  expect(source).toContain("await props.onMarkContentPlayed(contentItemId);");
-  expect(source).toContain("const markContentPlayed = async (contentItemId: string) => {");
-  expect(source).toContain("const result = await client.overlays.toggleContentPlayed({ contentItemId });");
-  expect(source).toContain("patchContentStatus(result.status);");
+  expect(source).toContain("const autoMarkSelectedContentPlayed = async () => {");
+  expect(source).toContain("if (!props.isAuthenticated() || contentItemId === null) {\n      return;\n    }\n\n    setStatusActionError(null);\n    try {");
+  expect(source).toContain("await props.onAutoMarkContentPlayed(contentItemId);");
+  expect(source).toContain("const autoMarkContentPlayed = async (contentItemId: string) => {");
+  expect(source).toContain("const result = await client.overlays.markContentPlayed({ contentItemId });");
+  expect(source).toContain("if (result.status !== null) {\n      patchContentStatus(result.status);\n      setStatusReloadKey((key) => key + 1);\n    }");
 });
 
 test("iframe playback has explicit real mark played workflow", async () => {
@@ -706,6 +706,7 @@ test("iframe playback has explicit real mark played workflow", async () => {
   expect(source).toContain("aria-label={selectedContentStatus().played ? \"Unmark played\" : \"Mark played\"}");
   expect(source).toContain("await props.onMarkContentPlayed(contentItemId);");
   expect(source).toContain("await client.overlays.toggleContentPlayed({ contentItemId });");
+  expect(source).toContain("onClick={toggleSelectedContentPlayed}");
 });
 
 test("anonymous users never call protected played procedure from viewer or playback", async () => {
@@ -715,6 +716,8 @@ test("anonymous users never call protected played procedure from viewer or playb
   expect(source).toContain("if (!props.isAuthenticated() || contentItemId === null) {\n      return;\n    }");
   expect(source).toContain("const markContentPlayed = async (contentItemId: string) => {");
   expect(source).toContain("const result = await client.overlays.toggleContentPlayed({ contentItemId });");
+  expect(source).toContain("const autoMarkContentPlayed = async (contentItemId: string) => {");
+  expect(source).toContain("const result = await client.overlays.markContentPlayed({ contentItemId });");
   expect(source).not.toContain("Sign in to mark played");
   expect(source).not.toContain("Login to mark played");
 });
@@ -922,9 +925,9 @@ test("history and played views use protected contentHistory procedures", async (
   const source = await readAppShellSource();
 
   expect(source).toContain("async function listOpenedHistoryContentItems(): Promise<readonly CatalogContentListItem[]>");
-  expect(source).toContain("client.overlays.contentHistory({ status: \"opened\" })");
+  expect(source).toContain("client.overlays.contentHistory({ status: \"opened\", limit: 100 })");
   expect(source).toContain("async function listPlayedHistoryContentItems(): Promise<readonly CatalogContentListItem[]>");
-  expect(source).toContain("client.overlays.contentHistory({ status: \"played\" })");
+  expect(source).toContain("client.overlays.contentHistory({ status: \"played\", limit: 100 })");
   expect(source).toContain("return listOpenedHistoryContentItems()");
   expect(source).toContain("return listPlayedHistoryContentItems()");
   expect(source).toContain("Filters applied locally to loaded videos.");
@@ -946,7 +949,7 @@ test("hide played is state filtering and not DOM filtering", async () => {
   const source = await readAppShellSource();
 
   expect(source).toContain("const [hidePlayed, setHidePlayed] = createSignal(false)");
-  expect(source).toContain("return locallyFilteredItems.filter((contentItem) => !toContentStatusFlags(statuses, contentItem.id).played)");
+  expect(source).toContain("locallyFilteredItems.filter((contentItem) => !toContentStatusFlags(statuses, contentItem.id).played)");
   expect(source).toContain("<For each={displayedContentItems()}>");
   expect(source).not.toContain("querySelector");
   expect(source).not.toContain("classList");
@@ -1004,13 +1007,20 @@ test("content statuses load only for authenticated users", async () => {
 test("resource reload dependencies use stable primitive source keys", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("function toCreatorListResourceKey(input: CreatorListInput): string");
+  expect(source).toContain("function toCreatorListResourceKey(input: CreatorListInput, reloadKey: number): string");
   expect(source).toContain("function toFeedListResourceKey(input: FeedListInput | null): string | null");
   expect(source).toContain("function toContentItemsResourceKey(mode: ContentItemsResourceMode, input: ContentListInput, reloadKey: number): string");
+  expect(source).toContain("creatorListResourceKey = createMemo(() => toCreatorListResourceKey(creatorListInput(), props.catalogReloadKey()))");
+  expect(source).toContain("catalogReloadKey={catalogReloadKey}");
+  expect(source).toContain("subscriptionsReloadKey={subscriptionsReloadKey}");
+  expect(source).toContain("mode === \"subscribed\"\n      ? props.subscriptionsReloadKey()");
   expect(source).toContain("input.offset.toString()");
   expect(source).toContain("createResource(contentItemsResourceKey, () =>");
   expect(source).toContain('return "content-statuses";');
+  expect(source).toContain("const [statusReloadKey, setStatusReloadKey] = createSignal(0);");
+  expect(source).toContain("statusReloadKey={statusReloadKey}");
   expect(source).toContain("return `${contentItemId}\\u001f${props.favoritesReloadKey().toString()}`;");
+  expect(source).not.toContain("statusReloadKey={() => 0}");
   expect(source).not.toContain("return { mode: \"catalog\", input: contentListInput(), reloadKey: props.catalogReloadKey() }");
   expect(source).not.toContain("return { mode: \"subscribed\", input: contentListInput(), reloadKey: props.catalogReloadKey() }");
   expect(source).not.toContain("return { contentItemId, reloadKey: props.favoritesReloadKey() }");
@@ -1039,15 +1049,26 @@ test("load-more controls page creators feeds and content without timers or obser
   expect(source).toContain("Load more creators");
   expect(source).toContain("Load more feeds");
   expect(source).toContain("Load more videos");
-  expect(source).toContain("const nextCreators = await client.catalog.creators({ ...creatorListInput(), offset: loadedCreators.length });");
-  expect(source).toContain("const nextFeeds = await client.catalog.feeds({ ...input, offset: visibleFeeds().length });");
-  expect(source).toContain("const input = { ...contentListInput(), offset: loadedContentItems().length };");
+  expect(source).toContain("interface PaginationOffsetState");
+  expect(source).toContain("function nextOffsetForKey(state: PaginationOffsetState, key: string, firstPageLength: number): number");
+  expect(source).toContain("const nextOffset = nextOffsetForKey(catalogCreatorOffset(), key, (creators() ?? emptyBrowsableCreators).length);");
+  expect(source).toContain("const nextCreators = await client.catalog.creators({ ...creatorListInput(), offset: nextOffset });");
+  expect(source).toContain("const nextOffset = nextOffsetForKey(feedOffset(), key, (feeds() ?? emptyCatalogFeeds).length);");
+  expect(source).toContain("const nextFeeds = await client.catalog.feeds({ ...input, offset: nextOffset });");
+  expect(source).toContain("const nextOffset = nextOffsetForKey(contentOffset(), key, (contentItems() ?? emptyCatalogContentItems).length);");
+  expect(source).toContain("const input = { ...contentListInput(), offset: nextOffset };");
   expect(source).toContain("setAppendedCatalogCreatorPage((currentPage) => ({");
   expect(source).toContain("setAppendedFeedPage((currentPage) => ({");
   expect(source).toContain("setAppendedContentPage((currentPage) => ({");
   expect(source).toContain("hasMore: nextCreators.length === creatorListLimit");
   expect(source).toContain("hasMore: nextFeeds.length === feedListLimit");
   expect(source).toContain("hasMore: nextContentItems.length === contentListLimit");
+  expect(source).toContain("setCatalogCreatorOffset({ key, nextOffset: nextOffset + nextCreators.length });");
+  expect(source).toContain("setFeedOffset({ key, nextOffset: nextOffset + nextFeeds.length });");
+  expect(source).toContain("setContentOffset({ key, nextOffset: nextOffset + nextContentItems.length });");
+  expect(source).not.toContain("offset: loadedCreators.length");
+  expect(source).not.toContain("offset: visibleFeeds().length");
+  expect(source).not.toContain("offset: loadedContentItems().length");
   expect(source).not.toContain("setCatalogCreators");
   expect(source).not.toContain("setLoadedFeeds");
   expect(source).not.toContain("setLoadedContentItems");
@@ -1095,10 +1116,12 @@ test("opened and played actions patch local status state without refetching", as
   expect(source).toContain("const removeContentStatus = (contentItemId: string, status: UserContentStatus[\"status\"]) => {");
   expect(statusMutationSource).toContain("const result = await client.overlays.toggleContentOpened({ contentItemId });");
   expect(statusMutationSource).toContain("const result = await client.overlays.toggleContentPlayed({ contentItemId });");
+  expect(statusMutationSource).toContain("const result = await client.overlays.markContentPlayed({ contentItemId });");
   expect(statusMutationSource).not.toContain("setCatalogReloadKey");
   expect(statusMutationSource).not.toContain("refetchContentStatuses");
   expect(source).toContain("await props.onMarkContentOpened(contentItemId);");
   expect(source).toContain("await props.onMarkContentPlayed(contentItemId);");
+  expect(source).toContain("await props.onAutoMarkContentPlayed(contentItemId);");
 });
 
 test("status-only row actions do not manually refetch catalog content", async () => {
@@ -1197,6 +1220,8 @@ test("subscription UI is authenticated and wired to real protected procedures", 
   expect(source).toContain("client.overlays.subscriptions()");
   expect(source).toContain("client.overlays.subscribeToCreator({ creatorId })");
   expect(source).toContain("client.overlays.unsubscribeFromCreator({ creatorId })");
+  expect(source).toContain("props.onSubscriptionsChanged();");
+  expect(source).toContain("onSubscriptionsChanged={() => setSubscriptionsReloadKey((key) => key + 1)}");
   expect(source).toContain('if (props.mode === "library" && action === "unsubscribe" && props.selectedCreatorId() === creatorId)');
   expect(source).toContain("props.onClearCreator()");
   expect(source).toContain("<SubscriptionActionButton");
@@ -1237,8 +1262,8 @@ test("library mode uses subscribed state without changing anonymous catalog read
   expect(source).toContain("return \"catalog\";");
   expect(source).toContain("return listSubscribedLibraryContentItems(input)");
   expect(source).toContain("return client.overlays.subscribedContentItems(input)");
-  expect(source).toContain("client.overlays.contentHistory({ status: \"opened\" })");
-  expect(source).toContain("client.overlays.contentHistory({ status: \"played\" })");
+  expect(source).toContain("client.overlays.contentHistory({ status: \"opened\", limit: 100 })");
+  expect(source).toContain("client.overlays.contentHistory({ status: \"played\", limit: 100 })");
   expect(source).toContain("Your subscribed Library has no videos yet. Subscribe from the Catalog or refresh your sources.");
   expect(source).toContain("Open videos to build your Library history, or clear local filters to see loaded history.");
   expect(source).toContain("Play videos to build your played Library, or clear local filters to see loaded played history.");

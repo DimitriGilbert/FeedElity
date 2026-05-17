@@ -1,10 +1,9 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-import { createClient } from "@libsql/client";
-import { drizzle } from "drizzle-orm/libsql";
+import { createDbConnection } from "@FeedElity/db/connection";
+import { z } from "zod";
 
-import * as schema from "../packages/db/src/schema";
 import { runStrapiExportMigration } from "../packages/api/src/migration/run-migration";
 import { buildUnvalidatedStrapiExportFromOldMysqlRows } from "../packages/api/src/migration/old-mysql-export";
 import type { OldStrapiMysqlRows } from "../packages/api/src/migration/old-mysql-export";
@@ -19,6 +18,10 @@ interface QuerySpec<Key extends keyof OldStrapiMysqlRows> {
   readonly key: Key;
   readonly sql: string;
 }
+
+type PartialOldStrapiMysqlRows = {
+  [Key in keyof OldStrapiMysqlRows]?: OldStrapiMysqlRows[Key];
+};
 
 const queries: readonly QuerySpec<keyof OldStrapiMysqlRows>[] = [
   { key: "users", sql: "SELECT id, username, email, provider, confirmed, blocked, created_at, updated_at FROM up_users ORDER BY id" },
@@ -52,7 +55,7 @@ const queries: readonly QuerySpec<keyof OldStrapiMysqlRows>[] = [
 ];
 
 function parseMysqlJsonRows(output: string): readonly Record<string, unknown>[] {
-  const cleanOutput = output.replace(/\u001b\[[0-9;]*m/g, "");
+  const cleanOutput = stripAnsiEscapes(output);
   if (cleanOutput.trim().length === 0) {
     return [];
   }
@@ -64,14 +67,114 @@ function parseMysqlJsonRows(output: string): readonly Record<string, unknown>[] 
   }
 
   const parsed: unknown = JSON.parse(cleanOutput.slice(start, end + 1));
-  if (!Array.isArray(parsed) || !parsed.every((row) => typeof row === "object" && row !== null && !Array.isArray(row))) {
+  if (!Array.isArray(parsed) || !parsed.every(isJsonObject)) {
     throw new Error("mysqlsh returned malformed row JSON.");
   }
 
-  return parsed as readonly Record<string, unknown>[];
+  return parsed;
 }
 
-function readRows(sql: string): readonly Record<string, unknown>[] {
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const auditRowSchema = z.object({
+  id: z.number(),
+  created_at: z.string().nullable().optional(),
+  updated_at: z.string().nullable().optional(),
+  published_at: z.string().nullable().optional(),
+});
+
+const optionRowSchema = auditRowSchema.extend({
+  name: z.string(),
+  type: z.string(),
+  value: z.string(),
+});
+
+const collectionSchemas = {
+  users: z.array(auditRowSchema.extend({
+    username: z.string(),
+    email: z.string(),
+    provider: z.string(),
+    confirmed: z.union([z.boolean(), z.literal(0), z.literal(1)]),
+    blocked: z.union([z.boolean(), z.literal(0), z.literal(1)]),
+  })),
+  creators: z.array(auditRowSchema.extend({ name: z.string(), description: z.string().nullable() })),
+  creatorOptions: z.array(optionRowSchema),
+  creatorOptionCreatorLinks: z.array(z.object({ creator_option_id: z.number(), creator_id: z.number() })),
+  feeds: z.array(auditRowSchema.extend({
+    name: z.string(),
+    url: z.string(),
+    type: z.string(),
+    external_id: z.string(),
+    refreshed_at: z.string().nullable(),
+  })),
+  feedCreatorLinks: z.array(z.object({ feed_id: z.number(), creator_id: z.number() })),
+  feedOptions: z.array(optionRowSchema),
+  feedOptionFeedLinks: z.array(z.object({ feed_option_id: z.number(), feed_id: z.number() })),
+  feedContents: z.array(auditRowSchema.extend({ external_id: z.string(), raw: z.string().nullable().optional() })),
+  feedContentFeedLinks: z.array(z.object({ feed_content_id: z.number(), feed_id: z.number() })),
+  feedContentContentLinks: z.array(z.object({ feed_content_id: z.number(), content_id: z.number() })),
+  creatorContents: z.array(auditRowSchema.extend({
+    title: z.string(),
+    type: z.string(),
+    publication: z.string().nullable(),
+    data: z.string().nullable(),
+  })),
+  creatorContentCreatorLinks: z.array(z.object({ creator_content_id: z.number(), creator_id: z.number() })),
+  contentOptions: z.array(optionRowSchema),
+  contentOptionContentLinks: z.array(z.object({ content_option_id: z.number(), content_id: z.number() })),
+  subscriptions: z.array(auditRowSchema),
+  subscriptionUserLinks: z.array(z.object({ subscription_id: z.number(), user_id: z.number() })),
+  subscriptionCreatorLinks: z.array(z.object({ subscription_id: z.number(), creator_id: z.number() })),
+  subscriptionOptions: z.array(optionRowSchema),
+  subscriptionOptionSubscriptionLinks: z.array(z.object({ subscription_option_id: z.number(), subscription_id: z.number() })),
+  subscriptionContentOptions: z.array(optionRowSchema),
+  subscriptionContentOptionSubscriptionLinks: z.array(z.object({ subscription_content_option_id: z.number(), subscription_id: z.number() })),
+  subscriptionContentOptionContentLinks: z.array(z.object({ subscription_content_option_id: z.number(), content_id: z.number() })),
+  playlists: z.array(auditRowSchema.extend({ name: z.string(), description: z.string().nullable() })),
+  playlistUserLinks: z.array(z.object({ playlist_id: z.number(), user_id: z.number() })),
+  playlistContents: z.array(auditRowSchema.extend({ Added: z.string().nullable(), position: z.number() })),
+  playlistContentPlaylistLinks: z.array(z.object({ playlist_content_id: z.number(), playlist_id: z.number() })),
+  playlistContentContentLinks: z.array(z.object({ playlist_content_id: z.number(), content_id: z.number() })),
+} satisfies { readonly [Key in keyof OldStrapiMysqlRows]: z.ZodType<OldStrapiMysqlRows[Key]> };
+
+const collectionParsers: { readonly [Key in keyof OldStrapiMysqlRows]: (rows: readonly Record<string, unknown>[]) => OldStrapiMysqlRows[Key] } = {
+  users: (rows) => collectionSchemas.users.parse(rows),
+  creators: (rows) => collectionSchemas.creators.parse(rows),
+  creatorOptions: (rows) => collectionSchemas.creatorOptions.parse(rows),
+  creatorOptionCreatorLinks: (rows) => collectionSchemas.creatorOptionCreatorLinks.parse(rows),
+  feeds: (rows) => collectionSchemas.feeds.parse(rows),
+  feedCreatorLinks: (rows) => collectionSchemas.feedCreatorLinks.parse(rows),
+  feedOptions: (rows) => collectionSchemas.feedOptions.parse(rows),
+  feedOptionFeedLinks: (rows) => collectionSchemas.feedOptionFeedLinks.parse(rows),
+  feedContents: (rows) => collectionSchemas.feedContents.parse(rows),
+  feedContentFeedLinks: (rows) => collectionSchemas.feedContentFeedLinks.parse(rows),
+  feedContentContentLinks: (rows) => collectionSchemas.feedContentContentLinks.parse(rows),
+  creatorContents: (rows) => collectionSchemas.creatorContents.parse(rows),
+  creatorContentCreatorLinks: (rows) => collectionSchemas.creatorContentCreatorLinks.parse(rows),
+  contentOptions: (rows) => collectionSchemas.contentOptions.parse(rows),
+  contentOptionContentLinks: (rows) => collectionSchemas.contentOptionContentLinks.parse(rows),
+  subscriptions: (rows) => collectionSchemas.subscriptions.parse(rows),
+  subscriptionUserLinks: (rows) => collectionSchemas.subscriptionUserLinks.parse(rows),
+  subscriptionCreatorLinks: (rows) => collectionSchemas.subscriptionCreatorLinks.parse(rows),
+  subscriptionOptions: (rows) => collectionSchemas.subscriptionOptions.parse(rows),
+  subscriptionOptionSubscriptionLinks: (rows) => collectionSchemas.subscriptionOptionSubscriptionLinks.parse(rows),
+  subscriptionContentOptions: (rows) => collectionSchemas.subscriptionContentOptions.parse(rows),
+  subscriptionContentOptionSubscriptionLinks: (rows) => collectionSchemas.subscriptionContentOptionSubscriptionLinks.parse(rows),
+  subscriptionContentOptionContentLinks: (rows) => collectionSchemas.subscriptionContentOptionContentLinks.parse(rows),
+  playlists: (rows) => collectionSchemas.playlists.parse(rows),
+  playlistUserLinks: (rows) => collectionSchemas.playlistUserLinks.parse(rows),
+  playlistContents: (rows) => collectionSchemas.playlistContents.parse(rows),
+  playlistContentPlaylistLinks: (rows) => collectionSchemas.playlistContentPlaylistLinks.parse(rows),
+  playlistContentContentLinks: (rows) => collectionSchemas.playlistContentContentLinks.parse(rows),
+};
+
+function stripAnsiEscapes(output: string): string {
+  return output.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
+function readRows<Key extends keyof OldStrapiMysqlRows>(query: QuerySpec<Key>): OldStrapiMysqlRows[Key] {
   const result = Bun.spawnSync([
     "docker",
     "exec",
@@ -82,7 +185,7 @@ function readRows(sql: string): readonly Record<string, unknown>[] {
     "--uri",
     mysqlUri,
     "-e",
-    sql,
+    query.sql,
   ], {
     stdout: "pipe",
     stderr: "pipe",
@@ -92,7 +195,22 @@ function readRows(sql: string): readonly Record<string, unknown>[] {
     throw new Error(`Legacy MySQL query failed: ${result.stderr.toString()}`);
   }
 
-  return parseMysqlJsonRows(result.stdout.toString());
+  const rows = parseMysqlJsonRows(result.stdout.toString());
+  return validateRows(query.key, rows);
+}
+
+function validateRows<Key extends keyof OldStrapiMysqlRows>(
+  key: Key,
+  rows: readonly Record<string, unknown>[],
+): OldStrapiMysqlRows[Key] {
+  try {
+    return collectionParsers[key](rows);
+  } catch (error: unknown) {
+    if (error instanceof z.ZodError) {
+      throw new Error(`Legacy MySQL collection ${key} contained malformed rows: ${error.message}`);
+    }
+    throw error;
+  }
 }
 
 async function main(): Promise<void> {
@@ -102,14 +220,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  const partialRows: Partial<Record<keyof OldStrapiMysqlRows, readonly Record<string, unknown>[]>> = {};
+  const partialRows: PartialOldStrapiMysqlRows = {};
   for (const query of queries) {
-    const rows = readRows(query.sql);
-    partialRows[query.key] = rows;
+    const rows = readRows(query);
+    setCollection(partialRows, query.key, rows);
     console.log(`${query.key}: ${rows.length}`);
   }
 
-  const exportData = buildUnvalidatedStrapiExportFromOldMysqlRows(partialRows as unknown as OldStrapiMysqlRows, {
+  const rows = validateCompleteOldMysqlRows(partialRows);
+  const exportData = buildUnvalidatedStrapiExportFromOldMysqlRows(rows, {
     exportedAt: new Date().toISOString(),
     strapiVersion: "4.25.9",
     sourceInstanceId: mysqlContainer,
@@ -127,10 +246,9 @@ async function main(): Promise<void> {
 }
 
 async function importExportData(exportData: unknown): Promise<void> {
-  const client = createClient({ url: databaseUrl });
+  const { client, db } = createDbConnection(databaseUrl);
   try {
-    const db = drizzle({ client, schema });
-    const report = await runStrapiExportMigration(db, { exportData, sourceFilename: outputPath });
+    const report = await db.transaction((tx) => runStrapiExportMigration(tx, { exportData, sourceFilename: outputPath }));
     console.log(JSON.stringify({ status: report.status, counts: report.counts, warnings: report.warnings.length, failures: report.failures.length }, null, 2));
     if (report.failures.length > 0) {
       console.log(JSON.stringify(report.failures.slice(0, 20), null, 2));
@@ -138,6 +256,68 @@ async function importExportData(exportData: unknown): Promise<void> {
   } finally {
     client.close();
   }
+}
+
+function validateCompleteOldMysqlRows(
+  partialRows: PartialOldStrapiMysqlRows,
+): OldStrapiMysqlRows {
+  const missingCollections = queries
+    .map((query) => query.key)
+    .filter((key) => partialRows[key] === undefined);
+
+  if (missingCollections.length > 0) {
+    throw new Error(`Legacy MySQL export is missing required collections: ${missingCollections.join(", ")}.`);
+  }
+
+  return {
+    users: requiredCollection(partialRows, "users"),
+    creators: requiredCollection(partialRows, "creators"),
+    creatorOptions: requiredCollection(partialRows, "creatorOptions"),
+    creatorOptionCreatorLinks: requiredCollection(partialRows, "creatorOptionCreatorLinks"),
+    feeds: requiredCollection(partialRows, "feeds"),
+    feedCreatorLinks: requiredCollection(partialRows, "feedCreatorLinks"),
+    feedOptions: requiredCollection(partialRows, "feedOptions"),
+    feedOptionFeedLinks: requiredCollection(partialRows, "feedOptionFeedLinks"),
+    feedContents: requiredCollection(partialRows, "feedContents"),
+    feedContentFeedLinks: requiredCollection(partialRows, "feedContentFeedLinks"),
+    feedContentContentLinks: requiredCollection(partialRows, "feedContentContentLinks"),
+    creatorContents: requiredCollection(partialRows, "creatorContents"),
+    creatorContentCreatorLinks: requiredCollection(partialRows, "creatorContentCreatorLinks"),
+    contentOptions: requiredCollection(partialRows, "contentOptions"),
+    contentOptionContentLinks: requiredCollection(partialRows, "contentOptionContentLinks"),
+    subscriptions: requiredCollection(partialRows, "subscriptions"),
+    subscriptionUserLinks: requiredCollection(partialRows, "subscriptionUserLinks"),
+    subscriptionCreatorLinks: requiredCollection(partialRows, "subscriptionCreatorLinks"),
+    subscriptionOptions: requiredCollection(partialRows, "subscriptionOptions"),
+    subscriptionOptionSubscriptionLinks: requiredCollection(partialRows, "subscriptionOptionSubscriptionLinks"),
+    subscriptionContentOptions: requiredCollection(partialRows, "subscriptionContentOptions"),
+    subscriptionContentOptionSubscriptionLinks: requiredCollection(partialRows, "subscriptionContentOptionSubscriptionLinks"),
+    subscriptionContentOptionContentLinks: requiredCollection(partialRows, "subscriptionContentOptionContentLinks"),
+    playlists: requiredCollection(partialRows, "playlists"),
+    playlistUserLinks: requiredCollection(partialRows, "playlistUserLinks"),
+    playlistContents: requiredCollection(partialRows, "playlistContents"),
+    playlistContentPlaylistLinks: requiredCollection(partialRows, "playlistContentPlaylistLinks"),
+    playlistContentContentLinks: requiredCollection(partialRows, "playlistContentContentLinks"),
+  };
+}
+
+function requiredCollection<Key extends keyof OldStrapiMysqlRows>(
+  partialRows: PartialOldStrapiMysqlRows,
+  key: Key,
+): OldStrapiMysqlRows[Key] {
+  const rows = partialRows[key];
+  if (rows === undefined) {
+    throw new Error(`Legacy MySQL export is missing required collection: ${key}.`);
+  }
+  return rows;
+}
+
+function setCollection<Key extends keyof OldStrapiMysqlRows>(
+  partialRows: PartialOldStrapiMysqlRows,
+  key: Key,
+  rows: OldStrapiMysqlRows[Key],
+): void {
+  partialRows[key] = rows;
 }
 
 await main();

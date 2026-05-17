@@ -98,15 +98,15 @@ async function listSubscribedLibraryContentItems(input: ContentListInput): Promi
 }
 
 async function listOpenedHistoryContentItems(): Promise<readonly CatalogContentListItem[]> {
-  const historyEntries = await client.overlays.contentHistory({ status: "opened" });
+  const historyEntries = await client.overlays.contentHistory({ status: "opened", limit: 100 });
 
-  return mergeUniqueContentItemsForDisplay(historyEntries.map((entry) => entry.content)).slice(0, contentListLimit);
+  return mergeUniqueContentItemsForDisplay(historyEntries.map((entry) => entry.content));
 }
 
 async function listPlayedHistoryContentItems(): Promise<readonly CatalogContentListItem[]> {
-  const historyEntries = await client.overlays.contentHistory({ status: "played" });
+  const historyEntries = await client.overlays.contentHistory({ status: "played", limit: 100 });
 
-  return mergeUniqueContentItemsForDisplay(historyEntries.map((entry) => entry.content)).slice(0, contentListLimit);
+  return mergeUniqueContentItemsForDisplay(historyEntries.map((entry) => entry.content));
 }
 
 function contentItemMatchesLocalFilters(contentItem: CatalogContentListItem, input: ContentListInput): boolean {
@@ -134,6 +134,15 @@ interface ContentLoadMoreControlProps {
   readonly errorMessage: string | null;
   readonly label: string;
   readonly onLoadMore: () => Promise<void>;
+}
+
+interface PaginationOffsetState {
+  readonly key: string;
+  readonly nextOffset: number;
+}
+
+function nextOffsetForKey(state: PaginationOffsetState, key: string, firstPageLength: number): number {
+  return state.key === key ? state.nextOffset : firstPageLength;
 }
 
 function ContentLoadMoreControl(props: ContentLoadMoreControlProps) {
@@ -176,6 +185,7 @@ export interface ContentListColumnProps {
   readonly selectedFeed: () => CatalogFeed | null;
   readonly selectedContentItemId: () => string | null;
   readonly catalogReloadKey: () => number;
+  readonly subscriptionsReloadKey: () => number;
   readonly favoritesReloadKey: () => number;
   readonly contentStatuses: () => readonly UserContentStatus[];
   readonly statusReloadKey: () => number;
@@ -196,6 +206,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
   const [viewMode, setViewMode] = createSignal<ContentViewMode>(props.mode === "library" ? "subscribed" : "catalog");
   const [hidePlayed, setHidePlayed] = createSignal(false);
   const [appendedContentPage, setAppendedContentPage] = createSignal<AppendedPageState<CatalogContentListItem>>(emptyAppendedPageState());
+  const [contentOffset, setContentOffset] = createSignal<PaginationOffsetState>({ key: "", nextOffset: 0 });
   const [contentPageBusy, setContentPageBusy] = createSignal(false);
   const [contentPageError, setContentPageError] = createSignal<string | null>(null);
   const [controlsExpanded, setControlsExpanded] = createSignal(false);
@@ -203,6 +214,12 @@ export function ContentListColumn(props: ContentListColumnProps) {
   createEffect(() => {
     if (props.middlePanePanel() !== null) {
       setControlsExpanded(false);
+    }
+  });
+
+  createEffect(() => {
+    if (!props.isAuthenticated()) {
+      setViewMode(props.mode === "library" ? "subscribed" : "catalog");
     }
   });
 
@@ -232,7 +249,13 @@ export function ContentListColumn(props: ContentListColumnProps) {
   });
   const contentItemsResourceKey = createMemo(() => {
     const mode = contentItemsResourceMode();
-    const reloadKey = mode === "favorites" ? props.favoritesReloadKey() : mode === "history-opened" || mode === "played" ? props.statusReloadKey() : props.catalogReloadKey();
+    const reloadKey = mode === "subscribed"
+      ? props.subscriptionsReloadKey()
+      : mode === "favorites"
+      ? props.favoritesReloadKey()
+      : mode === "history-opened" || mode === "played"
+      ? props.statusReloadKey()
+      : props.catalogReloadKey();
     return toContentItemsResourceKey(mode, contentListInput(), reloadKey);
   });
   const [contentItems] = createResource(contentItemsResourceKey, () => {
@@ -262,7 +285,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
     return [];
   });
   const favoriteItemsResourceInput = createMemo(() => {
-    if (!props.isAuthenticated()) {
+    if (!props.isAuthenticated() || contentItemsResourceMode() === "favorites") {
       return null;
     }
 
@@ -271,7 +294,11 @@ export function ContentListColumn(props: ContentListColumnProps) {
   const [favoriteItems, { refetch: refetchFavoriteItems }] = createResource(favoriteItemsResourceInput, () =>
     client.overlays.favoriteContentItems(),
   );
-  const favoriteContentItemIds = createMemo(() => new Set((favoriteItems() ?? emptyCatalogContentItems).map((contentItem) => contentItem.id)));
+  const favoriteContentItemIds = createMemo(() => {
+    const favoriteSourceItems = contentItemsResourceMode() === "favorites" ? contentItems() : favoriteItems();
+
+    return new Set((favoriteSourceItems ?? emptyCatalogContentItems).map((contentItem) => contentItem.id));
+  });
   const listTargetPlaylistId = createMemo(() => {
     const loadedPlaylists = playlists() ?? emptyPlaylists;
     const selectedId = props.selectedPlaylistId();
@@ -297,11 +324,13 @@ export function ContentListColumn(props: ContentListColumnProps) {
       ? currentContentItems
       : currentContentItems.filter((contentItem) => contentItemMatchesLocalFilters(contentItem, input));
 
-    if (!props.isAuthenticated() || !hidePlayed()) {
-      return locallyFilteredItems;
-    }
+    const visibleItems = !props.isAuthenticated() || !hidePlayed()
+      ? locallyFilteredItems
+      : locallyFilteredItems.filter((contentItem) => !toContentStatusFlags(statuses, contentItem.id).played);
 
-    return locallyFilteredItems.filter((contentItem) => !toContentStatusFlags(statuses, contentItem.id).played);
+    return viewMode() === "history-opened" || viewMode() === "played"
+      ? visibleItems.slice(0, contentListLimit)
+      : visibleItems;
   });
   const contentCount = createMemo(() => displayedContentItems().length);
 
@@ -327,7 +356,9 @@ export function ContentListColumn(props: ContentListColumnProps) {
     try {
       await client.overlays.toggleContentFavorite({ contentItemId });
       props.onFavoriteChanged();
-      await refetchFavoriteItems();
+      if (contentItemsResourceMode() !== "favorites") {
+        await refetchFavoriteItems();
+      }
     } catch (error) {
       throw new Error(`Favorite update failed: ${formatError(error)}`);
     }
@@ -359,18 +390,23 @@ export function ContentListColumn(props: ContentListColumnProps) {
     }
 
     const key = contentItemsResourceKey();
-    const input = { ...contentListInput(), offset: loadedContentItems().length };
+    const nextOffset = nextOffsetForKey(contentOffset(), key, (contentItems() ?? emptyCatalogContentItems).length);
+    const input = { ...contentListInput(), offset: nextOffset };
     setContentPageBusy(true);
     setContentPageError(null);
     try {
       const nextContentItems = mode === "subscribed"
         ? await listSubscribedLibraryContentItems(input)
         : await client.catalog.contentItems(input);
+      if (contentItemsResourceKey() !== key) {
+        return;
+      }
       setAppendedContentPage((currentPage) => ({
         key,
         items: appendUniqueContentItems(pageItemsForKey(currentPage, key), nextContentItems),
         hasMore: nextContentItems.length === contentListLimit,
       }));
+      setContentOffset({ key, nextOffset: nextOffset + nextContentItems.length });
     } catch (error) {
       setContentPageError(formatError(error));
     } finally {

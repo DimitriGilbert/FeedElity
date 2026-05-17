@@ -202,6 +202,36 @@ describe("catalog and overlay repositories", () => {
     expect(await listCatalogContentItems(testDatabase.db)).toHaveLength(1);
   });
 
+  test("content source priority collision returns the existing row", async () => {
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "priority-channel",
+      displayName: "Priority Creator",
+    });
+    const contentItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "priority-video",
+      title: "Priority video",
+    });
+    const firstSource = await findOrCreateContentSource(testDatabase.db, {
+      contentItemId: contentItem.id,
+      sourceType: "youtube",
+      sourceExternalId: "priority-video",
+      canonicalUrl: "https://www.youtube.com/watch?v=priority-video",
+      priority: 0,
+    });
+    const priorityCollision = await findOrCreateContentSource(testDatabase.db, {
+      contentItemId: contentItem.id,
+      sourceType: "youtube",
+      sourceExternalId: "priority-video-alt",
+      canonicalUrl: "https://www.youtube.com/watch?v=priority-video-alt",
+      priority: 0,
+    });
+
+    expect(priorityCollision).toEqual(firstSource);
+  });
+
   test("playlists and playlist items are scoped by owner and ordered by position", async () => {
     await insertUser(testDatabase.db, "user-a", "playlist-a@example.test");
     await insertUser(testDatabase.db, "user-b", "playlist-b@example.test");
@@ -262,6 +292,54 @@ describe("catalog and overlay repositories", () => {
       secondContentItem.id,
     ]);
     expect(otherUserItems).toHaveLength(0);
+  });
+
+  test("playlist item position replay reuses same content and rejects different content", async () => {
+    await insertUser(testDatabase.db, "user-a", "playlist-position-a@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      sourceType: "youtube",
+      sourceExternalId: "playlist-position-channel",
+      displayName: "Playlist Position Creator",
+    });
+    const firstContentItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "playlist-position-video-1",
+      title: "First position video",
+    });
+    const secondContentItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "playlist-position-video-2",
+      title: "Second position video",
+    });
+    const playlist = await createPlaylist(testDatabase.db, {
+      userId: "user-a",
+      name: "Position queue",
+    });
+
+    const firstItem = await addPlaylistItem(testDatabase.db, {
+      userId: "user-a",
+      playlistId: playlist.id,
+      contentItemId: firstContentItem.id,
+      position: 0,
+    });
+    const positionCollision = await addPlaylistItem(testDatabase.db, {
+      userId: "user-a",
+      playlistId: playlist.id,
+      contentItemId: secondContentItem.id,
+      position: 0,
+    });
+    const positionReplay = await addPlaylistItem(testDatabase.db, {
+      userId: "user-a",
+      playlistId: playlist.id,
+      contentItemId: firstContentItem.id,
+      position: 0,
+    });
+
+    expect(firstItem).not.toBeNull();
+    expect(positionReplay).toEqual(firstItem);
+    expect(positionCollision).toBeNull();
   });
 
   test("empty playlist reorders verify playlist ownership before returning items", async () => {

@@ -1,20 +1,15 @@
 import { createForm } from "@tanstack/solid-form";
-import { useNavigate } from "@tanstack/solid-router";
+import { useNavigate, useSearch } from "@tanstack/solid-router";
 import { createSignal, For, Show } from "solid-js";
 import z from "zod";
 
 import { authClient } from "@/lib/auth-client";
-import { client } from "@/utils/orpc";
+import { getPostAuthRedirect } from "@/lib/auth-helpers";
 
 interface SignUpValue {
   readonly email: string;
   readonly password: string;
   readonly name: string;
-}
-
-interface EmailPasswordValue {
-  readonly email: string;
-  readonly password: string;
 }
 
 function signUpWithEmailPassword(value: SignUpValue, onSuccess: () => void): Promise<void> {
@@ -38,31 +33,12 @@ function signUpWithEmailPassword(value: SignUpValue, onSuccess: () => void): Pro
   });
 }
 
-function signInWithEmailPassword(value: EmailPasswordValue, onSuccess: () => void): Promise<void> {
-  return new Promise((resolve, reject) => {
-    authClient.signIn.email(
-      {
-        email: value.email,
-        password: value.password,
-      },
-      {
-        onSuccess: () => {
-          onSuccess();
-          resolve();
-        },
-        onError: (error) => {
-          reject(new Error(error.error.message));
-        },
-      },
-    );
-  });
-}
-
 export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () => void }) {
   const [submitError, setSubmitError] = createSignal<string | null>(null);
   const navigate = useNavigate({
-    from: "/",
+    from: "/login",
   });
+  const search = useSearch({ from: "/login" });
 
   const form = createForm(() => ({
     defaultValues: {
@@ -74,29 +50,15 @@ export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () 
       setSubmitError(null);
       const navigateToDashboard = () => {
         navigate({
-          to: "/dashboard",
+          to: getPostAuthRedirect(search().redirect),
+          search: { redirect: undefined },
         });
       };
 
       try {
         await signUpWithEmailPassword(value, navigateToDashboard);
       } catch (error) {
-        const signUpMessage = error instanceof Error ? error.message : "Sign up failed.";
-        if (!signUpMessage.toLowerCase().includes("user already exists")) {
-          setSubmitError(signUpMessage);
-          return;
-        }
-
-        try {
-          await client.auth.setupMigratedPassword({
-            email: value.email,
-            password: value.password,
-            name: value.name,
-          });
-          await signInWithEmailPassword(value, navigateToDashboard);
-        } catch (setupError) {
-          setSubmitError(setupError instanceof Error ? setupError.message : signUpMessage);
-        }
+        setSubmitError(error instanceof Error ? error.message : "Sign up failed.");
       }
     },
     validators: {

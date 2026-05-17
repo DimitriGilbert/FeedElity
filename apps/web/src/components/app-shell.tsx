@@ -159,8 +159,9 @@ function toSourceFilterValue(value: string): SourceType | null {
   return sourceFilterOptions.find((sourceType) => sourceType === value) ?? null;
 }
 
-function toCreatorListResourceKey(input: CreatorListInput): string {
+function toCreatorListResourceKey(input: CreatorListInput, reloadKey: number): string {
   return [
+    reloadKey.toString(),
     input.search ?? "",
     input.sourceType ?? "",
     input.limit.toString(),
@@ -241,16 +242,16 @@ interface CreatorSourceColumnProps {
   readonly activeTab: () => LeftPaneTab;
   readonly setActiveTab: (tab: LeftPaneTab) => void;
   readonly readerDensity: () => ReaderDensity;
-  readonly settings: () => readonly UserSetting[];
-  readonly settingsUnavailable: () => boolean;
   readonly selectedCreatorId: () => string | null;
   readonly selectedCreator: () => BrowsableCreator | null;
   readonly selectedFeed: () => CatalogFeed | null;
   readonly selectedPlaylistId: () => string | null;
+  readonly catalogReloadKey: () => number;
+  readonly subscriptionsReloadKey: () => number;
   readonly playlistItemsReloadKey: () => number;
   readonly middlePanePanel: () => MiddlePanePanel | null;
   readonly onCatalogChanged: () => void;
-  readonly onSettingsChanged: () => Promise<void>;
+  readonly onSubscriptionsChanged: () => void;
   readonly onClearCreator: () => void;
   readonly onSelectCreator: (creator: BrowsableCreator) => void;
   readonly onSelectFeed: (feed: CatalogFeed | null) => void;
@@ -268,6 +269,15 @@ interface LoadMoreControlProps {
   readonly errorMessage: string | null;
   readonly label: string;
   readonly onLoadMore: () => Promise<void>;
+}
+
+interface PaginationOffsetState {
+  readonly key: string;
+  readonly nextOffset: number;
+}
+
+function nextOffsetForKey(state: PaginationOffsetState, key: string, firstPageLength: number): number {
+  return state.key === key ? state.nextOffset : firstPageLength;
 }
 
 function LoadMoreControl(props: LoadMoreControlProps) {
@@ -305,10 +315,12 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [search, setSearch] = createSignal("");
   const [sourceType, setSourceType] = createSignal<SourceType | null>(null);
   const [appendedCatalogCreatorPage, setAppendedCatalogCreatorPage] = createSignal<AppendedPageState<BrowsableCreator>>(emptyAppendedPageState());
+  const [catalogCreatorOffset, setCatalogCreatorOffset] = createSignal<PaginationOffsetState>({ key: "", nextOffset: 0 });
   const [creatorPageBusy, setCreatorPageBusy] = createSignal(false);
   const [creatorPageError, setCreatorPageError] = createSignal<string | null>(null);
   const [appendedFeedPage, setAppendedFeedPage] = createSignal<AppendedPageState<CatalogFeed>>(emptyAppendedPageState());
   const [feedPageBusy, setFeedPageBusy] = createSignal(false);
+  const [feedOffset, setFeedOffset] = createSignal<PaginationOffsetState>({ key: "", nextOffset: 0 });
   const [feedPageError, setFeedPageError] = createSignal<string | null>(null);
   const [refreshBusy, setRefreshBusy] = createSignal<"normal" | "force" | null>(null);
   const [refreshError, setRefreshError] = createSignal<string | null>(null);
@@ -317,7 +329,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [refreshCompletedFeedsSeen, setRefreshCompletedFeedsSeen] = createSignal(0);
   const [libraryCreatorLimit, setLibraryCreatorLimit] = createSignal(creatorListLimit);
   const creatorListInput = createMemo(() => toCreatorListInput(search(), sourceType()));
-  const creatorListResourceKey = createMemo(() => toCreatorListResourceKey(creatorListInput()));
+  const creatorListResourceKey = createMemo(() => toCreatorListResourceKey(creatorListInput(), props.catalogReloadKey()));
   const [creators] = createResource(
     creatorListResourceKey,
     () => client.catalog.creators(untrack(creatorListInput)),
@@ -327,9 +339,9 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
       return null;
     }
 
-    return props.mode;
+    return `${props.mode}\u001f${props.subscriptionsReloadKey().toString()}`;
   });
-  const [subscriptions, { refetch: refetchSubscriptions }] = createResource(subscriptionsResourceInput, () =>
+  const [subscriptions] = createResource(subscriptionsResourceInput, () =>
     client.overlays.subscriptions(),
   );
   const feedListInput = createMemo(() => toFeedListInput(props.selectedCreatorId()));
@@ -412,13 +424,17 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     setCreatorPageError(null);
     try {
       const key = creatorListResourceKey();
-      const loadedCreators = listedCreators();
-      const nextCreators = await client.catalog.creators({ ...creatorListInput(), offset: loadedCreators.length });
+      const nextOffset = nextOffsetForKey(catalogCreatorOffset(), key, (creators() ?? emptyBrowsableCreators).length);
+      const nextCreators = await client.catalog.creators({ ...creatorListInput(), offset: nextOffset });
+      if (creatorListResourceKey() !== key) {
+        return;
+      }
       setAppendedCatalogCreatorPage((currentPage) => ({
         key,
         items: appendUniqueCreators(pageItemsForKey(currentPage, key), nextCreators),
         hasMore: nextCreators.length === creatorListLimit,
       }));
+      setCatalogCreatorOffset({ key, nextOffset: nextOffset + nextCreators.length });
     } catch (error) {
       setCreatorPageError(formatError(error));
     } finally {
@@ -440,12 +456,17 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
         return;
       }
 
-      const nextFeeds = await client.catalog.feeds({ ...input, offset: visibleFeeds().length });
+      const nextOffset = nextOffsetForKey(feedOffset(), key, (feeds() ?? emptyCatalogFeeds).length);
+      const nextFeeds = await client.catalog.feeds({ ...input, offset: nextOffset });
+      if (feedListResourceKey() !== key) {
+        return;
+      }
       setAppendedFeedPage((currentPage) => ({
         key,
         items: appendUniqueFeeds(pageItemsForKey(currentPage, key), nextFeeds),
         hasMore: nextFeeds.length === feedListLimit,
       }));
+      setFeedOffset({ key, nextOffset: nextOffset + nextFeeds.length });
     } catch (error) {
       setFeedPageError(formatError(error));
     } finally {
@@ -460,7 +481,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
       await client.overlays.unsubscribeFromCreator({ creatorId });
     }
 
-    await refetchSubscriptions();
+    props.onSubscriptionsChanged();
     if (props.mode === "library" && action === "unsubscribe" && props.selectedCreatorId() === creatorId) {
       props.onClearCreator();
     }
@@ -845,7 +866,9 @@ export default function AppShell(props: AppShellProps) {
   const [selectedPlaylistId, setSelectedPlaylistId] = createSignal<string | null>(null);
   const [playlistItemsReloadKey, setPlaylistItemsReloadKey] = createSignal(0);
   const [catalogReloadKey, setCatalogReloadKey] = createSignal(0);
+  const [subscriptionsReloadKey, setSubscriptionsReloadKey] = createSignal(0);
   const [favoritesReloadKey, setFavoritesReloadKey] = createSignal(0);
+  const [statusReloadKey, setStatusReloadKey] = createSignal(0);
   const [statusSelectionError, setStatusSelectionError] = createSignal<string | null>(null);
   const [activeTab, setActiveTab] = createSignal<LeftPaneTab>("library");
   const [middlePanePanel, setMiddlePanePanel] = createSignal<MiddlePanePanel | null>(null);
@@ -911,9 +934,11 @@ export default function AppShell(props: AppShellProps) {
     const result = await client.overlays.toggleContentOpened({ contentItemId });
     if (result.status === null) {
       removeContentStatus(contentItemId, "opened");
+      setStatusReloadKey((key) => key + 1);
       return;
     }
     patchContentStatus(result.status);
+    setStatusReloadKey((key) => key + 1);
   };
 
   const markContentPlayed = async (contentItemId: string) => {
@@ -924,9 +949,23 @@ export default function AppShell(props: AppShellProps) {
     const result = await client.overlays.toggleContentPlayed({ contentItemId });
     if (result.status === null) {
       removeContentStatus(contentItemId, "played");
+      setStatusReloadKey((key) => key + 1);
       return;
     }
     patchContentStatus(result.status);
+    setStatusReloadKey((key) => key + 1);
+  };
+
+  const autoMarkContentPlayed = async (contentItemId: string) => {
+    if (!isAuthenticated()) {
+      return;
+    }
+
+    const result = await client.overlays.markContentPlayed({ contentItemId });
+    if (result.status !== null) {
+      patchContentStatus(result.status);
+      setStatusReloadKey((key) => key + 1);
+    }
   };
 
   const autoMarkContentOpened = async (contentItemId: string) => {
@@ -936,6 +975,7 @@ export default function AppShell(props: AppShellProps) {
 
     const result = await client.overlays.markContentOpened({ contentItemId });
     patchContentStatus(result.status);
+    setStatusReloadKey((key) => key + 1);
   };
 
   const selectContent = async (contentItem: CatalogContentListItem) => {
@@ -1055,18 +1095,16 @@ export default function AppShell(props: AppShellProps) {
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           readerDensity={readerDensity}
-          settings={() => settings() ?? emptyUserSettings}
-          settingsUnavailable={() => settings.error !== undefined}
           selectedCreatorId={selectedCreatorId}
           selectedCreator={selectedCreator}
           selectedFeed={selectedFeed}
           selectedPlaylistId={selectedPlaylistId}
+          catalogReloadKey={catalogReloadKey}
+          subscriptionsReloadKey={subscriptionsReloadKey}
           playlistItemsReloadKey={playlistItemsReloadKey}
           middlePanePanel={middlePanePanel}
           onCatalogChanged={() => setCatalogReloadKey((key) => key + 1)}
-          onSettingsChanged={async () => {
-            await refetchSettings();
-          }}
+          onSubscriptionsChanged={() => setSubscriptionsReloadKey((key) => key + 1)}
           onClearCreator={() => {
             setSelectedCreator(null);
             setSelectedFeed(null);
@@ -1087,10 +1125,11 @@ export default function AppShell(props: AppShellProps) {
           selectedPlaylistId={selectedPlaylistId}
           selectedContentItemId={selectedContentItemId}
           catalogReloadKey={catalogReloadKey}
+          subscriptionsReloadKey={subscriptionsReloadKey}
           favoritesReloadKey={favoritesReloadKey}
           readerDensity={readerDensity}
           contentStatuses={() => contentStatuses() ?? emptyUserContentStatuses}
-          statusReloadKey={() => 0}
+          statusReloadKey={statusReloadKey}
           middlePanePanel={middlePanePanel}
           onCloseMiddlePanePanel={() => setMiddlePanePanel(null)}
           onAddSource={async (value) => {
@@ -1100,6 +1139,7 @@ export default function AppShell(props: AppShellProps) {
 
             setSelectedCreator(value.creator);
             setCatalogReloadKey((key) => key + 1);
+            setSubscriptionsReloadKey((key) => key + 1);
             setMiddlePanePanel(null);
           }}
           onSelectContent={selectContent}
@@ -1129,6 +1169,7 @@ export default function AppShell(props: AppShellProps) {
           onFavoriteChanged={() => setFavoritesReloadKey((key) => key + 1)}
           onMarkContentOpened={markContentOpened}
           onMarkContentPlayed={markContentPlayed}
+          onAutoMarkContentPlayed={autoMarkContentPlayed}
         />
         <Show when={isDesktop()}>
           <div

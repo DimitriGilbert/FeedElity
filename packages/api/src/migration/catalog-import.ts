@@ -7,7 +7,9 @@ import {
 } from "../repositories/catalog";
 import { recordMigrationMapping } from "../repositories/overlays";
 import type { SourceType } from "../domain/catalog";
+import type { MigrationMapping } from "../domain/overlays";
 import type { RepositoryDb } from "../repositories/catalog";
+import type { RecordMigrationMappingInput } from "../repositories/overlays";
 import type {
   StrapiContentOption,
   StrapiCreator,
@@ -38,6 +40,12 @@ export interface CatalogImportCounts {
 export interface CatalogImportResult {
   readonly counts: CatalogImportCounts;
   readonly reportedRecords: readonly CatalogImportReportedRecord[];
+}
+
+interface PeerTubeSourceExternalIdParts {
+  readonly host: string;
+  readonly resource: string;
+  readonly id: string;
 }
 
 export interface ImportStrapiCatalogInput {
@@ -135,7 +143,7 @@ export async function importStrapiCatalog(
       metadataJson: JSON.stringify({ strapiOldId: creator.oldId }),
     });
     importedCreatorIds.set(creator.oldId, importedCreator.id);
-    await recordMigrationMapping(db, {
+    await recordMigrationMappingAndReport(db, reportedRecords, {
       migrationRunId: input.migrationRunId,
       oldEntityType: "strapi-creator",
       oldEntityId: String(creator.oldId),
@@ -143,7 +151,7 @@ export async function importStrapiCatalog(
       newEntityId: importedCreator.id,
     });
     if (creatorOptionSummary.imageOption !== null) {
-      await recordMigrationMapping(db, {
+      await recordMigrationMappingAndReport(db, reportedRecords, {
         migrationRunId: input.migrationRunId,
         oldEntityType: "strapi-creator-option",
         oldEntityId: String(creatorOptionSummary.imageOption.oldId),
@@ -171,7 +179,7 @@ export async function importStrapiCatalog(
       adapterMetadataJson: JSON.stringify({ strapiOldId: supportedFeed.oldFeed.oldId }),
     });
     importedFeedIds.set(supportedFeed.oldFeed.oldId, importedFeed.id);
-    await recordMigrationMapping(db, {
+    await recordMigrationMappingAndReport(db, reportedRecords, {
       migrationRunId: input.migrationRunId,
       oldEntityType: "strapi-feed",
       oldEntityId: String(supportedFeed.oldFeed.oldId),
@@ -179,7 +187,7 @@ export async function importStrapiCatalog(
       newEntityId: importedFeed.id,
     });
     if (feedOptionSummary.refreshCadenceOption !== null) {
-      await recordMigrationMapping(db, {
+      await recordMigrationMappingAndReport(db, reportedRecords, {
         migrationRunId: input.migrationRunId,
         oldEntityType: "strapi-feed-option",
         oldEntityId: String(feedOptionSummary.refreshCadenceOption.oldId),
@@ -223,7 +231,7 @@ export async function importStrapiCatalog(
       metadataJson: JSON.stringify({ strapiOldId: content.oldId, strapiType: content.type }),
     });
     importedContentIds.set(content.oldId, importedContent.id);
-    await recordMigrationMapping(db, {
+    await recordMigrationMappingAndReport(db, reportedRecords, {
       migrationRunId: input.migrationRunId,
       oldEntityType: "strapi-creator-content",
       oldEntityId: String(content.oldId),
@@ -242,7 +250,7 @@ export async function importStrapiCatalog(
       metadataJson: JSON.stringify({ strapiContentOldId: content.oldId }),
     });
     if (optionSummary.sourceOption !== null) {
-      await recordMigrationMapping(db, {
+      await recordMigrationMappingAndReport(db, reportedRecords, {
         migrationRunId: input.migrationRunId,
         oldEntityType: "strapi-content-option",
         oldEntityId: String(optionSummary.sourceOption.oldId),
@@ -251,7 +259,7 @@ export async function importStrapiCatalog(
       });
     }
     if (optionSummary.thumbnailOption !== null) {
-      await recordMigrationMapping(db, {
+      await recordMigrationMappingAndReport(db, reportedRecords, {
         migrationRunId: input.migrationRunId,
         oldEntityType: "strapi-content-option",
         oldEntityId: String(optionSummary.thumbnailOption.oldId),
@@ -260,7 +268,7 @@ export async function importStrapiCatalog(
       });
     }
     if (optionSummary.durationOption !== null) {
-      await recordMigrationMapping(db, {
+      await recordMigrationMappingAndReport(db, reportedRecords, {
         migrationRunId: input.migrationRunId,
         oldEntityType: "strapi-content-option",
         oldEntityId: String(optionSummary.durationOption.oldId),
@@ -280,7 +288,7 @@ export async function importStrapiCatalog(
         sourceExternalId: importableLink.feedContent.externalId,
         rawImportRef: importableLink.feedContent.raw,
       });
-      await recordMigrationMapping(db, {
+      await recordMigrationMappingAndReport(db, reportedRecords, {
         migrationRunId: input.migrationRunId,
         oldEntityType: "strapi-feed-content",
         oldEntityId: String(importableLink.feedContent.oldId),
@@ -307,6 +315,28 @@ export async function importStrapiCatalog(
     },
     reportedRecords,
   };
+}
+
+async function recordMigrationMappingAndReport(
+  db: RepositoryDb,
+  reportedRecords: CatalogImportReportedRecord[],
+  input: RecordMigrationMappingInput,
+): Promise<MigrationMapping> {
+  const mapping = await recordMigrationMapping(db, input);
+  if (
+    mapping.oldEntityType !== input.oldEntityType ||
+    mapping.oldEntityId !== input.oldEntityId ||
+    mapping.newEntityType !== input.newEntityType ||
+    mapping.newEntityId !== input.newEntityId
+  ) {
+    reportedRecords.push({
+      oldEntityType: input.oldEntityType,
+      oldEntityId: input.oldEntityId,
+      severity: "warning",
+      reason: `Migration mapping expected ${input.oldEntityType}:${input.oldEntityId} -> ${input.newEntityType}:${input.newEntityId} but found ${mapping.oldEntityType}:${mapping.oldEntityId} -> ${mapping.newEntityType}:${mapping.newEntityId}.`,
+    });
+  }
+  return mapping;
 }
 
 function toSupportedSourceType(sourceType: StrapiFeed["type"]): SourceType | null {
@@ -435,10 +465,27 @@ function buildContentSourceUrls(
     };
   }
   return {
-    canonicalUrl: sourceOption?.value ?? sourceExternalId,
+    canonicalUrl: sourceOption?.value ?? peertubeCanonicalFallback(sourceExternalId),
     embedUrl: sourceOption?.value ?? null,
     nativeMediaUrl: null,
   };
+}
+
+function peertubeCanonicalFallback(sourceExternalId: string): string {
+  const parts = parsePeerTubeSourceExternalId(sourceExternalId);
+  if (parts !== null && parts.resource === "videos") {
+    return `https://${parts.host}/w/${encodeURIComponent(parts.id)}`;
+  }
+  return `https://invalid.local/peertube/${encodeURIComponent(sourceExternalId)}`;
+}
+
+function parsePeerTubeSourceExternalId(sourceExternalId: string): PeerTubeSourceExternalIdParts | null {
+  const [host, resource, ...idParts] = sourceExternalId.split("/");
+  const id = idParts.join("/");
+  if (!isNonEmptyText(host) || !isNonEmptyText(resource) || !isNonEmptyText(id)) {
+    return null;
+  }
+  return { host, resource, id };
 }
 
 function isImageOption(name: string, type: string): boolean {
@@ -455,6 +502,10 @@ function isAbsoluteUrl(value: string): boolean {
     }
     throw error;
   }
+}
+
+function isNonEmptyText(value: string | undefined): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function parseNonnegativeInteger(value: string): number | null {

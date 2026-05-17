@@ -170,18 +170,18 @@ function normalizePeerTubeApiPayload(
     return failure("remote-payload-invalid", "PeerTube API payload does not contain normalizable videos.", input.canonicalUrl);
   }
 
-  const creatorActor = selectCreatorActor(hint, videos);
+  const creatorActor = creatorActorFromHint(hint, videos);
   if (creatorActor === null) {
     return failure("normalization-failed", "PeerTube API payload is missing channel or account metadata.", input.canonicalUrl);
   }
 
   const creatorHost = creatorActor.host ?? hint.host;
-  const creatorResource = hint.kind === "account" ? "accounts" : "video-channels";
+  const creatorResource = creatorResourceFromHint(hint);
   const creatorExternalId = sourceExternalId(creatorHost, creatorResource, creatorActor.name);
   const creatorCanonicalUrl = creatorActor.url ?? webCreatorUrl(hint.origin, creatorResource, creatorActor.name);
   const items: NormalizedCatalogContentItem[] = [];
   for (const video of videos) {
-    const item = normalizeVideo(video, hint.host, hint.origin);
+    const item = normalizeVideo(video, hint.host, hint.origin, creatorExternalId);
     if (item !== null) {
       items.push(item);
     }
@@ -214,12 +214,18 @@ function normalizePeerTubeApiPayload(
   };
 }
 
-function normalizeVideo(video: PeerTubeVideo, fallbackHost: string, origin: string): NormalizedCatalogContentItem | null {
+function normalizeVideo(
+  video: PeerTubeVideo,
+  fallbackHost: string,
+  origin: string,
+  feedSourceExternalId: string,
+): NormalizedCatalogContentItem | null {
   const canonicalUrl = video.url ?? `${origin}/w/${encodePathSegment(video.shortUUID ?? video.uuid)}`;
   const contentExternalId = sourceExternalId(fallbackHost, "videos", video.uuid);
   const sources = buildContentSources(contentExternalId, canonicalUrl, video, origin, fallbackHost);
 
   return {
+    feedSourceExternalId,
     contentItem: {
       sourceType: PEERTUBE_SOURCE_TYPE,
       sourceExternalId: contentExternalId,
@@ -361,11 +367,28 @@ function parseNativeMedia(video: Readonly<Record<string, unknown>>): PeerTubeNat
   return null;
 }
 
-function selectCreatorActor(hint: PeerTubeResourceHint, videos: readonly PeerTubeVideo[]): PeerTubeActor | null {
-  for (const video of videos) {
-    if (hint.kind === "account" && video.account !== null) {
-      return video.account;
+function creatorActorFromHint(hint: PeerTubeResourceHint, videos: readonly PeerTubeVideo[]): PeerTubeActor | null {
+  if (hint.kind === "instance") {
+    return {
+      name: hint.host,
+      displayName: hint.host,
+      description: null,
+      host: hint.host,
+      url: `${hint.origin}/`,
+      avatarPath: null,
+    };
+  }
+
+  if (hint.kind === "account") {
+    for (const video of videos) {
+      if (video.account !== null) {
+        return video.account;
+      }
     }
+    return null;
+  }
+
+  for (const video of videos) {
     if (video.channel !== null) {
       return video.channel;
     }
@@ -374,6 +397,13 @@ function selectCreatorActor(hint: PeerTubeResourceHint, videos: readonly PeerTub
     }
   }
   return null;
+}
+
+function creatorResourceFromHint(hint: PeerTubeResourceHint): "instance" | "accounts" | "video-channels" {
+  if (hint.kind === "instance") {
+    return "instance";
+  }
+  return hint.kind === "account" ? "accounts" : "video-channels";
 }
 
 function resourceHintFromDetectedInput(input: DetectedSourceInput & { readonly sourceType: "peertube" }): PeerTubeResourceHint | null {
@@ -387,7 +417,7 @@ function resourceHintFromDetectedInput(input: DetectedSourceInput & { readonly s
   const origin = originFromUrl(url);
 
   if (segments.length === 0) {
-    return { kind: "instance", host, origin, nameOrId: "instance" };
+    return { kind: "instance", host, origin, nameOrId: host };
   }
   if (segments[0] === "w" && isNonEmptyText(segments[1])) {
     return { kind: "video", host, origin, nameOrId: segments[1] };
@@ -424,7 +454,7 @@ function resourceHintFromApiUrl(input: string): PeerTubeResourceHint | null {
     return { kind: "channel", host, origin, nameOrId: segments[3] };
   }
   if (segments[2] === "videos") {
-    return { kind: "instance", host, origin, nameOrId: "instance" };
+    return { kind: "instance", host, origin, nameOrId: host };
   }
   return null;
 }
@@ -505,7 +535,10 @@ function sourceExternalId(host: string, resource: string, id: string): string {
   return `${host}/${resource}/${id}`;
 }
 
-function webCreatorUrl(origin: string, resource: "accounts" | "video-channels", name: string): string {
+function webCreatorUrl(origin: string, resource: "instance" | "accounts" | "video-channels", name: string): string {
+  if (resource === "instance") {
+    return `${origin}/`;
+  }
   const prefix = resource === "accounts" ? "a" : "c";
   return `${origin}/${prefix}/${encodePathSegment(name)}`;
 }

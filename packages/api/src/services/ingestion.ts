@@ -216,7 +216,10 @@ export async function persistNormalizedCatalog(
       }
     }
 
-    for (const feed of feeds) {
+    const linkableFeeds = normalizedItem.feedSourceExternalId === undefined || normalizedItem.feedSourceExternalId === null
+      ? feeds
+      : feeds.filter((feed) => feed.sourceExternalId === normalizedItem.feedSourceExternalId);
+    for (const feed of linkableFeeds) {
       const feedContent = await linkFeedContent(db, {
         ...normalizedItem.feedContent,
         feedId: feed.id,

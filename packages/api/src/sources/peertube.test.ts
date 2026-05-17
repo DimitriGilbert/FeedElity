@@ -188,6 +188,137 @@ describe("PeerTube source adapter normalization", () => {
       },
     ]);
   });
+
+  test("normalizes an instance-level feed as the instance creator", async () => {
+    const detection = peertubeAdapter.detect("https://video.example.test/");
+    if (!detection.ok) {
+      throw new Error(detection.error.message);
+    }
+    if (!isPeerTubeDetection(detection.value)) {
+      throw new Error(`Expected PeerTube detection, received ${detection.value.sourceType}.`);
+    }
+    const resolution = await peertubeAdapter.resolveInput(detection.value);
+    if (!resolution.ok) {
+      throw new Error(resolution.error.message);
+    }
+    if (!isPeerTubeResolution(resolution.value)) {
+      throw new Error(`Expected PeerTube resolution, received ${resolution.value.sourceType}.`);
+    }
+
+    const result = peertubeAdapter.normalizeCatalogPayload(resolution.value, JSON.stringify(peertubeListFixture));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.error.message);
+    }
+    expect(result.value.creator).toMatchObject({
+      sourceType: "peertube",
+      sourceExternalId: "video.example.test/instance/video.example.test",
+      displayName: "video.example.test",
+      description: null,
+      imageUrl: null,
+      canonicalUrl: "https://video.example.test/",
+    });
+    expect(result.value.creator.sourceExternalId).not.toBe("video.example.test/video-channels/fixture_channel");
+    expect(result.value.creator.metadataJson).toBe(
+      JSON.stringify({ host: "video.example.test", resource: "instance", name: "video.example.test" }),
+    );
+    expect(result.value.feeds).toEqual([
+      {
+        sourceType: "peertube",
+        sourceExternalId: "video.example.test/instance/video.example.test",
+        url: "https://video.example.test/api/v1/videos",
+        title: "video.example.test",
+        description: null,
+        adapterMetadataJson: JSON.stringify({ host: "video.example.test", resource: "instance", name: "video.example.test" }),
+      },
+    ]);
+    expect(result.value.items[0]?.feedSourceExternalId).toBe("video.example.test/instance/video.example.test");
+  });
+
+  test("uses a later account actor for account payloads when the first video only has a channel", () => {
+    const accountResolution = {
+      sourceType: "peertube",
+      sourceExternalId: "video.example.test/accounts/fixture",
+      canonicalUrl: "https://video.example.test/api/v1/accounts/fixture/videos",
+      title: "PeerTube account fixture",
+    } satisfies ResolvedSourceInput & { readonly sourceType: "peertube" };
+    const payload = {
+      total: 2,
+      data: [
+        {
+          uuid: "11111111-1111-4111-8111-111111111111",
+          name: "Channel Only First Video",
+          account: null,
+          channel: {
+            name: "fixture_channel",
+            displayName: "Fixture Channel",
+            host: "video.example.test",
+            url: "https://video.example.test/c/fixture_channel",
+          },
+        },
+        {
+          uuid: "22222222-2222-4222-8222-222222222222",
+          name: "Account Later Video",
+          account: {
+            name: "fixture",
+            displayName: "Fixture Account",
+            host: "video.example.test",
+            url: "https://video.example.test/a/fixture",
+          },
+          channel: null,
+        },
+      ],
+    };
+
+    const result = peertubeAdapter.normalizeCatalogPayload(accountResolution, JSON.stringify(payload));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.error.message);
+    }
+    expect(result.value.creator).toMatchObject({
+      sourceExternalId: "video.example.test/accounts/fixture",
+      displayName: "Fixture Account",
+      canonicalUrl: "https://video.example.test/a/fixture",
+    });
+    expect(result.value.feeds[0]?.adapterMetadataJson).toBe(
+      JSON.stringify({ host: "video.example.test", resource: "accounts", name: "fixture" }),
+    );
+  });
+
+  test("fails account payload normalization instead of using a channel when no account actor exists", () => {
+    const accountResolution = {
+      sourceType: "peertube",
+      sourceExternalId: "video.example.test/accounts/fixture",
+      canonicalUrl: "https://video.example.test/api/v1/accounts/fixture/videos",
+      title: "PeerTube account fixture",
+    } satisfies ResolvedSourceInput & { readonly sourceType: "peertube" };
+    const payload = {
+      total: 1,
+      data: [
+        {
+          uuid: "33333333-3333-4333-8333-333333333333",
+          name: "Channel Only Video",
+          account: null,
+          channel: {
+            name: "fixture_channel",
+            displayName: "Fixture Channel",
+            host: "video.example.test",
+            url: "https://video.example.test/c/fixture_channel",
+          },
+        },
+      ],
+    };
+
+    const result = peertubeAdapter.normalizeCatalogPayload(accountResolution, JSON.stringify(payload));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      throw new Error("Expected account payload without account actors to fail normalization.");
+    }
+    expect(result.error.code).toBe("normalization-failed");
+  });
 });
 
 function isPeerTubeDetection(value: DetectedSourceInput): value is DetectedSourceInput & { readonly sourceType: "peertube" } {

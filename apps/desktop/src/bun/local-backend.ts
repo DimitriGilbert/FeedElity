@@ -1,5 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { isAbsolute, join, normalize, relative, resolve } from "node:path";
+import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 
 import { runSqlMigration } from "@FeedElity/db/bootstrap";
 import { parseDesktopLocalPortConfig, parseDesktopRemoteServerConfig, type RuntimeMode } from "@FeedElity/env/runtime";
@@ -47,6 +47,7 @@ interface ServerModule {
   readonly app: {
     readonly fetch: (request: Request) => Response | Promise<Response>;
   };
+  readonly ensureRefreshRecoveryStarted: () => Promise<void>;
 }
 
 interface FileSystemError extends Error {
@@ -67,17 +68,30 @@ export type StartedDesktopRuntimeBackend = StartedDesktopBackend | StartedDeskto
 
 type StartDesktopLocalBackend = (env?: DesktopBackendEnvironment, port?: number) => Promise<StartedDesktopBackend>;
 
+type DesktopLocalFetch = ServerModule["app"]["fetch"];
+
 function isServerModule(value: unknown): value is ServerModule {
   if (typeof value !== "object" || value === null || !("app" in value)) {
     return false;
   }
 
   const appValue = value.app;
-  return typeof appValue === "object" && appValue !== null && "fetch" in appValue && typeof appValue.fetch === "function";
+  return (
+    typeof appValue === "object" &&
+    appValue !== null &&
+    "fetch" in appValue &&
+    typeof appValue.fetch === "function" &&
+    "ensureRefreshRecoveryStarted" in value &&
+    typeof value.ensureRefreshRecoveryStarted === "function"
+  );
 }
 
 function isMissingFileError(error: unknown): error is FileSystemError {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+function isPortInUseError(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "EADDRINUSE";
 }
 
 function requireHomeDirectory(env: DesktopBackendEnvironment): string {
@@ -205,6 +219,8 @@ async function readOrCreateAuthSecret(path: string): Promise<string> {
     if (existing.length >= 32) {
       return existing;
     }
+
+    console.warn("Auth secret file was corrupted (length < 32), regenerating. All existing sessions will be invalidated.");
   } catch (error) {
     if (!isMissingFileError(error)) {
       throw new Error(`Failed to read desktop auth secret at ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -212,7 +228,9 @@ async function readOrCreateAuthSecret(path: string): Promise<string> {
   }
 
   const secret = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
-  await writeFile(path, `${secret}\n`, { mode: 0o600 });
+  const tempPath = join(dirname(path), `.auth-secret-${process.pid}-${crypto.randomUUID()}.tmp`);
+  await writeFile(tempPath, `${secret}\n`, { mode: 0o600 });
+  await rename(tempPath, path);
   return secret;
 }
 
@@ -271,30 +289,55 @@ function toStaticPath(pathname: string): string | null {
 }
 
 async function createDesktopLocalFetch(
-  appFetch: ServerModule["app"]["fetch"],
+  appFetch: DesktopLocalFetch,
   env: DesktopBackendEnvironment,
-): Promise<ServerModule["app"]["fetch"]> {
+): Promise<DesktopLocalFetch> {
   const staticDirectory = await findDesktopStaticDirectory(env);
   if (staticDirectory === null) {
     return appFetch;
   }
 
-  const staticRoot = resolve(staticDirectory);
+  const staticRoot = await realpath(staticDirectory);
 
   return async (request) => {
     const url = new URL(request.url);
     const staticPath = toStaticPath(url.pathname);
     if (staticPath !== null) {
       const filePath = resolve(staticRoot, staticPath);
-      if (isResolvedPathInsideRoot(staticRoot, filePath)) {
-        const file = Bun.file(filePath);
-        if (await file.exists()) {
-          return new Response(file);
-        }
+      let realFilePath: string;
+      try {
+        realFilePath = await realpath(filePath);
+      } catch {
+        return new Response(null, { status: 404 });
       }
+
+      if (isResolvedPathInsideRoot(staticRoot, realFilePath)) {
+        return new Response(Bun.file(realFilePath));
+      }
+
+      return new Response(null, { status: 404 });
     }
 
     return appFetch(request);
+  };
+}
+
+function createLazyDesktopLocalFetch(env: DesktopBackendEnvironment): DesktopLocalFetch {
+  let fetchPromise: Promise<DesktopLocalFetch> | null = null;
+
+  return async (request) => {
+    fetchPromise ??= (async () => {
+      const serverModule = await import("server");
+      if (!isServerModule(serverModule)) {
+        throw new Error("Desktop local backend could not load the Hono server module.");
+      }
+
+      await serverModule.ensureRefreshRecoveryStarted();
+      return createDesktopLocalFetch(serverModule.app.fetch, env);
+    })();
+
+    const fetch = await fetchPromise;
+    return fetch(request);
   };
 }
 
@@ -321,31 +364,43 @@ export async function startDesktopLocalBackend(
   env: DesktopBackendEnvironment = readProcessBackendEnvironment(),
   port?: number,
 ): Promise<StartedDesktopBackend> {
-  const config = await resolveDesktopBackendConfig(env, port);
+  const initialConfig = await resolveDesktopBackendConfig(env, port);
   const migrationSql = await readInitialMigrationSql(env);
 
-  await runSqlMigration({ databaseUrl: config.databaseUrl, migrationId: initialMigrationId, sql: migrationSql });
+  await runSqlMigration({ databaseUrl: initialConfig.databaseUrl, migrationId: initialMigrationId, sql: migrationSql });
 
-  process.env.RUNTIME_MODE = config.mode;
-  process.env.DATABASE_URL = config.databaseUrl;
-  process.env.BETTER_AUTH_SECRET = config.authSecret;
-  process.env.BETTER_AUTH_URL = config.serverUrl;
-  process.env.CORS_ORIGIN = config.corsOrigin;
-  process.env.PORT = String(config.port);
+  process.env.RUNTIME_MODE = initialConfig.mode;
+  process.env.DATABASE_URL = initialConfig.databaseUrl;
+  process.env.BETTER_AUTH_SECRET = initialConfig.authSecret;
+  process.env.BETTER_AUTH_URL = initialConfig.serverUrl;
+  process.env.CORS_ORIGIN = initialConfig.corsOrigin;
+  process.env.PORT = String(initialConfig.port);
 
-  const serverModule = await import("server");
-  if (!isServerModule(serverModule)) {
-    throw new Error("Desktop local backend could not load the Hono server module.");
-  }
-
-  try {
-    const fetch = await createDesktopLocalFetch(serverModule.app.fetch, env);
-
-    return {
-      config,
-      server: Bun.serve({ port: config.port, fetch }),
+  for (let offset = 0; offset <= 3; offset += 1) {
+    const resolvedPort = initialConfig.port + offset;
+    const config: DesktopBackendConfig = {
+      ...initialConfig,
+      port: resolvedPort,
+      serverUrl: createDesktopLocalServerUrl(resolvedPort),
     };
-  } catch (error) {
-    throw new Error(`Desktop local backend failed to start on ${config.serverUrl}: ${error instanceof Error ? error.message : String(error)}`);
+
+    process.env.BETTER_AUTH_URL = config.serverUrl;
+    process.env.PORT = String(config.port);
+
+    try {
+      const server = Bun.serve({ port: config.port, fetch: createLazyDesktopLocalFetch(env) });
+      console.info(`Desktop local backend started on ${config.serverUrl}`);
+
+      return { config, server };
+    } catch (error) {
+      if (isPortInUseError(error) && offset < 3) {
+        console.warn(`Desktop local backend port ${config.port} is in use, trying ${config.port + 1}.`);
+        continue;
+      }
+
+      throw new Error(`Desktop local backend failed to start on ${config.serverUrl}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
+
+  throw new Error(`Desktop local backend failed to start after retrying ports ${initialConfig.port}-${initialConfig.port + 3}.`);
 }

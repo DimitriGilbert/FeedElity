@@ -149,17 +149,19 @@ export async function resumeRefreshRun(
   run: RefreshRun,
 ): Promise<RefreshServiceResult> {
   const feeds = await feedsForRefreshRun(dependencies, run);
-  const completedResults = await listRefreshFeedResultsForRun(dependencies.db, { refreshRunId: run.id, limit: 100_000 });
-  const completedFeedIds = new Set(completedResults.map((result) => result.feedId));
+  const existingFeedResults = await listRefreshFeedResultsForRun(dependencies.db, { refreshRunId: run.id, limit: 100_000 });
+  const completedFeedIds = new Set(existingFeedResults.map((result) => result.feedId));
   const selection = selectFeedsForRefresh(feeds, run.force, run.startedAt);
+  const completedFeeds = feeds.filter((feed) => completedFeedIds.has(feed.id));
   const selectedFeeds = selection.selected.filter((feed) => !completedFeedIds.has(feed.id));
+  const skippedFeeds = selection.skipped.filter((skippedFeed) => !completedFeedIds.has(skippedFeed.feed.id));
   return processPreparedRefreshRun(dependencies, {
     run,
     force: run.force,
     selectedFeeds,
-    reportFeeds: selection.selected,
-    skippedFeeds: selection.skipped,
-    existingFeedResults: completedResults,
+    reportFeeds: [...selection.selected, ...completedFeeds],
+    skippedFeeds,
+    existingFeedResults,
   });
 }
 
@@ -268,7 +270,7 @@ async function processPreparedRefreshRun(
       }
     }
   } catch (cause: unknown) {
-    return completeCatastrophicRefreshFailure(dependencies, prepared, outcomes, cause);
+    return completeCatastrophicRefreshFailure(dependencies, prepared, outcomes, deferredFeeds, cause);
   }
 
   const existingFeedResults = prepared.existingFeedResults ?? [];
@@ -336,6 +338,7 @@ async function completeCatastrophicRefreshFailure(
   dependencies: RefreshServiceDependencies,
   prepared: PreparedRefreshRun,
   outcomes: readonly FeedRefreshOutcome[],
+  deferredFeeds: readonly SkippedFeed[],
   cause: unknown,
 ): Promise<RefreshServiceResult> {
   const existingFeedResults = prepared.existingFeedResults ?? [];
@@ -344,6 +347,8 @@ async function completeCatastrophicRefreshFailure(
   const existingSuccesses = existingFeedResults.filter((result) => result.status === "succeeded");
   const existingFailures = existingFeedResults.filter((result) => result.status === "failed");
   const completedAt = dependencies.now();
+  const feedsSucceededCount = successes.length + existingSuccesses.length;
+  const feedsFailedCount = failures.length + existingFailures.length + 1;
   const errorSummary = {
     feedId: prepared.run.requestedFeedId ?? "refresh-run",
     code: "catalog-persistence-failed",
@@ -351,11 +356,11 @@ async function completeCatastrophicRefreshFailure(
   } satisfies RefreshFeedErrorSummary;
   const completedRun = await completeRefreshRun(dependencies.db, {
     id: prepared.run.id,
-    status: successes.length === 0 ? "failed" : "partial",
+    status: statusForCounts(feedsSucceededCount, feedsFailedCount),
     feedsRequestedCount: prepared.run.feedsRequestedCount,
-    feedsSkippedCount: prepared.run.feedsSkippedCount,
-    feedsSucceededCount: successes.length + existingSuccesses.length,
-    feedsFailedCount: failures.length + existingFailures.length + 1,
+    feedsSkippedCount: prepared.run.feedsSkippedCount + deferredFeeds.length,
+    feedsSucceededCount,
+    feedsFailedCount,
     itemsDiscoveredCount: sum(successes, (success) => success.discoveredCount) + sum(existingFeedResults, (result) => result.itemsDiscoveredCount),
     itemsCreatedCount: sum(successes, (success) => success.createdCount) + sum(existingFeedResults, (result) => result.itemsCreatedCount),
     itemsUpdatedCount: sum(successes, (success) => success.updatedCount) + sum(existingFeedResults, (result) => result.itemsUpdatedCount),
@@ -368,12 +373,13 @@ async function completeCatastrophicRefreshFailure(
   });
   const feedResults = [...existingFeedResults, ...outcomes.map((outcome) => outcome.result)];
   const reportFeeds = prepared.reportFeeds ?? prepared.selectedFeeds;
+  const skippedFeeds = [...prepared.skippedFeeds, ...deferredFeeds];
   return {
     run: completedRun,
-    report: buildRefreshReport(completedRun, feedResults, reportFeeds, prepared.skippedFeeds),
+    report: buildRefreshReport(completedRun, feedResults, reportFeeds, skippedFeeds),
     feedResults,
     selectedFeeds: prepared.selectedFeeds,
-    skippedFeeds: prepared.skippedFeeds,
+    skippedFeeds,
   };
 }
 

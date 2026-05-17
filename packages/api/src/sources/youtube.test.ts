@@ -60,6 +60,30 @@ describe("YouTube source adapter detection", () => {
     expect(shortsResult.ok && shortsResult.value.canonicalInput).toBe("https://www.youtube.com/watch?v=abc123XYZ09");
   });
 
+  test("rejects individual video URLs during resolution", async () => {
+    const detection = youtubeAdapter.detect("https://www.youtube.com/watch?v=abc123");
+
+    expect(detection.ok).toBe(true);
+    if (!detection.ok) {
+      throw new Error(detection.error.message);
+    }
+    if (!isYouTubeDetection(detection.value)) {
+      throw new Error(`Expected YouTube detection, received ${detection.value.sourceType}.`);
+    }
+
+    const resolution = await youtubeAdapter.resolveInput(detection.value);
+
+    expect(resolution.ok).toBe(false);
+    if (resolution.ok) {
+      throw new Error(`Expected unsupported result, received ${resolution.value.sourceExternalId}.`);
+    }
+    expect(resolution.error).toMatchObject({
+      code: "unsupported-source-input",
+      sourceType: "youtube",
+      input: "https://www.youtube.com/watch?v=abc123",
+    });
+  });
+
   test("returns a structured unresolvable result for handle channel URLs", async () => {
     const detection = youtubeAdapter.detect("https://www.youtube.com/@fixturecreator");
 

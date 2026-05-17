@@ -117,9 +117,12 @@ function resolveYouTubeInput(
     return resolved(channelId, canonicalFeedUrl(channelId));
   }
 
-  const videoId = videoIdFromUrl(url);
-  if (input.inputKind === "content-url" && videoId !== null) {
-    return resolved(videoId, canonicalVideoUrl(videoId));
+  if (input.inputKind === "content-url") {
+    return failure(
+      "unsupported-source-input",
+      "Individual video URLs cannot be added as sources. Use a channel or feed URL.",
+      input.originalInput,
+    );
   }
 
   return failure(
@@ -202,6 +205,7 @@ function normalizeEntry(entry: string, fallbackChannelId: string): NormalizedCat
   const canonicalUrl = canonicalVideoUrl(videoId);
 
   return {
+    feedSourceExternalId: entryChannelId,
     contentItem: {
       sourceType: YOUTUBE_SOURCE_TYPE,
       sourceExternalId: videoId,

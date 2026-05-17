@@ -6,8 +6,8 @@ import { drizzle } from "drizzle-orm/libsql";
 import * as schema from "@FeedElity/db/schema";
 
 import { getCatalogContentDetail, listCatalogContentItems, listCatalogFeeds, type RepositoryDb } from "../repositories/catalog";
-import { findOrCreateMigrationRun, listMigrationMappingsForRun } from "../repositories/overlays";
-import { importStrapiCatalog } from "./catalog-import";
+import { findOrCreateMigrationRun, listMigrationMappingsForRun, recordMigrationMapping } from "../repositories/overlays";
+import { importStrapiCatalog, type CatalogImportReportedRecord } from "./catalog-import";
 import { validStrapiExportFixture } from "./strapi-export.fixtures";
 import type { StrapiExport } from "./strapi-export";
 
@@ -165,6 +165,108 @@ describe("Strapi catalog import mapper", () => {
     expect(contentItems).toHaveLength(1);
     expect(feeds).toHaveLength(1);
     expect(mappings).toHaveLength(9);
+  });
+
+  test("reports old content items that collide on the same imported content item mapping", async () => {
+    const migrationRun = await findOrCreateMigrationRun(testDatabase.db, {
+      sourceExportFingerprint: "catalog-import-content-mapping-collision",
+      status: "running",
+    });
+    const creatorContent = validStrapiExportFixture.creatorContents[0];
+    const feedContent = validStrapiExportFixture.feedContents[0];
+    if (creatorContent === undefined || feedContent === undefined) {
+      throw new Error("Expected fixture content and feed content for collision test.");
+    }
+    const exportWithDuplicateSourceIdentity: StrapiExport = {
+      ...validStrapiExportFixture,
+      creatorContents: [
+        creatorContent,
+        {
+          ...creatorContent,
+          oldId: 41,
+          title: "Fixture Video Duplicate",
+          data: "Duplicate old content record for the same source identity.",
+        },
+      ],
+      feedContents: [
+        feedContent,
+        {
+          ...feedContent,
+          oldId: 31,
+          contentId: 41,
+        },
+      ],
+    };
+
+    const firstResult = await importStrapiCatalog(testDatabase.db, {
+      migrationRunId: migrationRun.id,
+      exportData: exportWithDuplicateSourceIdentity,
+    });
+    const secondResult = await importStrapiCatalog(testDatabase.db, {
+      migrationRunId: migrationRun.id,
+      exportData: exportWithDuplicateSourceIdentity,
+    });
+    const contentItems = await listCatalogContentItems(testDatabase.db);
+    const mappings = await listMigrationMappingsForRun(testDatabase.db, migrationRun.id);
+    const firstContentItem = contentItems[0];
+    const feedContentMapping = mappings.find((mapping) => mapping.newEntityType === "feed-content");
+    if (firstContentItem === undefined || feedContentMapping === undefined) {
+      throw new Error("Expected duplicate source identity import to create content and feed-content mappings.");
+    }
+    const contentItemMappings = mappings.filter((mapping) => mapping.newEntityType === "content-item");
+    const expectedContentReport: CatalogImportReportedRecord = {
+      oldEntityType: "strapi-creator-content",
+      oldEntityId: "41",
+      severity: "warning",
+      reason: `Migration mapping expected strapi-creator-content:41 -> content-item:${firstContentItem.id} but found strapi-creator-content:40 -> content-item:${firstContentItem.id}.`,
+    };
+    const expectedFeedContentReport: CatalogImportReportedRecord = {
+      oldEntityType: "strapi-feed-content",
+      oldEntityId: "31",
+      severity: "warning",
+      reason: `Migration mapping expected strapi-feed-content:31 -> feed-content:${feedContentMapping.newEntityId} but found strapi-feed-content:30 -> feed-content:${feedContentMapping.newEntityId}.`,
+    };
+
+    expect(firstResult.reportedRecords).toEqual([expectedContentReport, expectedFeedContentReport]);
+    expect(secondResult.reportedRecords).toEqual([expectedContentReport, expectedFeedContentReport]);
+    expect(contentItems).toHaveLength(1);
+    expect(contentItemMappings).toHaveLength(1);
+    expect(contentItemMappings[0]).toMatchObject({
+      oldEntityType: "strapi-creator-content",
+      oldEntityId: "40",
+    });
+  });
+
+  test("reports old-entity mapping collisions that point to a different imported feed", async () => {
+    const migrationRun = await findOrCreateMigrationRun(testDatabase.db, {
+      sourceExportFingerprint: "catalog-import-feed-old-entity-collision",
+      status: "running",
+    });
+
+    await recordMigrationMapping(testDatabase.db, {
+      migrationRunId: migrationRun.id,
+      oldEntityType: "strapi-feed",
+      oldEntityId: "20",
+      newEntityType: "feed",
+      newEntityId: "preexisting-feed-id",
+    });
+
+    const result = await importStrapiCatalog(testDatabase.db, {
+      migrationRunId: migrationRun.id,
+      exportData: validStrapiExportFixture,
+    });
+    const feeds = await listCatalogFeeds(testDatabase.db);
+    const importedFeed = feeds[0];
+    if (importedFeed === undefined) {
+      throw new Error("Expected fixture feed to be imported for collision test.");
+    }
+
+    expect(result.reportedRecords).toContainEqual({
+      oldEntityType: "strapi-feed",
+      oldEntityId: "20",
+      severity: "warning",
+      reason: `Migration mapping expected strapi-feed:20 -> feed:${importedFeed.id} but found strapi-feed:20 -> feed:preexisting-feed-id.`,
+    });
   });
 
   test("reports malformed numeric option strings instead of accepting parseInt prefixes", async () => {
@@ -342,6 +444,51 @@ describe("Strapi catalog import mapper", () => {
         reason: "Feed content row references a feed source that is not supported by the new catalog.",
       },
     ]);
+  });
+
+  test("PeerTube content without source option uses a valid canonical URL fallback", async () => {
+    const migrationRun = await findOrCreateMigrationRun(testDatabase.db, {
+      sourceExportFingerprint: "catalog-import-peertube-url-fallback",
+      status: "running",
+    });
+    const feed = validStrapiExportFixture.feeds[0];
+    const feedContent = validStrapiExportFixture.feedContents[0];
+    if (feed === undefined || feedContent === undefined) {
+      throw new Error("Expected fixture feed and feed content for PeerTube fallback test.");
+    }
+    const exportWithoutSourceOption: StrapiExport = {
+      ...validStrapiExportFixture,
+      feeds: [
+        {
+          ...feed,
+          type: "peertube",
+          externalId: "peertube.example.test/video-channels/fixture-channel",
+          url: "https://peertube.example.test/api/v1/video-channels/fixture-channel/videos",
+        },
+      ],
+      feedContents: [
+        {
+          ...feedContent,
+          externalId: "peertube.example.test/videos/fixture-video-uuid",
+        },
+      ],
+      contentOptions: validStrapiExportFixture.contentOptions.filter((option) => option.name !== "source"),
+    };
+
+    await importStrapiCatalog(testDatabase.db, {
+      migrationRunId: migrationRun.id,
+      exportData: exportWithoutSourceOption,
+    });
+    const contentItems = await listCatalogContentItems(testDatabase.db);
+    const firstContent = contentItems[0];
+    if (firstContent === undefined) {
+      throw new Error("Expected PeerTube content to be imported.");
+    }
+    const detail = await getCatalogContentDetail(testDatabase.db, firstContent.id);
+    const canonicalUrl = detail?.sources[0]?.canonicalUrl;
+
+    expect(canonicalUrl).toBe("https://peertube.example.test/w/fixture-video-uuid");
+    expect(() => new URL(canonicalUrl ?? "")).not.toThrow();
   });
 });
 

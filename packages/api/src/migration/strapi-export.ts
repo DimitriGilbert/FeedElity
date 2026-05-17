@@ -227,6 +227,7 @@ export const strapiExportSchema = z
     addUniqueOldIdIssues(context, "subscriptionContentOptions", exportData.subscriptionContentOptions);
     addUniqueOldIdIssues(context, "playlists", exportData.playlists);
     addUniqueOldIdIssues(context, "playlistContents", exportData.playlistContents);
+    addUniquePlaylistContentPositionIssues(context, exportData.playlistContents);
 
     const userIds = collectOldIds(exportData.users);
     const creatorIds = collectOldIds(exportData.creators);
@@ -313,5 +314,22 @@ function addReferenceIssues<FieldName extends string>(
         path: [collectionName, index, fieldName],
       });
     }
+  });
+}
+
+function addUniquePlaylistContentPositionIssues(context: z.RefinementCtx, records: readonly StrapiPlaylistContent[]): void {
+  const firstByPlaylistPosition = new Map<string, OldIdRecord>();
+  records.forEach((record, index) => {
+    const key = `${record.playlistId}:${record.position}`;
+    const firstRecord = firstByPlaylistPosition.get(key);
+    if (firstRecord !== undefined) {
+      context.addIssue({
+        code: "custom",
+        message: `playlistContents contains duplicate playlistId ${record.playlistId} position ${record.position} for oldIds ${firstRecord.oldId} and ${record.oldId}.`,
+        path: ["playlistContents", index, "position"],
+      });
+      return;
+    }
+    firstByPlaylistPosition.set(key, record);
   });
 }

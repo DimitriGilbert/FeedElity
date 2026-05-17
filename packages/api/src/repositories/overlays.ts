@@ -44,6 +44,12 @@ export interface SaveContentStatusInput {
   readonly metadataJson?: string | null;
 }
 
+export interface ListContentStatusWithContentForUserInput {
+  readonly userId: string;
+  readonly status: ContentStatusKind;
+  readonly limit?: number;
+}
+
 export interface CreatePlaylistInput {
   readonly userId: string;
   readonly name: string;
@@ -110,6 +116,7 @@ export interface RecordMigrationMappingInput {
 
 export interface UpdateMigrationRunInput {
   readonly id: string;
+  readonly sourceFilename?: string | null;
   readonly status: MigrationRunStatus;
   readonly completedAt?: Date | null;
   readonly usersImportedCount?: number;
@@ -369,8 +376,7 @@ export async function toggleFavoriteContentStatusForUser(
 
 export async function listContentStatusWithContentForUser(
   db: RepositoryDb,
-  userId: string,
-  status: ContentStatusKind,
+  input: ListContentStatusWithContentForUserInput,
 ): Promise<readonly UserContentStatusWithContent[]> {
   const rows = await db
     .select({
@@ -386,8 +392,9 @@ export async function listContentStatusWithContentForUser(
     .from(schema.contentStatus)
     .innerJoin(schema.contentItem, eq(schema.contentStatus.contentItemId, schema.contentItem.id))
     .innerJoin(schema.creator, eq(schema.contentItem.creatorId, schema.creator.id))
-    .where(and(eq(schema.contentStatus.userId, userId), eq(schema.contentStatus.status, status)))
-    .orderBy(desc(schema.contentStatus.createdAt));
+    .where(and(eq(schema.contentStatus.userId, input.userId), eq(schema.contentStatus.status, input.status)))
+    .orderBy(desc(schema.contentStatus.createdAt))
+    .limit(input.limit ?? 100);
 
   return rows.map((row) => ({
     ...toUserContentStatus(row.contentStatus),
@@ -484,7 +491,18 @@ export async function getNextPlaylistItemPositionForUserPlaylist(
   return lastItem === undefined ? 0 : lastItem.position + 10;
 }
 
-export async function addPlaylistItem(db: RepositoryDb, input: AddPlaylistItemInput): Promise<PlaylistItem> {
+export async function addPlaylistItem(db: RepositoryDb, input: AddPlaylistItemInput): Promise<PlaylistItem | null> {
+  const existingPosition = await db.query.playlistItem.findFirst({
+    where: and(
+      eq(schema.playlistItem.userId, input.userId),
+      eq(schema.playlistItem.playlistId, input.playlistId),
+      eq(schema.playlistItem.position, input.position),
+    ),
+  });
+  if (existingPosition !== undefined) {
+    return existingPosition.contentItemId === input.contentItemId ? toPlaylistItem(existingPosition) : null;
+  }
+
   const id = crypto.randomUUID();
 
   await db
@@ -497,7 +515,7 @@ export async function addPlaylistItem(db: RepositoryDb, input: AddPlaylistItemIn
       position: input.position,
       addedAt: input.addedAt ?? new Date(),
     })
-    .onConflictDoNothing({ target: [schema.playlistItem.playlistId, schema.playlistItem.contentItemId] });
+    .onConflictDoNothing();
 
   const row = await db.query.playlistItem.findFirst({
     where: and(
@@ -507,6 +525,16 @@ export async function addPlaylistItem(db: RepositoryDb, input: AddPlaylistItemIn
     ),
   });
   if (row === undefined) {
+    const occupiedPosition = await db.query.playlistItem.findFirst({
+      where: and(
+        eq(schema.playlistItem.userId, input.userId),
+        eq(schema.playlistItem.playlistId, input.playlistId),
+        eq(schema.playlistItem.position, input.position),
+      ),
+    });
+    if (occupiedPosition !== undefined) {
+      return null;
+    }
     throw new Error("Playlist item write did not produce a readable user overlay record.");
   }
   return toPlaylistItem(row);
@@ -745,6 +773,7 @@ export async function updateMigrationRun(db: RepositoryDb, input: UpdateMigratio
   await db
     .update(schema.migrationRun)
     .set({
+      sourceFilename: input.sourceFilename,
       status: input.status,
       completedAt: input.completedAt,
       usersImportedCount: input.usersImportedCount,
@@ -769,6 +798,17 @@ export async function recordMigrationMapping(
   db: RepositoryDb,
   input: RecordMigrationMappingInput,
 ): Promise<MigrationMapping> {
+  const existingNewEntityRow = await db.query.migrationMapping.findFirst({
+    where: and(
+      eq(schema.migrationMapping.migrationRunId, input.migrationRunId),
+      eq(schema.migrationMapping.newEntityType, input.newEntityType),
+      eq(schema.migrationMapping.newEntityId, input.newEntityId),
+    ),
+  });
+  if (existingNewEntityRow !== undefined) {
+    return toMigrationMapping(existingNewEntityRow);
+  }
+
   const id = crypto.randomUUID();
 
   await db
@@ -797,17 +837,17 @@ export async function recordMigrationMapping(
     return toMigrationMapping(row);
   }
 
-  const existingNewEntityRow = await db.query.migrationMapping.findFirst({
+  const conflictingNewEntityRow = await db.query.migrationMapping.findFirst({
     where: and(
       eq(schema.migrationMapping.migrationRunId, input.migrationRunId),
       eq(schema.migrationMapping.newEntityType, input.newEntityType),
       eq(schema.migrationMapping.newEntityId, input.newEntityId),
     ),
   });
-  if (existingNewEntityRow === undefined) {
+  if (conflictingNewEntityRow === undefined) {
     throw new Error("Migration mapping write did not produce a readable user overlay record.");
   }
-  return toMigrationMapping(existingNewEntityRow);
+  return toMigrationMapping(conflictingNewEntityRow);
 }
 
 export async function listMigrationMappingsForRun(

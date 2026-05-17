@@ -11,8 +11,9 @@ import {
   recordMigrationMapping,
 } from "../repositories/overlays";
 import type { ContentStatusKind } from "../domain/catalog";
-import type { MigrationMapping } from "../domain/overlays";
+import type { MigrationMapping, PlaylistItem } from "../domain/overlays";
 import type { RepositoryDb } from "../repositories/catalog";
+import type { RecordMigrationMappingInput } from "../repositories/overlays";
 import type {
   StrapiExport,
   StrapiPlaylist,
@@ -74,6 +75,7 @@ export async function importStrapiOverlays(
   const contentMappings = toMappingByOldId(existingMappings, "strapi-creator-content", "content-item");
   const userMappings = toMappingByOldId(existingMappings, "strapi-user", "user");
   const playlistMappings = toMappingByOldId(existingMappings, "strapi-playlist", "playlist");
+  const playlistContentMappings = toMappingByOldId(existingMappings, "strapi-playlist-content", "playlist-item");
   const importedSubscriptions = new Map<number, ImportedSubscription>();
   const importedPlaylists = new Map<number, ImportedPlaylist>();
   const subscriptionOptionsBySubscriptionId = groupByOldId(input.exportData.subscriptionOptions, (option) => option.subscriptionId);
@@ -88,7 +90,7 @@ export async function importStrapiOverlays(
     const importedUserId = await findOrCreateMigratedUser(db, user, userMappings.get(user.oldId));
     userMappings.set(user.oldId, importedUserId);
     usersImportedCount += 1;
-    await recordMigrationMapping(db, {
+    await recordMigrationMappingAndReport(db, reportedRecords, {
       migrationRunId: input.migrationRunId,
       oldEntityType: "strapi-user",
       oldEntityId: String(user.oldId),
@@ -116,7 +118,7 @@ export async function importStrapiOverlays(
     });
     importedSubscriptions.set(subscription.oldId, { id: importedSubscription.id, userId });
     subscriptionsImportedCount += 1;
-    await recordMigrationMapping(db, {
+    await recordMigrationMappingAndReport(db, reportedRecords, {
       migrationRunId: input.migrationRunId,
       oldEntityType: "strapi-subscription",
       oldEntityId: String(subscription.oldId),
@@ -124,7 +126,7 @@ export async function importStrapiOverlays(
       newEntityId: importedSubscription.id,
     });
     for (const option of subscriptionOptionsBySubscriptionId.get(subscription.oldId) ?? []) {
-      await recordMigrationMapping(db, {
+      await recordMigrationMappingAndReport(db, reportedRecords, {
         migrationRunId: input.migrationRunId,
         oldEntityType: "strapi-subscription-option",
         oldEntityId: String(option.oldId),
@@ -162,7 +164,7 @@ export async function importStrapiOverlays(
       metadataJson: JSON.stringify({ strapiSubscriptionOldId: option.subscriptionId, strapiOptionOldId: option.oldId }),
     });
     contentStatusesImportedCount += 1;
-    await recordMigrationMapping(db, {
+    await recordMigrationMappingAndReport(db, reportedRecords, {
       migrationRunId: input.migrationRunId,
       oldEntityType: "strapi-subscription-content-option",
       oldEntityId: String(option.oldId),
@@ -184,7 +186,7 @@ export async function importStrapiOverlays(
     playlistMappings.set(playlist.oldId, importedPlaylist.id);
     importedPlaylists.set(playlist.oldId, importedPlaylist);
     playlistsImportedCount += 1;
-    await recordMigrationMapping(db, {
+    await recordMigrationMappingAndReport(db, reportedRecords, {
       migrationRunId: input.migrationRunId,
       oldEntityType: "strapi-playlist",
       oldEntityId: String(playlist.oldId),
@@ -204,28 +206,37 @@ export async function importStrapiOverlays(
       reportedRecords.push(toReport(playlistContent, "strapi-playlist-content", "Playlist content references content that was not imported into the new catalog."));
       continue;
     }
-    const existingPlaylistItemId = toMappingByOldId(await listMigrationMappingsForRun(db, input.migrationRunId), "strapi-playlist-content", "playlist-item").get(
-      playlistContent.oldId,
-    );
+    const existingPlaylistItemId = playlistContentMappings.get(playlistContent.oldId);
     if (existingPlaylistItemId !== undefined) {
       playlistItemsImportedCount += 1;
       continue;
     }
-    const importedPlaylistItem = await addPlaylistItem(db, {
-      userId: importedPlaylist.userId,
-      playlistId: importedPlaylist.id,
-      contentItemId,
-      position: playlistContent.position,
-      addedAt: playlistContent.Added === null ? undefined : new Date(playlistContent.Added),
-    });
+    let importedPlaylistItem: PlaylistItem | null;
+    try {
+      importedPlaylistItem = await addPlaylistItem(db, {
+        userId: importedPlaylist.userId,
+        playlistId: importedPlaylist.id,
+        contentItemId,
+        position: playlistContent.position,
+        addedAt: playlistContent.Added === null ? undefined : new Date(playlistContent.Added),
+      });
+    } catch (error) {
+      reportedRecords.push(toReport(playlistContent, "strapi-playlist-content", toPlaylistItemImportFailureReason(error)));
+      continue;
+    }
+    if (importedPlaylistItem === null) {
+      reportedRecords.push(toReport(playlistContent, "strapi-playlist-content", "Playlist item position is already occupied."));
+      continue;
+    }
     playlistItemsImportedCount += 1;
-    await recordMigrationMapping(db, {
+    await recordMigrationMappingAndReport(db, reportedRecords, {
       migrationRunId: input.migrationRunId,
       oldEntityType: "strapi-playlist-content",
       oldEntityId: String(playlistContent.oldId),
       newEntityType: "playlist-item",
       newEntityId: importedPlaylistItem.id,
     });
+    playlistContentMappings.set(playlistContent.oldId, importedPlaylistItem.id);
   }
 
   return {
@@ -238,6 +249,28 @@ export async function importStrapiOverlays(
     },
     reportedRecords,
   };
+}
+
+async function recordMigrationMappingAndReport(
+  db: RepositoryDb,
+  reportedRecords: OverlayImportReportedRecord[],
+  input: RecordMigrationMappingInput,
+): Promise<MigrationMapping> {
+  const mapping = await recordMigrationMapping(db, input);
+  if (
+    mapping.oldEntityType !== input.oldEntityType ||
+    mapping.oldEntityId !== input.oldEntityId ||
+    mapping.newEntityType !== input.newEntityType ||
+    mapping.newEntityId !== input.newEntityId
+  ) {
+    reportedRecords.push({
+      oldEntityType: input.oldEntityType,
+      oldEntityId: input.oldEntityId,
+      severity: "warning",
+      reason: `Migration mapping for ${input.newEntityType} ${input.newEntityId} already belongs to ${mapping.oldEntityType} ${mapping.oldEntityId}.`,
+    });
+  }
+  return mapping;
 }
 
 async function findOrCreateMigratedUser(db: RepositoryDb, user: StrapiUser, mappedUserId: string | undefined): Promise<string> {
@@ -393,4 +426,9 @@ function toReport(
     severity,
     reason,
   };
+}
+
+function toPlaylistItemImportFailureReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : "Unknown playlist item write error.";
+  return `Playlist item could not be imported: ${message}`;
 }

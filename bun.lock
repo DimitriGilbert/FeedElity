@@ -4,6 +4,7 @@
     "": {
       "name": "FeedElity",
       "dependencies": {
+        "@FeedElity/db": "workspace:*",
         "@FeedElity/env": "workspace:*",
         "dotenv": "catalog:",
         "zod": "catalog:",
