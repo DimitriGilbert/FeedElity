@@ -191,6 +191,15 @@ export async function findOrCreateCreator(db: RepositoryDb, input: SaveCreatorIn
   if (existing === null) {
     throw new Error("Creator write did not produce a readable catalog record.");
   }
+
+  if (existing.imageUrl === null && input.imageUrl !== null && input.imageUrl !== undefined) {
+    await db
+      .update(schema.creator)
+      .set({ imageUrl: input.imageUrl })
+      .where(eq(schema.creator.id, existing.id));
+    return { ...existing, imageUrl: input.imageUrl };
+  }
+
   return existing;
 }
 
@@ -290,6 +299,15 @@ export async function findOrCreateContentItem(
   if (existing === null) {
     throw new Error("Content item write did not produce a readable catalog record.");
   }
+
+  if (existing.thumbnailUrl === null && input.thumbnailUrl !== null && input.thumbnailUrl !== undefined) {
+    await db
+      .update(schema.contentItem)
+      .set({ thumbnailUrl: input.thumbnailUrl })
+      .where(eq(schema.contentItem.id, existing.id));
+    return { ...existing, thumbnailUrl: input.thumbnailUrl };
+  }
+
   return existing;
 }
 

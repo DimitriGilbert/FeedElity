@@ -457,7 +457,10 @@ function ContentDetailBody(props: ContentDetailBodyProps) {
       <div>
         <h3 class="text-lg font-semibold tracking-tight text-foreground">{props.detail.title}</h3>
         <p class="mt-1 text-sm text-muted-foreground">
-          {props.detail.creator.displayName} · {formatContentPublishedAt(props.detail.publishedAt)} · {formatContentDuration(props.detail.durationSeconds)}
+          {props.detail.creator.displayName} · {formatContentPublishedAt(props.detail.publishedAt)}
+          <Show when={props.detail.durationSeconds !== null}>
+            {" · "}{formatContentDuration(props.detail.durationSeconds)}
+          </Show>
         </p>
       </div>
       <Show when={props.detail.description}>

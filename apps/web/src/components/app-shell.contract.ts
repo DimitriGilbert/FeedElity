@@ -330,7 +330,7 @@ export function formatContentPublishedAt(publishedAt: Date | null): string {
 
 export function formatContentDuration(durationSeconds: number | null): string {
   if (durationSeconds === null) {
-    return "Video";
+    return "";
   }
 
   const hours = Math.floor(durationSeconds / 3_600);
