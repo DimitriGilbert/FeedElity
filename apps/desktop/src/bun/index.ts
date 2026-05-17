@@ -42,8 +42,8 @@ async function startDesktopApp(): Promise<void> {
     url: mainView.url,
     renderer: "cef",
     frame: {
-      width: 1280,
-      height: 820,
+      width: 1440,
+      height: 900,
       x: 120,
       y: 120,
     },

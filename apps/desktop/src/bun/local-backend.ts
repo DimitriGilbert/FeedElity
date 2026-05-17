@@ -1,5 +1,6 @@
 import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { runSqlMigration } from "@FeedElity/db/bootstrap";
 import { parseDesktopLocalPortConfig, parseDesktopRemoteServerConfig, type RuntimeMode } from "@FeedElity/env/runtime";
@@ -263,7 +264,7 @@ export async function resolveDesktopBackendConfig(
 export async function findDesktopStaticDirectory(env: DesktopBackendEnvironment): Promise<string | null> {
   const candidates = [
     env.FEELITY_DESKTOP_STATIC_DIR ?? null,
-    new URL("../views/mainview", import.meta.url).pathname,
+    fileURLToPath(new URL("../views/mainview", import.meta.url)),
   ].filter((path): path is string => path !== null);
 
   for (const candidate of candidates) {
@@ -344,7 +345,7 @@ function createLazyDesktopLocalFetch(env: DesktopBackendEnvironment): DesktopLoc
 export async function readInitialMigrationSql(env: DesktopBackendEnvironment): Promise<string> {
   const candidates = [
     env.FEELITY_DESKTOP_MIGRATIONS_DIR === undefined ? null : join(env.FEELITY_DESKTOP_MIGRATIONS_DIR, initialMigrationFilename),
-    new URL(`../db-migrations/${initialMigrationFilename}`, import.meta.url).pathname,
+    fileURLToPath(new URL(`../db-migrations/${initialMigrationFilename}`, import.meta.url)),
   ].filter((path): path is string => path !== null);
 
   const failures: string[] = [];
