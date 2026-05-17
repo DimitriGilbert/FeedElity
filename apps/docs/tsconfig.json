@@ -1,0 +1,15 @@
+{
+  "extends": "@FeedElity/config/tsconfig.base.json",
+  "include": ["**/*.ts", "**/*.tsx"],
+  "compilerOptions": {
+    "target": "ES2022",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client", "bun"],
+    "noUncheckedIndexedAccess": false,
+    "rootDirs": ["."],
+    "paths": {
+      "~/": ["./src/"]
+    }
+  }
+}
