@@ -1,98 +1,135 @@
 # FeedElity
 
-This project was created with [Better-T-Stack](https://github.com/AmanVarshney01/create-better-t-stack), a modern TypeScript stack that combines SolidJS, Hono, ORPC, and more.
+Follow creators across YouTube, Odysee, and PeerTube from one place. FeedElity pulls video-oriented RSS and API feeds into a fast three-column interface — sources on the left, content list in the middle, viewer on the right. Browse the full catalog without an account. Sign in to subscribe, mark favorites, track what you've watched, build playlists, and refresh on your own terms.
 
-## Features
+Runs as a web app or a desktop app (Electrobun). Local-first by default: the desktop shell bundles its own backend and SQLite database. Point it at a remote server instead if you want.
 
-- **TypeScript** - For type safety and improved developer experience
-- **SolidJS** - Simple and performant reactivity
-- **TailwindCSS** - Utility-first CSS for rapid UI development
-- **Hono** - Lightweight, performant server framework
-- **oRPC** - End-to-end type-safe APIs with OpenAPI integration
-- **Bun** - Runtime environment
-- **Drizzle** - TypeScript-first ORM
-- **SQLite/Turso** - Database engine
-- **Authentication** - Better-Auth
-- **Electrobun** - Lightweight desktop shell for web frontends
-- **Turborepo** - Optimized monorepo build system
+## Stack
 
-## Getting Started
+| Layer | Choice |
+|---|---|
+| Runtime | [Bun](https://bun.sh) |
+| Frontend | [SolidJS](https://solidjs.com) + [Tailwind CSS](https://tailwindcss.com) + [TanStack Router/Query](https://tanstack.com) |
+| Backend | [Hono](https://hono.dev) on Bun |
+| API | [oRPC](https://orpc.unnoq.com) — end-to-end type-safe, OpenAPI-compatible |
+| Auth | [better-auth](https://better-auth.com) — email/password, self-service sign-up |
+| Database | SQLite / libSQL + [Drizzle ORM](https://orm.drizzle.team) |
+| Desktop | [Electrobun](https://electrobun.dev) |
+| Monorepo | [Turborepo](https://turbo.build) |
 
-First, install the dependencies:
+Scaffolded with [Better-T-Stack](https://github.com/AmanVarshney01/create-better-t-stack).
 
-```bash
-bun install
-```
-
-## Database Setup
-
-This project uses SQLite with Drizzle ORM.
-
-1. Start the local SQLite/libSQL database (optional). This uses the root `local.db` file that `apps/server/.env.example` points at with `DATABASE_URL=file:../../local.db`:
-
-```bash
-bun run db:local
-```
-
-2. Update your `.env` file in the `apps/server` directory with the appropriate connection details if needed.
-
-3. Apply the schema to your database before starting the server. Re-run this after pulling or making schema changes so the ignored local runtime database has the catalog and overlay tables expected by the app:
-
-```bash
-bun run db:push
-```
-
-For committed schema changes, generate a Drizzle migration with `bun run db:generate` and apply migrations with `bun run db:migrate`. Use `db:push` for local development databases that need to be brought in sync without resetting data.
-
-Then, run the development server:
-
-```bash
-bun run dev
-```
-
-Open [http://localhost:3001](http://localhost:3001) in your browser to see the web application.
-The API is running at [http://localhost:3002](http://localhost:3002).
-
-## Runtime Configuration
-
-The web app reads `VITE_RUNTIME_MODE` and `VITE_SERVER_URL` from `apps/web/.env`. Use `local` for local browser development, `web` for deployed web builds, `desktop-local` for a desktop shell talking to a local server, and `desktop-remote` for a desktop shell talking to a configured remote server. The server reads `RUNTIME_MODE`, `BETTER_AUTH_URL`, `CORS_ORIGIN`, and `PORT` from `apps/server/.env`; the default server port is `3002`.
-
-For local development, keep `VITE_SERVER_URL` and `BETTER_AUTH_URL` at `http://localhost:3002`, with `CORS_ORIGIN=http://localhost:3001`. For deployed web builds, set `VITE_SERVER_URL` to the public API origin and set `CORS_ORIGIN` to the deployed web origin.
-
-Desktop defaults to `desktop-local`, starts its embedded backend on `http://127.0.0.1:3217`, and stores its local SQLite database outside the packaged app. To run the desktop shell against a shared backend, set an explicit HTTP(S) remote URL and use the remote desktop scripts:
-
-```bash
-FEELITY_DESKTOP_REMOTE_SERVER_URL=https://api.feedelity.example bun --filter desktop run dev:hmr:remote
-FEELITY_DESKTOP_REMOTE_SERVER_URL=https://api.feedelity.example bun --filter desktop run build:remote
-```
-
-In `desktop-remote` mode the desktop app does not start the embedded backend or open a local database; it injects the normalized remote URL into the web view so auth and oRPC target that server.
-
-## Project Structure
+## Architecture
 
 ```
 FeedElity/
 ├── apps/
-│   ├── web/         # Frontend application (SolidJS)
-│   └── server/      # Backend API (Hono, ORPC)
+│   ├── web/            SolidJS frontend (Vite)
+│   ├── server/         Hono API server
+│   ├── desktop/        Electrobun desktop shell
+│   └── docs/           Project documentation site
 ├── packages/
-│   ├── api/         # API layer / business logic
-│   ├── auth/        # Authentication configuration & logic
-│   └── db/          # Database schema & queries
+│   ├── api/            oRPC procedures, source adapters, domain services
+│   ├── auth/           better-auth configuration and session handling
+│   ├── db/             Drizzle schema, migrations, repository functions
+│   ├── env/            Shared environment variable schemas
+│   └── config/         Shared TypeScript configuration
+├── docs/               Design docs, UI plans, diagnostics
+├── research/           Source/API research and behavior inventory
+├── prd-from-scratch.md          Product requirements
+└── final-from-scratch-plan.md   Execution plan and phase breakdown
 ```
 
-## Available Scripts
+### How it fits together
 
-- `bun run dev`: Start all applications in development mode
-- `bun run build`: Build all applications
-- `bun run dev:web`: Start only the web application
-- `bun run dev:server`: Start only the server
-- `bun run check-types`: Check TypeScript types across all apps
-- `bun run db:push`: Push schema changes to the configured local development database
-- `bun run db:generate`: Generate Drizzle migration files for committed schema changes
-- `bun run db:migrate`: Run committed Drizzle migrations against the configured database
-- `bun run db:studio`: Open database studio UI
-- `bun run db:local`: Start the local SQLite database
-- `bun run dev:desktop`: Start the Electrobun desktop app with HMR
-- `bun run build:desktop`: Build the stable Electrobun desktop app
-- `bun run build:desktop:canary`: Build the canary Electrobun desktop app
+**Source adapters** (`packages/api`) — YouTube RSS, Odysee RSS, PeerTube instance APIs. Each adapter normalizes remote data into a uniform shape. Want to add a new platform? Write an adapter and register it. The rest of the app doesn't change.
+
+**Global catalog** — Creators, feeds, content items, and playable sources stored in source-neutral tables. Anyone can browse this data. No account required.
+
+**User overlays** — Subscriptions, favorites, watched history, playlists, and settings live in separate tables tied to a `userId`. Your data is yours. The API enforces this at the boundary, not just in the UI.
+
+**API layer** — Public catalog reads for anonymous browsing. Protected procedures for everything user-owned. All input validated at the edge.
+
+**Ingestion** — Separate from presentation. Manual refresh respects cadence metadata. Force refresh ignores it. No background scheduler. You refresh when you want.
+
+## Getting Started
+
+### Prerequisites
+
+- [Bun](https://bun.sh) >= 1.3
+
+### Install and run
+
+```bash
+bun install
+bun run db:local    # start the local SQLite database
+bun run db:push     # apply the schema
+bun run dev
+```
+
+- Web app: http://localhost:3001
+- API server: http://localhost:3002
+
+Re-run `db:push` after pulling schema changes. For committed migrations, use `db:generate` then `db:migrate`.
+
+### Run individual targets
+
+```bash
+bun run dev:web        # frontend only
+bun run dev:server     # backend only
+bun run dev:desktop    # desktop app with HMR
+```
+
+## Runtime Modes
+
+| Mode | Use case | Backend | Database |
+|---|---|---|---|
+| `local` | Browser development | Local server at localhost:3002 | Shared `local.db` |
+| `web` | Deployed web build | Configured remote server | Remote |
+| `desktop-local` | Desktop app, default | Embedded Bun/Hono on 127.0.0.1:3217 | Local SQLite |
+| `desktop-remote` | Desktop app, shared server | Configured remote server | Remote |
+
+Configuration lives in `apps/web/.env` (`VITE_SERVER_URL`, `VITE_RUNTIME_MODE`) and `apps/server/.env` (`RUNTIME_MODE`, `BETTER_AUTH_URL`, `CORS_ORIGIN`, `PORT`).
+
+Desktop remote mode:
+
+```bash
+FEELITY_DESKTOP_REMOTE_SERVER_URL=https://api.example.com bun --filter desktop run dev:hmr:remote
+```
+
+## Scripts
+
+| Command | What it does |
+|---|---|
+| `bun run dev` | Start all dev targets |
+| `bun run build` | Build everything |
+| `bun run check-types` | TypeScript check across the monorepo |
+| `bun run test` | Run tests |
+| `bun run db:push` | Push schema to local dev database |
+| `bun run db:generate` | Generate a Drizzle migration |
+| `bun run db:migrate` | Run committed migrations |
+| `bun run db:studio` | Open Drizzle Studio |
+| `bun run db:local` | Start the local SQLite dev database |
+| `bun run dev:desktop` | Desktop app with HMR |
+| `bun run build:desktop` | Build stable desktop app |
+| `bun run build:desktop:canary` | Build canary desktop app |
+
+Desktop platform builds:
+
+```bash
+bun run build:desktop:linux
+bun run build:desktop:mac
+bun run build:desktop:windows
+```
+
+## Supported Sources
+
+- **YouTube** — RSS channel feeds, iframe embed playback
+- **Odysee** — RSS feeds, native media playback
+- **PeerTube** — Instance API for discovery and metadata, embed playback
+
+Each adapter handles URL detection, metadata fetching, content normalization, and playback URL generation independently.
+
+## License
+
+Private project. All rights reserved.
