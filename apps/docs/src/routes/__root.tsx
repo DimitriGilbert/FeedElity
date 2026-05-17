@@ -6,6 +6,13 @@ import {
 } from "@tanstack/react-router";
 
 import appCss from "../styles.css?url";
+import { Nav } from "~/components/nav";
+import { Footer } from "~/components/footer";
+
+const siteUrl =
+  typeof import.meta !== "undefined" && import.meta.env?.VITE_SITE_URL
+    ? import.meta.env.VITE_SITE_URL
+    : "https://feedelity.dbuild.dev";
 
 export const Route = createRootRoute({
   head: () => ({
@@ -15,7 +22,30 @@ export const Route = createRootRoute({
         name: "viewport",
         content: "width=device-width, initial-scale=1",
       },
-      { title: "FeedElity" },
+      { title: "FeedElity - Self-Hosted Video RSS Client" },
+      {
+        name: "description",
+        content:
+          "Personal-first, video-oriented RSS client. Follow creators across YouTube, Odysee, and PeerTube. Self-hosted, private, modern.",
+      },
+      { property: "og:title", content: "FeedElity - Self-Hosted Video RSS Client" },
+      {
+        property: "og:description",
+        content:
+          "Personal-first, video-oriented RSS client. Self-hosted, private, modern.",
+      },
+      { property: "og:url", content: siteUrl },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary_large_image" },
+      {
+        name: "twitter:title",
+        content: "FeedElity - Self-Hosted Video RSS Client",
+      },
+      {
+        name: "twitter:description",
+        content:
+          "Personal-first, video-oriented RSS client. Self-hosted, private, modern.",
+      },
     ],
     links: [
       {
@@ -34,7 +64,9 @@ function RootLayout() {
         <HeadContent />
       </head>
       <body>
+        <Nav />
         <Outlet />
+        <Footer />
         <Scripts />
       </body>
     </html>

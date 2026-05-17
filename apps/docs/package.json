@@ -9,11 +9,16 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@radix-ui/react-slot": "^1.2.4",
     "@tanstack/react-router": "^1.170.4",
-    "@tanstack/react-start": "^1.168.6",
     "@tanstack/react-router-devtools": "^1.167.0",
+    "@tanstack/react-start": "^1.168.6",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.16.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.2.2"
   },
   "devDependencies": {

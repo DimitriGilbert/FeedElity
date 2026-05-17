@@ -9,7 +9,7 @@
     "noUncheckedIndexedAccess": false,
     "rootDirs": ["."],
     "paths": {
-      "~/": ["./src/"]
+      "~/*": ["./src/*"]
     }
   }
 }
