@@ -52,6 +52,7 @@
   "devDependencies": {
     "@FeedElity/config": "workspace:*",
     "@types/bun": "catalog:",
+    "gh-pages": "^6.3.0",
     "turbo": "^2.8.12",
     "typescript": "catalog:"
   },
