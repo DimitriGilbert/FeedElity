@@ -6,7 +6,7 @@ export default {
   app: {
     name: "FeedElity",
     identifier: "dev.bettertstack.FeedElity.desktop",
-    version: "0.0.3",
+    version: "0.0.4",
   },
   runtime: {
     exitOnLastWindowClosed: true,
