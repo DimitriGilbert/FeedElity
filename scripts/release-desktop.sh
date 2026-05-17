@@ -84,6 +84,7 @@ for artifact in "${REQUIRED_ARTIFACTS[@]}"; do
   fi
 done
 
+sync
 echo "--- Verifying ayatana libs in artifact ---"
 if ! tar --zstd -tf "${ARTIFACTS_DIR}/stable-linux-x64-FeedElity.tar.zst" | grep -q "libayatana-appindicator3"; then
   echo "Error: libayatana-appindicator3.so.1 is missing from the artifact!"
