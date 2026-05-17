@@ -3,34 +3,25 @@ import type { SourceType } from "../domain/catalog";
 export interface RefreshSourcePolicy {
   readonly defaultCadenceSeconds: number;
   readonly minCadenceSeconds: number;
-  readonly normalDelayBetweenFetchesMs: number;
-  readonly forceDelayBetweenFetchesMs: number;
-  readonly jitterMaxSeconds: number;
 }
 
-const fifteenMinutesSeconds = 15 * 60;
+const minDelayBetweenFetchesMs = 3_000;
+const maxDelayBetweenFetchesMs = 20_000;
+const minJitterSeconds = 60;
+const maxJitterSeconds = 15 * 60;
 
 const refreshPolicies = {
   youtube: {
     defaultCadenceSeconds: 2 * 60 * 60,
     minCadenceSeconds: 15 * 60,
-    normalDelayBetweenFetchesMs: 20_000,
-    forceDelayBetweenFetchesMs: 30_000,
-    jitterMaxSeconds: fifteenMinutesSeconds,
   },
   odysee: {
     defaultCadenceSeconds: 60 * 60,
     minCadenceSeconds: 15 * 60,
-    normalDelayBetweenFetchesMs: 10_000,
-    forceDelayBetweenFetchesMs: 15_000,
-    jitterMaxSeconds: fifteenMinutesSeconds,
   },
   peertube: {
     defaultCadenceSeconds: 60 * 60,
     minCadenceSeconds: 15 * 60,
-    normalDelayBetweenFetchesMs: 8_000,
-    forceDelayBetweenFetchesMs: 12_000,
-    jitterMaxSeconds: fifteenMinutesSeconds,
   },
 } satisfies Record<SourceType, RefreshSourcePolicy>;
 
@@ -43,26 +34,17 @@ export function effectiveRefreshCadenceSeconds(sourceType: SourceType, cadenceSe
   return Math.max(cadenceSeconds ?? policy.defaultCadenceSeconds, policy.minCadenceSeconds);
 }
 
-export function delayBetweenFeedFetchesMs(sourceType: SourceType, force: boolean): number {
-  const policy = getRefreshPolicy(sourceType);
-  return force ? policy.forceDelayBetweenFetchesMs : policy.normalDelayBetweenFetchesMs;
+export function delayBetweenFeedFetchesMs(random: () => number): number {
+  return randomIntegerInclusive(minDelayBetweenFetchesMs, maxDelayBetweenFetchesMs, random);
 }
 
-export function nextRefreshDate(refreshedAt: Date, sourceType: SourceType, feedId: string, cadenceSeconds: number | null | undefined): Date {
+export function nextRefreshDate(refreshedAt: Date, sourceType: SourceType, cadenceSeconds: number | null | undefined, random: () => number): Date {
   const effectiveCadence = effectiveRefreshCadenceSeconds(sourceType, cadenceSeconds);
-  const jitterSeconds = deterministicJitterSeconds(feedId, getRefreshPolicy(sourceType).jitterMaxSeconds);
+  const jitterSeconds = randomIntegerInclusive(minJitterSeconds, maxJitterSeconds, random);
   return new Date(refreshedAt.getTime() + (effectiveCadence + jitterSeconds) * 1000);
 }
 
-export function deterministicJitterSeconds(seed: string, maxSeconds: number): number {
-  if (maxSeconds <= 0) {
-    return 0;
-  }
-
-  let hash = 2_166_136_261;
-  for (let index = 0; index < seed.length; index += 1) {
-    hash ^= seed.charCodeAt(index);
-    hash = Math.imul(hash, 16_777_619);
-  }
-  return (hash >>> 0) % (maxSeconds + 1);
+function randomIntegerInclusive(minimum: number, maximum: number, random: () => number): number {
+  const normalized = Math.min(Math.max(random(), 0), 0.999_999_999);
+  return Math.floor(normalized * (maximum - minimum + 1)) + minimum;
 }

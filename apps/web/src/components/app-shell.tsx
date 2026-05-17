@@ -202,6 +202,39 @@ function appendUniqueFeeds(existingFeeds: readonly CatalogFeed[], nextFeeds: rea
   return [...feedById.values()];
 }
 
+function refreshFeedResultErrorMessage(errorSummaryJson: string | null): string | null {
+  if (errorSummaryJson === null) {
+    return null;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(errorSummaryJson);
+    if (Array.isArray(parsed)) {
+      const providerPause = parsed.find((item: unknown) => refreshErrorCode(item) === "provider-refresh-paused");
+      return refreshErrorMessage(providerPause ?? parsed[0]);
+    }
+    return refreshErrorMessage(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function refreshErrorCode(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.code === "string" ? candidate.code : null;
+}
+
+function refreshErrorMessage(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.message === "string" ? candidate.message : null;
+}
+
 interface CreatorSourceColumnProps {
   readonly isAuthenticated: () => boolean;
   readonly mode: ShellMode;
@@ -491,12 +524,17 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const refreshProgressText = createMemo(() => {
     const run = activeRefreshStatus()?.latestRun ?? null;
     if (run === null) {
-      return refreshBusy() === "force" ? "Force refresh starting." : "Refresh starting.";
+      return "0/...";
     }
 
     const completedFeeds = run.feedsSucceededCount + run.feedsFailedCount;
-    const label = run.force ? "Force refresh" : "Refresh";
-    return `${label}: ${completedFeeds}/${run.feedsRequestedCount} feeds.`;
+    return `${completedFeeds}/${run.feedsRequestedCount}`;
+  });
+  const refreshProviderMessage = createMemo(() => {
+    const status = activeRefreshStatus();
+    const failedResult = status?.latestFeedResults.find((feedResult) => feedResult.status === "failed");
+    return refreshFeedResultErrorMessage(status?.latestRun?.errorSummaryJson ?? null)
+      ?? (failedResult === undefined ? null : refreshFeedResultErrorMessage(failedResult.errorSummaryJson));
   });
 
   return (
@@ -518,42 +556,49 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
               <Plus size={14} />
             </button>
             <Show when={props.isAuthenticated()}>
-              <div class="relative inline-flex">
-                <button
-                  type="button"
-                  class="shrink-0 border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
-                  aria-label="Refresh due feeds"
-                  title="Refresh due feeds"
-                  disabled={refreshBusy() !== null}
-                  onClick={async () => runHeaderRefresh(false)}
-                >
-                  <RefreshCw size={14} />
-                </button>
-                <details class="relative">
-                  <summary
-                    class="flex h-full cursor-pointer list-none items-center border border-l-0 border-border bg-background px-1 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                    aria-label="Open force refresh action"
-                    title="Force refresh"
-                  >
-                    <ChevronDown size={12} />
-                  </summary>
-                  <div class="absolute left-0 z-20 mt-1 min-w-40 border border-border bg-popover p-1 shadow-lg">
+              <Show
+                when={refreshBusy()}
+                fallback={(
+                  <div class="relative inline-flex">
                     <button
                       type="button"
-                      class="flex w-full items-center gap-1 px-2 py-1.5 text-left text-[0.68rem] font-semibold text-popover-foreground transition hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-60"
-                      aria-label="Force refresh all feeds"
-                      title="Force refresh all feeds"
-                      disabled={refreshBusy() !== null}
-                      onClick={async (event) => {
-                        event.currentTarget.closest("details")?.removeAttribute("open");
-                        await runHeaderRefresh(true);
-                      }}
+                      class="shrink-0 border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                      aria-label="Refresh due feeds"
+                      title="Refresh due feeds"
+                      onClick={async () => runHeaderRefresh(false)}
                     >
-                      <Zap size={14} /> Force refresh
+                      <RefreshCw size={14} />
                     </button>
+                    <details class="relative">
+                      <summary
+                        class="flex h-full cursor-pointer list-none items-center border border-l-0 border-border bg-background px-1 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                        aria-label="Open force refresh action"
+                        title="Force refresh"
+                      >
+                        <ChevronDown size={12} />
+                      </summary>
+                      <div class="absolute left-0 z-20 mt-1 min-w-40 border border-border bg-popover p-1 shadow-lg">
+                        <button
+                          type="button"
+                          class="flex w-full items-center gap-1 px-2 py-1.5 text-left text-[0.68rem] font-semibold text-popover-foreground transition hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                          aria-label="Force refresh all feeds"
+                          title="Force refresh all feeds"
+                          onClick={async (event) => {
+                            event.currentTarget.closest("details")?.removeAttribute("open");
+                            await runHeaderRefresh(true);
+                          }}
+                        >
+                          <Zap size={14} /> Force refresh
+                        </button>
+                      </div>
+                    </details>
                   </div>
-                </details>
-              </div>
+                )}
+              >
+                <span class="border border-border bg-muted px-2 py-1 text-[0.68rem] font-semibold text-muted-foreground" role="status">
+                  {refreshProgressText()}
+                </span>
+              </Show>
               <button
                 type="button"
                 class="shrink-0 border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
@@ -572,8 +617,8 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
         <Show when={refreshError()}>
           {(message) => <p class="mt-1 text-[0.68rem] text-destructive">{message()}</p>}
         </Show>
-        <Show when={refreshBusy()}>
-          <p class="mt-1 text-[0.68rem] text-muted-foreground" role="status">{refreshProgressText()}</p>
+        <Show when={refreshProviderMessage()}>
+          {(message) => <p class="mt-1 text-[0.68rem] text-destructive">{message()}</p>}
         </Show>
         <label class="sr-only" for={creatorSearchInputId}>
           Search creators

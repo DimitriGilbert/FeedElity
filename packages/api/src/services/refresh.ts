@@ -8,6 +8,7 @@ import type {
   RefreshRunReport,
   RefreshScope,
   RefreshStatus,
+  SourceType,
 } from "../domain/catalog";
 import {
   completeRefreshRun,
@@ -32,6 +33,7 @@ export interface RefreshServiceDependencies {
   readonly sourceRegistry: SourceAdapterRegistry;
   readonly now: () => Date;
   readonly wait?: (milliseconds: number) => Promise<void>;
+  readonly random?: () => number;
 }
 
 export interface RefreshAllInput {
@@ -80,6 +82,14 @@ interface FeedRefreshFailure {
 }
 
 type FeedRefreshOutcome = FeedRefreshSuccess | FeedRefreshFailure;
+
+interface ProviderPause {
+  readonly sourceType: SourceType;
+  readonly until: Date;
+  readonly reason: RefreshFeedErrorSummary;
+}
+
+const providerRefusalPauseMs = 15 * 60 * 1000;
 
 export async function refreshAll(
   dependencies: RefreshServiceDependencies,
@@ -242,12 +252,19 @@ async function processPreparedRefreshRun(
   prepared: PreparedRefreshRun,
 ): Promise<RefreshServiceResult> {
   const outcomes: FeedRefreshOutcome[] = [];
+  const deferredFeeds: SkippedFeed[] = [];
+  const providerPauses = new Map<SourceType, ProviderPause>();
   try {
     for (const [index, feed] of prepared.selectedFeeds.entries()) {
-      outcomes.push(await refreshOneFeed(dependencies, prepared.run.id, feed, prepared.force));
+      const providerPause = activeProviderPause(providerPauses.get(feed.sourceType), dependencies.now());
+      if (providerPause === null) {
+        outcomes.push(await refreshOneFeed(dependencies, prepared.run.id, feed, prepared.force, providerPauses));
+      } else {
+        deferredFeeds.push({ feed, reason: "provider-paused" });
+      }
       await updateRunningRefreshProgress(dependencies, prepared.run.id, prepared.existingFeedResults ?? [], outcomes);
       if (index < prepared.selectedFeeds.length - 1) {
-        await waitBetweenFeeds(dependencies, feed, prepared.force);
+        await waitBetweenFeeds(dependencies, prepared.selectedFeeds, index);
       }
     }
   } catch (cause: unknown) {
@@ -261,13 +278,18 @@ async function processPreparedRefreshRun(
   const existingFailures = existingFeedResults.filter((result) => result.status === "failed");
   const completedAt = dependencies.now();
   const status = statusForCounts(successes.length + existingSuccesses.length, failures.length + existingFailures.length);
-  const failureSummaries = [...errorSummariesForResults(existingFailures), ...failures.map((failure) => failure.summary)];
+  const providerPauseSummaries = uniqueProviderPauseSummaries(providerPauses);
+  const failureSummaries = [
+    ...errorSummariesForResults(existingFailures),
+    ...failures.map((failure) => failure.summary),
+    ...providerPauseSummaries,
+  ];
   const errorSummaryJson = failureSummaries.length === 0 ? null : JSON.stringify(failureSummaries);
   const completedRun = await completeRefreshRun(dependencies.db, {
     id: prepared.run.id,
     status,
     feedsRequestedCount: prepared.run.feedsRequestedCount,
-    feedsSkippedCount: prepared.run.feedsSkippedCount,
+    feedsSkippedCount: prepared.run.feedsSkippedCount + deferredFeeds.length,
     feedsSucceededCount: successes.length + existingSuccesses.length,
     feedsFailedCount: failures.length + existingFailures.length,
     itemsDiscoveredCount: sum(successes, (success) => success.discoveredCount) + sum(existingFeedResults, (result) => result.itemsDiscoveredCount),
@@ -278,13 +300,14 @@ async function processPreparedRefreshRun(
   });
   const feedResults = [...existingFeedResults, ...outcomes.map((outcome) => outcome.result)];
   const reportFeeds = prepared.reportFeeds ?? prepared.selectedFeeds;
+  const skippedFeeds = [...prepared.skippedFeeds, ...deferredFeeds];
 
   return {
     run: completedRun,
-    report: buildRefreshReport(completedRun, feedResults, reportFeeds, prepared.skippedFeeds),
+    report: buildRefreshReport(completedRun, feedResults, reportFeeds, skippedFeeds),
     feedResults,
     selectedFeeds: prepared.selectedFeeds,
-    skippedFeeds: prepared.skippedFeeds,
+    skippedFeeds,
   };
 }
 
@@ -393,6 +416,7 @@ async function refreshOneFeed(
   refreshRunId: string,
   feed: CatalogFeed,
   force: boolean,
+  providerPauses: Map<SourceType, ProviderPause>,
 ): Promise<FeedRefreshOutcome> {
   const startedAt = dependencies.now();
   const adapter = dependencies.sourceRegistry.getAdapter(feed.sourceType);
@@ -412,14 +436,24 @@ async function refreshOneFeed(
   });
 
   if (!fetched.ok) {
-    return recordFailure(dependencies, refreshRunId, feed.id, startedAt, fromAdapterError(feed.id, fetched.error));
+    let summary = fromAdapterError(feed.id, fetched.error);
+    const refusalStatus = providerRefusalStatus(fetched.error);
+    if (refusalStatus !== null) {
+      summary = providerRefusalSummary(feed.sourceType, feed.id, refusalStatus);
+      providerPauses.set(feed.sourceType, {
+        sourceType: feed.sourceType,
+        until: new Date(startedAt.getTime() + providerRefusalPauseMs),
+        reason: summary,
+      });
+    }
+    return recordFailure(dependencies, refreshRunId, feed.id, startedAt, summary);
   }
 
   try {
     const persisted = await persistNormalizedCatalog(dependencies.db, fetched.value, undefined);
     const completedAt = dependencies.now();
     const discoveredCount = fetched.value.items.length;
-    const nextRefreshAfter = nextRefreshDate(completedAt, feed.sourceType, feed.id, feed.refreshCadenceSeconds);
+    const nextRefreshAfter = nextRefreshDate(completedAt, feed.sourceType, feed.refreshCadenceSeconds, dependencies.random ?? Math.random);
     if (!force) {
       await updateFeedRefreshMetadata(dependencies.db, {
         feedId: feed.id,
@@ -474,12 +508,72 @@ function fromAdapterError(feedId: string, error: SourceAdapterError): RefreshFee
   };
 }
 
-async function waitBetweenFeeds(dependencies: RefreshServiceDependencies, feed: CatalogFeed, force: boolean): Promise<void> {
-  const delayMs = delayBetweenFeedFetchesMs(feed.sourceType, force);
+async function waitBetweenFeeds(dependencies: RefreshServiceDependencies, selectedFeeds: readonly CatalogFeed[], completedFeedIndex: number): Promise<void> {
+  if (lastTwoCompletedFeedsUseDifferentProviders(selectedFeeds, completedFeedIndex)) {
+    return;
+  }
+
+  const delayMs = delayBetweenFeedFetchesMs(dependencies.random ?? Math.random);
   if (delayMs <= 0) {
     return;
   }
   await (dependencies.wait ?? sleep)(delayMs);
+}
+
+function lastTwoCompletedFeedsUseDifferentProviders(selectedFeeds: readonly CatalogFeed[], completedFeedIndex: number): boolean {
+  if (completedFeedIndex < 1) {
+    return false;
+  }
+
+  const previousFeed = selectedFeeds[completedFeedIndex - 1];
+  const currentFeed = selectedFeeds[completedFeedIndex];
+  return previousFeed !== undefined && currentFeed !== undefined && previousFeed.sourceType !== currentFeed.sourceType;
+}
+
+function activeProviderPause(pause: ProviderPause | undefined, now: Date): ProviderPause | null {
+  if (pause === undefined || pause.until.getTime() <= now.getTime()) {
+    return null;
+  }
+  return pause;
+}
+
+function providerRefusalStatus(error: SourceAdapterError): number | null {
+  const status = error.httpStatus ?? statusFromMessage(error.message);
+  if (status === null) {
+    return null;
+  }
+  return status === 429 || status >= 500 ? status : null;
+}
+
+function statusFromMessage(message: string): number | null {
+  const match = /status\s+(\d{3})/i.exec(message);
+  if (match === null) {
+    return null;
+  }
+  const parsed = Number.parseInt(match[1] ?? "", 10);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+function providerRefusalSummary(sourceType: SourceType, feedId: string, status: number): RefreshFeedErrorSummary {
+  return {
+    feedId,
+    code: "provider-refresh-paused",
+    message: `${sourceLabel(sourceType)} is refusing refresh requests with HTTP ${status}. Other providers will continue; retry ${sourceLabel(sourceType)} later.`,
+  };
+}
+
+function uniqueProviderPauseSummaries(providerPauses: ReadonlyMap<SourceType, ProviderPause>): readonly RefreshFeedErrorSummary[] {
+  return [...providerPauses.values()].map((pause) => pause.reason);
+}
+
+function sourceLabel(sourceType: SourceType): string {
+  if (sourceType === "youtube") {
+    return "YouTube";
+  }
+  if (sourceType === "odysee") {
+    return "Odysee";
+  }
+  return "PeerTube";
 }
 
 function sleep(milliseconds: number): Promise<void> {

@@ -41,7 +41,7 @@ export const odyseeAdapter: SourceAdapter<"odysee"> = {
         return failure("remote-fetch-failed", "Odysee feed fetch returned an unreadable response.", input.canonicalUrl);
       }
       if (!response.ok) {
-        return failure("remote-fetch-failed", `Odysee feed fetch failed with status ${response.status}.`, input.canonicalUrl);
+        return failure("remote-fetch-failed", `Odysee feed fetch failed with status ${response.status}.`, input.canonicalUrl, undefined, response.status);
       }
 
       const payload = await response.text();
@@ -291,6 +291,7 @@ function failure(
   message: string,
   input?: string,
   cause?: unknown,
+  httpStatus?: number,
 ): SourceAdapterFailure {
   return {
     ok: false,
@@ -299,6 +300,7 @@ function failure(
       message,
       input,
       sourceType: ODYSEE_SOURCE_TYPE,
+      httpStatus,
       cause,
     },
   };

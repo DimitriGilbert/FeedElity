@@ -31,6 +31,7 @@ export interface SourceAdapterError {
   readonly message: string;
   readonly input?: string;
   readonly sourceType?: SourceType;
+  readonly httpStatus?: number;
   readonly cause?: unknown;
 }
 

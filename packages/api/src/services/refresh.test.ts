@@ -106,10 +106,10 @@ describe("manual refresh orchestration", () => {
 
     const refreshedFeed = await requireFeed(testDatabase.db, "due-feed");
     const skippedFeed = await requireFeed(testDatabase.db, "not-due-feed");
-    const expectedNextRefreshAfter = nextRefreshDate(new Date("2026-05-16T12:00:00.000Z"), "youtube", refreshedFeed.id, 900);
+    const expectedNextRefreshAfter = nextRefreshDate(new Date("2026-05-16T12:00:00.000Z"), "youtube", 900, () => 0);
     expect(refreshedFeed.lastNormalRefreshAt?.toISOString()).toBe("2026-05-16T12:00:00.000Z");
     expect(refreshedFeed.nextRefreshAfter?.toISOString()).toBe(expectedNextRefreshAfter.toISOString());
-    expect(refreshedFeed.nextRefreshAfter?.getTime()).toBeGreaterThanOrEqual(new Date("2026-05-16T12:15:00.000Z").getTime());
+    expect(refreshedFeed.nextRefreshAfter?.getTime()).toBeGreaterThanOrEqual(new Date("2026-05-16T12:16:00.000Z").getTime());
     expect(refreshedFeed.nextRefreshAfter?.getTime()).toBeLessThanOrEqual(new Date("2026-05-16T12:30:00.000Z").getTime());
     expect(skippedFeed.lastNormalRefreshAt).toBeNull();
     expect(skippedFeed.nextRefreshAfter?.toISOString()).toBe("2026-05-16T13:00:00.000Z");
@@ -254,7 +254,7 @@ describe("manual refresh orchestration", () => {
     );
   });
 
-  test("force refresh paces every selected feed without dropping any requested feed", async () => {
+  test("force refresh paces every selected feed with random human-scale waits", async () => {
     await seedFeeds(testDatabase.db);
     const waitedMilliseconds: number[] = [];
     const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
@@ -266,7 +266,48 @@ describe("manual refresh orchestration", () => {
     expect(result.selectedFeeds).toHaveLength(4);
     expect(result.feedResults).toHaveLength(4);
     expect(result.run).toMatchObject({ force: true, feedsRequestedCount: 4, feedsSucceededCount: 4, feedsSkippedCount: 0 });
-    expect(waitedMilliseconds).toEqual([30_000, 30_000, 30_000]);
+    expect(waitedMilliseconds).toEqual([3_000, 3_000, 3_000]);
+  });
+
+  test("refresh skips the wait when the last two completed feeds used different providers", async () => {
+    await seedInterleavedProviderFeeds(testDatabase.db);
+    const waitedMilliseconds: number[] = [];
+    const registry = createSourceAdapterRegistry([
+      createRefreshAdapter({ sourceType: "youtube", failingFeedExternalIds: [] }),
+      createRefreshAdapter({ sourceType: "odysee", failingFeedExternalIds: [] }),
+    ]);
+
+    const result = await refreshAll(refreshDependencies(registry, async (milliseconds) => {
+      waitedMilliseconds.push(milliseconds);
+    }), { force: true });
+
+    expect(result.selectedFeeds.map((feed) => feed.sourceType)).toEqual(["youtube", "odysee", "youtube"]);
+    expect(waitedMilliseconds).toEqual([3_000]);
+  });
+
+  test("provider refusals defer subsequent feed queries for that provider", async () => {
+    await seedFeeds(testDatabase.db);
+    const fetchedExternalIds: string[] = [];
+    const registry = createSourceAdapterRegistry([
+      createRefreshAdapter({
+        failingFeedExternalIds: ["due-feed"],
+        failureHttpStatus: 429,
+        fetchedExternalIds,
+      }),
+    ]);
+
+    const result = await refreshAll(refreshDependencies(registry), { force: true });
+
+    expect(fetchedExternalIds).toEqual(["due-feed"]);
+    expect(result.run).toMatchObject({ status: "failed", feedsRequestedCount: 4, feedsSkippedCount: 3, feedsSucceededCount: 0, feedsFailedCount: 1 });
+    expect(result.feedResults).toHaveLength(1);
+    expect(result.skippedFeeds).toHaveLength(3);
+    expect(result.skippedFeeds.every((skippedFeed) => skippedFeed.reason === "provider-paused")).toBe(true);
+    expect(result.report.feeds.find((feedReport) => feedReport.feedId === result.feedResults[0]?.feedId)).toMatchObject({
+      status: "failed",
+      error: { code: "provider-refresh-paused" },
+    });
+    expect(result.report.feeds.filter((feedReport) => feedReport.skipReason === "provider-paused")).toHaveLength(3);
   });
 
   test("start refresh creates a running run before background processing completes", async () => {
@@ -322,7 +363,7 @@ function refreshDependencies(
   registry: ReturnType<typeof createSourceAdapterRegistry>,
   wait: (milliseconds: number) => Promise<void> = async () => {},
 ) {
-  return { db: testDatabase.db, sourceRegistry: registry, now: fixedNow, wait };
+  return { db: testDatabase.db, sourceRegistry: registry, now: fixedNow, wait, random: () => 0 };
 }
 
 async function seedFeeds(db: RepositoryDb): Promise<TestFeedSet> {
@@ -384,6 +425,40 @@ async function setNextRefreshAfter(db: RepositoryDb, feedId: string, nextRefresh
   await db.update(schema.feed).set({ nextRefreshAfter }).where(eq(schema.feed.id, feedId));
 }
 
+async function seedInterleavedProviderFeeds(db: RepositoryDb): Promise<void> {
+  const youtubeCreator = await findOrCreateCreator(db, {
+    sourceType: "youtube",
+    sourceExternalId: "interleaved-youtube",
+    displayName: "Interleaved YouTube",
+  });
+  const odyseeCreator = await findOrCreateCreator(db, {
+    sourceType: "odysee",
+    sourceExternalId: "interleaved-odysee",
+    displayName: "Interleaved Odysee",
+  });
+  await findOrCreateFeed(db, {
+    creatorId: youtubeCreator.id,
+    sourceType: "youtube",
+    sourceExternalId: "interleaved-youtube-one",
+    url: "https://refresh.example.test/interleaved-youtube-one",
+    refreshCadenceSeconds: 900,
+  });
+  await findOrCreateFeed(db, {
+    creatorId: odyseeCreator.id,
+    sourceType: "odysee",
+    sourceExternalId: "interleaved-odysee-one",
+    url: "https://refresh.example.test/interleaved-odysee-one",
+    refreshCadenceSeconds: 900,
+  });
+  await findOrCreateFeed(db, {
+    creatorId: youtubeCreator.id,
+    sourceType: "youtube",
+    sourceExternalId: "interleaved-youtube-two",
+    url: "https://refresh.example.test/interleaved-youtube-two",
+    refreshCadenceSeconds: 900,
+  });
+}
+
 async function requireFeed(db: RepositoryDb, sourceExternalId: string) {
   const feed = await findFeedBySourceIdentity(db, { sourceType: "youtube", sourceExternalId });
   if (feed === null) {
@@ -393,19 +468,23 @@ async function requireFeed(db: RepositoryDb, sourceExternalId: string) {
 }
 
 interface RefreshAdapterConfig {
+  readonly sourceType?: SourceType;
   readonly failingFeedExternalIds: readonly string[];
+  readonly failureHttpStatus?: number;
+  readonly fetchedExternalIds?: string[];
 }
 
 function createRefreshAdapter(config: RefreshAdapterConfig): SourceAdapter {
+  const sourceType = config.sourceType ?? "youtube";
   return {
-    sourceType: "youtube",
+    sourceType,
     detect(input) {
       const urlResult = parseHttpUrl(input);
       if (!urlResult.ok || urlResult.value.hostname !== "refresh.example.test") {
         return unsupported(input);
       }
       return detected({
-        sourceType: "youtube",
+        sourceType,
         inputKind: "feed-url",
         originalInput: input,
         canonicalInput: urlResult.value.toString(),
@@ -425,6 +504,7 @@ function createRefreshAdapter(config: RefreshAdapterConfig): SourceAdapter {
       return { ok: true, value: payloadForFeed(input.sourceType, input.sourceExternalId, input.canonicalUrl) };
     },
     async fetchCatalog(input) {
+      config.fetchedExternalIds?.push(input.sourceExternalId);
       if (config.failingFeedExternalIds.includes(input.sourceExternalId)) {
         return {
           ok: false,
@@ -432,6 +512,7 @@ function createRefreshAdapter(config: RefreshAdapterConfig): SourceAdapter {
             code: "remote-fetch-failed",
             message: "Fixture feed refresh failed.",
             sourceType: input.sourceType,
+            httpStatus: config.failureHttpStatus,
           },
         };
       }

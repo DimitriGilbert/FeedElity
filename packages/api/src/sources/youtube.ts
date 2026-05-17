@@ -41,7 +41,7 @@ export const youtubeAdapter: SourceAdapter<"youtube"> = {
         return failure("remote-fetch-failed", "YouTube feed fetch returned an unreadable response.", input.canonicalUrl);
       }
       if (!response.ok) {
-        return failure("remote-fetch-failed", `YouTube feed fetch failed with status ${response.status}.`, input.canonicalUrl);
+        return failure("remote-fetch-failed", `YouTube feed fetch failed with status ${response.status}.`, input.canonicalUrl, undefined, response.status);
       }
 
       const payload = await response.text();
@@ -274,6 +274,7 @@ function failure(
   message: string,
   input?: string,
   cause?: unknown,
+  httpStatus?: number,
 ): SourceAdapterFailure {
   return {
     ok: false,
@@ -282,6 +283,7 @@ function failure(
       message,
       input,
       sourceType: YOUTUBE_SOURCE_TYPE,
+      httpStatus,
       cause,
     },
   };

@@ -350,6 +350,9 @@ test("header refresh exposes normal click and force dropdown actions", async () 
   expect(source).toContain("aria-label=\"Open force refresh action\"");
   expect(source).toContain("aria-label=\"Force refresh all feeds\"");
   expect(source).toContain("await runHeaderRefresh(true);");
+  expect(source).toContain("<Show\n                when={refreshBusy()}");
+  expect(source).toContain("{refreshProgressText()}");
+  expect(source).toContain("return `${completedFeeds}/${run.feedsRequestedCount}`;");
 });
 
 test("feed rows expose selected state icon source metadata and real creator images only", async () => {
@@ -435,6 +438,8 @@ test("refresh UI is wired to real API procedures without background polling", as
   expect(source).toContain("client.refresh.startAll({ force })");
   expect(source).toContain("client.refresh.status({ runId, limit: 1, feedResultsLimit: 10 })");
   expect(source).toContain("props.onCatalogChanged();");
+  expect(source).toContain("refreshFeedResultErrorMessage");
+  expect(source).toContain("refreshProviderMessage");
   expect(source).toContain("Refresh due feeds");
   expect(source).toContain("Force refresh all feeds");
   expect(source).not.toContain("globalThis.confirm");

@@ -10,7 +10,7 @@ export type RefreshStatus = "running" | "succeeded" | "failed" | "partial";
 
 export type RefreshFeedReportStatus = RefreshStatus | "skipped";
 
-export type RefreshFeedSkipReason = "cadence-disabled" | "not-due";
+export type RefreshFeedSkipReason = "cadence-disabled" | "not-due" | "provider-paused";
 
 export interface SourceIdentity {
   readonly sourceType: SourceType;

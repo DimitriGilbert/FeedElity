@@ -77,7 +77,7 @@ export const peertubeAdapter: SourceAdapter<"peertube"> = {
         return failure("remote-fetch-failed", "PeerTube API fetch returned an unreadable response.", input.canonicalUrl);
       }
       if (!response.ok) {
-        return failure("remote-fetch-failed", `PeerTube API fetch failed with status ${response.status}.`, input.canonicalUrl);
+        return failure("remote-fetch-failed", `PeerTube API fetch failed with status ${response.status}.`, input.canonicalUrl, undefined, response.status);
       }
 
       const payload = await response.text();
@@ -474,6 +474,7 @@ function failure(
   message: string,
   input?: string,
   cause?: unknown,
+  httpStatus?: number,
 ): SourceAdapterFailure {
   return {
     ok: false,
@@ -482,6 +483,7 @@ function failure(
       message,
       input,
       sourceType: PEERTUBE_SOURCE_TYPE,
+      httpStatus,
       cause,
     },
   };
