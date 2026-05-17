@@ -2,16 +2,20 @@ import type {
   AddSourceResult,
   AddSourceValue,
   CatalogContentListItem,
-  CatalogFeed,
   IngestionError,
   Playlist,
   PlaylistItemWithContent,
   PlaylistSortMode,
-  RefreshFeedResultWithFeed,
-  RefreshRunReport,
   UserSetting,
 } from "@FeedElity/api";
 import { For, Match, Show, Switch, createMemo, createResource, createSignal } from "solid-js";
+import Plus from "lucide-solid/icons/plus";
+import RotateCcw from "lucide-solid/icons/rotate-ccw";
+import Save from "lucide-solid/icons/save";
+import Trash2 from "lucide-solid/icons/trash-2";
+import UserMinus from "lucide-solid/icons/user-minus";
+import UserPlus from "lucide-solid/icons/user-plus";
+import X from "lucide-solid/icons/x";
 
 import { client } from "@/utils/orpc";
 
@@ -19,23 +23,17 @@ import {
   addSourceHelpId,
   addSourceInputId,
   formatError,
-  formatRefreshReportSummary,
-  formatRefreshRunSummary,
   formatSettingValue,
-  formatSourceLabel,
   playlistDescriptionInputId,
   playlistNameInputId,
   playlistSortInputId,
   readerDensityInputId,
   readerDensitySettingKey,
   readerDensityValues,
-  refreshStatusRegionId,
   settingKeyInputId,
   settingKeyPattern,
   settingValueInputId,
   toReaderDensityFromSettings,
-  toRefreshStatusResourceKey,
-  type BrowsableCreator,
   type ReaderDensity,
 } from "./app-shell.contract";
 import { PlaylistItemRow } from "./app-shell-rows";
@@ -58,53 +56,6 @@ const readerDensityOptions: readonly { readonly value: ReaderDensity; readonly l
   { value: "comfortable", label: "Comfortable", helper: "App default; roomier rows for scanning thumbnails and actions." },
   { value: "compact", label: "Compact", helper: "Denser rows for faster source and video scanning." },
 ];
-
-function formatDateTime(value: Date | null): string {
-  if (value === null) {
-    return "Not completed";
-  }
-
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(value);
-}
-
-function formatFeedLabel(feed: Pick<CatalogFeed, "title" | "url">): string {
-  const title = feed.title?.trim();
-  return title !== undefined && title.length > 0 ? title : feed.url;
-}
-
-function formatRefreshSkipReason(reason: RefreshRunReport["feeds"][number]["skipReason"]): string {
-  if (reason === "cadence-disabled") {
-    return "Skipped: normal refresh cadence is disabled for this feed.";
-  }
-
-  if (reason === "not-due") {
-    return "Skipped: not due for normal refresh yet.";
-  }
-
-  return "";
-}
-
-function parseRefreshFeedResultError(errorSummaryJson: string | null): string | null {
-  if (errorSummaryJson === null) {
-    return null;
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(errorSummaryJson);
-    if (typeof parsed === "object" && parsed !== null && typeof (parsed as { readonly message?: unknown }).message === "string") {
-      return (parsed as { readonly message: string }).message;
-    }
-  } catch {
-    return "Refresh failed with an unreadable stored error.";
-  }
-
-  return "Refresh failed with an unreadable stored error.";
-}
 
 function formatPlaylistSortMode(sortMode: PlaylistSortMode): string {
   return playlistSortOptions.find((option) => option.value === sortMode)?.label ?? "Manual";
@@ -141,12 +92,14 @@ export function SubscriptionActionButton(props: SubscriptionActionButtonProps) {
     <div class="min-w-0">
       <button
         type="button"
-        class="border border-border bg-background px-2 py-1 text-[0.68rem] font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+        class="rounded-sm border border-border bg-background p-1 text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
         aria-pressed={props.isSubscribed}
+        aria-label={props.isSubscribed ? "Unsubscribe" : "Subscribe"}
+        title={props.isSubscribed ? "Unsubscribe" : "Subscribe"}
         disabled={busy()}
         onClick={updateSubscription}
       >
-        {props.isSubscribed ? "Unsubscribe" : "Subscribe"}
+        {props.isSubscribed ? <UserMinus size={14} /> : <UserPlus size={14} />}
       </button>
       <Show when={errorMessage()}>
         {(message) => <p class="mt-1 max-w-32 truncate text-[0.68rem] text-destructive">{message()}</p>}
@@ -223,7 +176,7 @@ export function AddSourceSection(props: AddSourceSectionProps) {
       </p>
       <Show when={props.isAuthenticated()}>
         <form
-          class="mt-2 space-y-2 border border-border bg-background p-2"
+          class="mt-2 space-y-2 border-t border-border p-2"
           onSubmit={async (event) => {
             event.preventDefault();
             await submitSource();
@@ -265,164 +218,6 @@ export function AddSourceSection(props: AddSourceSectionProps) {
         )}
       </Show>
     </section>
-  );
-}
-
-interface RefreshStatusSectionProps {
-  readonly isAuthenticated: () => boolean;
-  readonly selectedCreator: () => BrowsableCreator | null;
-  readonly selectedFeed: () => CatalogFeed | null;
-  readonly onRefreshCompleted: () => Promise<void>;
-}
-
-export function RefreshStatusSection(props: RefreshStatusSectionProps) {
-  const [reloadKey, setReloadKey] = createSignal(0);
-  const [busyAction, setBusyAction] = createSignal<
-    "normal-all" | "force-all" | "normal-creator" | "force-creator" | "normal-feed" | "force-feed" | null
-  >(null);
-  const [refreshError, setRefreshError] = createSignal<string | null>(null);
-  const [latestReport, setLatestReport] = createSignal<RefreshRunReport | null>(null);
-  const statusResourceKey = createMemo(() => toRefreshStatusResourceKey(props.isAuthenticated(), reloadKey()))
-  const [status] = createResource(
-    statusResourceKey,
-    () => client.refresh.status({ limit: 5, feedResultsLimit: 3 }),
-  );
-
-  const runAllRefresh = async (force: boolean) => {
-    if (force && !globalThis.confirm("Force refresh all sources now?")) {
-      return;
-    }
-
-    setBusyAction(force ? "force-all" : "normal-all");
-    setRefreshError(null);
-    try {
-      const result = await client.refresh.runAll({ force });
-      setLatestReport(result.report);
-      setReloadKey((key) => key + 1);
-      await props.onRefreshCompleted();
-    } catch (error) {
-      setRefreshError(formatError(error));
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
-  const runCreatorRefresh = async (force: boolean) => {
-    const creator = props.selectedCreator();
-    if (creator === null) {
-      setRefreshError("Select a source before refreshing one creator.");
-      return;
-    }
-
-    if (force && !globalThis.confirm(`Force refresh ${creator.displayName} now?`)) {
-      return;
-    }
-
-    setBusyAction(force ? "force-creator" : "normal-creator");
-    setRefreshError(null);
-    try {
-      const result = await client.refresh.runCreator({ creatorId: creator.id, force });
-      setLatestReport(result.report);
-      setReloadKey((key) => key + 1);
-      await props.onRefreshCompleted();
-    } catch (error) {
-      setRefreshError(formatError(error));
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
-  const runFeedRefresh = async (force: boolean) => {
-    const feed = props.selectedFeed();
-    if (feed === null) {
-      setRefreshError("Select a feed before refreshing one feed.");
-      return;
-    }
-
-    if (force && !globalThis.confirm("Force refresh the selected feed now?")) {
-      return;
-    }
-
-    setBusyAction(force ? "force-feed" : "normal-feed");
-    setRefreshError(null);
-    try {
-      const result = await client.refresh.runFeed({ feedId: feed.id, force });
-      setLatestReport(result.report);
-      setReloadKey((key) => key + 1);
-      await props.onRefreshCompleted();
-    } catch (error) {
-      setRefreshError(formatError(error));
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
-  return (
-    <section id={refreshStatusRegionId} class="border-t border-border px-2 py-2" aria-labelledby="refresh-status-title">
-      <div class="flex items-center justify-between gap-2">
-        <h3 id="refresh-status-title" class="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-          Refresh
-        </h3>
-        <span class="text-[0.68rem] text-muted-foreground">Manual only</span>
-      </div>
-      <Show when={props.isAuthenticated()}>
-        <div class="mt-2 grid grid-cols-2 gap-2" aria-label="Manual refresh controls">
-          <button type="button" class="border border-border bg-primary px-2 py-1.5 text-[0.68rem] font-semibold text-primary-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" disabled={busyAction() !== null} onClick={async () => runAllRefresh(false)}>Normal all</button>
-          <button type="button" class="border border-border bg-card px-2 py-1.5 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" disabled={busyAction() !== null} onClick={async () => runAllRefresh(true)}>Force all</button>
-          <button type="button" class="border border-border bg-card px-2 py-1.5 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" disabled={busyAction() !== null || props.selectedCreator() === null} onClick={async () => runCreatorRefresh(false)}>Normal source</button>
-          <button type="button" class="border border-border bg-card px-2 py-1.5 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" disabled={busyAction() !== null || props.selectedCreator() === null} onClick={async () => runCreatorRefresh(true)}>Force source</button>
-          <button type="button" class="border border-border bg-card px-2 py-1.5 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" disabled={busyAction() !== null || props.selectedFeed() === null} onClick={async () => runFeedRefresh(false)}>Normal feed</button>
-          <button type="button" class="border border-border bg-card px-2 py-1.5 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" disabled={busyAction() !== null || props.selectedFeed() === null} onClick={async () => runFeedRefresh(true)}>Force feed</button>
-        </div>
-      </Show>
-      <Show when={!props.isAuthenticated()}>
-        <p class="mt-2 border border-border bg-background px-2 py-1.5 text-[0.72rem] leading-5 text-muted-foreground">Sign in to run manual refreshes.</p>
-      </Show>
-      <Show when={refreshError()}>
-        {(message) => <p class="mt-2 border border-destructive px-2 py-1.5 text-[0.72rem] text-destructive">{message()}</p>}
-      </Show>
-      <Show when={busyAction()}>
-        {(action) => <p class="mt-2 border border-border bg-background px-2 py-1.5 text-[0.72rem] leading-5 text-muted-foreground" role="status" aria-live="polite">Manual refresh in progress: {action().replace("-", " ")}.</p>}
-      </Show>
-      <Show when={latestReport()}>
-        {(report) => <div class="mt-2 border border-border bg-card px-2 py-1.5 text-[0.72rem] leading-5 text-card-foreground" role="status"><p>{formatRefreshReportSummary(report())}</p><RefreshReportFeedList feeds={report().feeds} /></div>}
-      </Show>
-      <Switch>
-        <Match when={status.loading}><p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading refresh history.</p></Match>
-        <Match when={status.error !== undefined}><p class="mt-2 text-[0.72rem] leading-5 text-destructive">Refresh history unavailable.</p></Match>
-        <Match when={(status()?.recentRuns.length ?? 0) === 0}><p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">No refresh runs recorded.</p></Match>
-        <Match when={status()}>
-          {(loadedStatus) => (
-            <div class="mt-2 space-y-2">
-              <ol class="space-y-1" aria-label="Recent refresh runs">
-                <For each={loadedStatus().recentRuns}>{(run) => <li class="border border-border bg-background px-2 py-1.5"><p class="text-[0.72rem] font-semibold text-foreground">{formatRefreshRunSummary(run)}</p><p class="mt-1 text-[0.68rem] text-muted-foreground">{formatDateTime(run.completedAt)}</p></li>}</For>
-              </ol>
-              <RefreshFeedResultList results={loadedStatus().latestFeedResults} />
-            </div>
-          )}
-        </Match>
-      </Switch>
-    </section>
-  );
-}
-
-function RefreshReportFeedList(props: { readonly feeds: RefreshRunReport["feeds"] }) {
-  return (
-    <Show when={props.feeds.length > 0}>
-      <ul class="mt-2 space-y-1" aria-label="Completed refresh feed details">
-        <For each={props.feeds}>{(feed) => <li class="border border-border bg-background px-2 py-1 text-[0.68rem] text-foreground"><div class="flex items-start justify-between gap-2"><span class="min-w-0 truncate font-semibold">{formatFeedLabel({ title: feed.feedTitle, url: feed.feedUrl })}</span><span class="shrink-0 text-muted-foreground">{formatSourceLabel(feed.sourceType)}</span></div><p class="mt-1 text-muted-foreground">{feed.status === "skipped" && feed.skipReason !== null ? formatRefreshSkipReason(feed.skipReason) : `${feed.status}: ${feed.itemsCreatedCount} new`}</p><Show when={feed.error}>{(error) => <p class="mt-1 text-destructive">{error().message}</p>}</Show></li>}</For>
-      </ul>
-    </Show>
-  );
-}
-
-function RefreshFeedResultList(props: { readonly results: readonly RefreshFeedResultWithFeed[] }) {
-  return (
-    <Show when={props.results.length > 0}>
-      <ul class="space-y-1" aria-label="Latest refresh feed results">
-        <For each={props.results}>{(result) => <li class="border border-border bg-card px-2 py-1 text-[0.68rem] text-card-foreground"><div class="flex items-center justify-between gap-2"><span class="min-w-0 truncate font-semibold">{formatFeedLabel(result.feed)}</span><span class="shrink-0 text-muted-foreground">{result.status}</span></div><p class="mt-1 text-muted-foreground">{result.itemsCreatedCount} new</p><Show when={parseRefreshFeedResultError(result.errorSummaryJson)}>{(message) => <p class="mt-1 text-destructive">{message()}</p>}</Show></li>}</For>
-      </ul>
-    </Show>
   );
 }
 
@@ -516,7 +311,7 @@ export function SettingsColumnSection(props: SettingsColumnSectionProps) {
       <div class="flex items-center justify-between gap-2"><h3 id="settings-section-title" class="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Settings</h3><span class="text-[0.68rem] text-muted-foreground">{props.settings().length} saved</span></div>
       <Show when={settingsError()}>{(message) => <p class="mt-2 border border-destructive px-2 py-1.5 text-[0.72rem] text-destructive">{message()}</p>}</Show>
       <Show when={props.settingsUnavailable()}><p class="mt-2 border border-destructive px-2 py-1.5 text-[0.72rem] text-destructive">Settings unavailable.</p></Show>
-      <section class="mt-2 border border-border bg-background p-2" aria-labelledby="reader-density-title" data-typed-settings>
+      <section class="mt-2 border-t border-border p-2" aria-labelledby="reader-density-title" data-typed-settings>
         <p id="reader-density-title" class="text-[0.72rem] font-semibold text-foreground">Reader density</p>
         <p class="mt-1 text-[0.68rem] leading-5 text-muted-foreground">Controls the actual spacing used by source, feed, and video rows. Comfortable is the app default when no setting is saved.</p>
         <label class="sr-only" for={readerDensityInputId}>Reader density</label>
@@ -524,22 +319,22 @@ export function SettingsColumnSection(props: SettingsColumnSectionProps) {
           <For each={readerDensityOptions}>{(option) => <option value={option.value}>{option.label}</option>}</For>
         </select>
         <p class="mt-1 text-[0.68rem] leading-5 text-muted-foreground">{readerDensityOptions.find((option) => option.value === readerDensity())?.helper}</p>
-        <button type="button" class="mt-2 w-full border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" disabled={readerDensityBusy() || props.settingsUnavailable()} onClick={useReaderDensityDefault}>Use app default</button>
+        <button type="button" class="mt-2 w-full inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-card p-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" aria-label="Use app default" title="Use app default" disabled={readerDensityBusy() || props.settingsUnavailable()} onClick={useReaderDensityDefault}><RotateCcw size={14} /></button>
       </section>
-      <details class="mt-2 border border-border bg-background p-2" data-advanced-settings>
+      <details class="mt-2 border-t border-border p-2" data-advanced-settings>
         <summary class="cursor-pointer text-[0.72rem] font-semibold text-foreground">Advanced settings</summary>
         <p class="mt-2 text-[0.68rem] leading-5 text-muted-foreground">Edit raw stored keys only when a typed control is unavailable.</p>
-        <form class="mt-2 space-y-2 border border-border bg-card p-2" onSubmit={async (event) => { event.preventDefault(); await saveSetting(); }}>
+        <form class="mt-2 space-y-2 border-t border-border bg-card p-2" onSubmit={async (event) => { event.preventDefault(); await saveSetting(); }}>
           <label class="sr-only" for={settingKeyInputId}>Setting key</label>
           <input id={settingKeyInputId} class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring" value={settingKey()} maxlength={64} pattern={settingKeyPattern} placeholder="setting.key" autocomplete="off" onInput={(event) => setSettingKey(event.currentTarget.value)} />
           <label class="sr-only" for={settingValueInputId}>Setting value</label>
           <input id={settingValueInputId} class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring" value={settingValue()} maxlength={4096} placeholder="Value" onInput={(event) => setSettingValue(event.currentTarget.value)} />
-          <div class="grid grid-cols-2 gap-2"><button type="submit" class="border border-border bg-primary px-2 py-1.5 text-xs font-semibold text-primary-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" disabled={formBusy()}>Save</button><button type="button" class="border border-border bg-card px-2 py-1.5 text-xs font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" onClick={() => { setSettingKey(""); setSettingValue(""); setSettingsError(null); }}>Clear</button></div>
+          <div class="grid grid-cols-2 gap-2"><button type="submit" class="inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-primary p-1 text-xs font-semibold text-primary-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" aria-label="Save setting" title="Save setting" disabled={formBusy()}><Save size={14} /></button><button type="button" class="inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-card p-1 text-xs font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" aria-label="Clear form" title="Clear form" onClick={() => { setSettingKey(""); setSettingValue(""); setSettingsError(null); }}><X size={14} /></button></div>
         </form>
         <Show when={props.settings().length === 0}><p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">No settings have been saved.</p></Show>
         <Show when={props.settings().length > 0}>
           <ol class="mt-2 space-y-1" aria-label="Saved settings">
-            <For each={props.settings()}>{(setting) => <li class="border border-border bg-card p-2"><button type="button" class="w-full text-left text-card-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" onClick={() => editSetting(setting)}><span class="block truncate text-xs font-semibold">{setting.key}</span><span class="mt-1 block truncate text-[0.68rem] text-muted-foreground">{formatSettingValue(setting.valueJson)}</span></button><button type="button" class="mt-2 w-full border border-border bg-background px-2 py-1 text-[0.68rem] font-semibold text-destructive transition hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" disabled={settingsBusyKey() === setting.key} onClick={async () => { await deleteSetting(setting.key); }}>Delete</button></li>}</For>
+            <For each={props.settings()}>{(setting) => <li class="border-t border-border p-2"><button type="button" class="w-full text-left text-card-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" onClick={() => editSetting(setting)}><span class="block truncate text-xs font-semibold">{setting.key}</span><span class="mt-1 block truncate text-[0.68rem] text-muted-foreground">{formatSettingValue(setting.valueJson)}</span></button><button type="button" class="mt-2 w-full inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-background p-1 text-[0.68rem] font-semibold text-destructive transition hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" aria-label="Delete setting" title="Delete setting" disabled={settingsBusyKey() === setting.key} onClick={async () => { await deleteSetting(setting.key); }}><Trash2 size={14} /></button></li>}</For>
           </ol>
         </Show>
       </details>
@@ -692,19 +487,19 @@ export function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
       <div class="flex items-center justify-between gap-2"><h3 id="playlist-section-title" class="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Playlists</h3><span class="text-[0.68rem] text-muted-foreground">{playlists()?.length ?? 0} saved</span></div>
       <Show when={(playlists()?.length ?? 0) > 0}><div class="mt-2"><label class="sr-only" for="source-playlist-selector">Selected playlist</label><select id="source-playlist-selector" class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring" value={props.selectedPlaylistId() ?? ""} onChange={(event) => { const playlistId = event.currentTarget.value; editPlaylist(playlistId.length === 0 ? null : playlists()?.find((playlist) => playlist.id === playlistId) ?? null); }} data-compact-playlist-selector><option value="">No playlist selected</option><For each={playlists() ?? emptyPlaylists}>{(playlist) => <option value={playlist.id}>{playlist.name}</option>}</For></select></div></Show>
       <Show when={playlistError()}>{(message) => <p class="mt-2 border border-destructive px-2 py-1.5 text-[0.72rem] text-destructive">{message()}</p>}</Show>
-      <details class="mt-2 border border-border bg-background p-2" data-playlist-management-panel>
+      <details class="mt-2 border-t border-border p-2" data-playlist-management-panel>
         <summary class="cursor-pointer text-xs font-semibold text-foreground">Manage playlists</summary>
-        <form class="mt-2 space-y-2 border border-border bg-background p-2" onSubmit={async (event) => { event.preventDefault(); const playlist = editingPlaylist(); if (playlist === null) { await createPlaylist(); } else { await updatePlaylist(playlist); } }}>
+        <form class="mt-2 space-y-2 border-t border-border p-2" onSubmit={async (event) => { event.preventDefault(); const playlist = editingPlaylist(); if (playlist === null) { await createPlaylist(); } else { await updatePlaylist(playlist); } }}>
           <label class="sr-only" for={playlistNameInputId}>Playlist name</label><input id={playlistNameInputId} class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring" value={playlistName()} maxlength={120} placeholder="Playlist name" onInput={(event) => setPlaylistName(event.currentTarget.value)} />
           <label class="sr-only" for={playlistDescriptionInputId}>Playlist description</label><textarea id={playlistDescriptionInputId} class="min-h-14 w-full resize-none border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring" value={playlistDescription()} maxlength={2000} placeholder="Description" onInput={(event) => setPlaylistDescription(event.currentTarget.value)} />
           <label class="sr-only" for={playlistSortInputId}>Playlist order</label><select id={playlistSortInputId} class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring" value={playlistSortMode()} onChange={(event) => setPlaylistSortMode(toPlaylistSortMode(event.currentTarget.value))}><For each={playlistSortOptions}>{(option) => <option value={option.value}>{option.label}</option>}</For></select>
-          <div class="grid grid-cols-2 gap-2"><button type="submit" class="border border-border bg-primary px-2 py-1.5 text-xs font-semibold text-primary-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" disabled={playlistBusy()}>{editingPlaylist() === null ? "Create" : "Save"}</button><button type="button" class="border border-border bg-card px-2 py-1.5 text-xs font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" onClick={() => { editPlaylist(null); }}>New</button></div>
+          <div class="grid grid-cols-2 gap-2"><button type="submit" class="inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-primary p-1 text-xs font-semibold text-primary-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" aria-label={editingPlaylist() === null ? "Create playlist" : "Save playlist"} title={editingPlaylist() === null ? "Create playlist" : "Save playlist"} disabled={playlistBusy()}>{editingPlaylist() === null ? <Plus size={14} /> : <Save size={14} />}</button><button type="button" class="inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-card p-1 text-xs font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" aria-label="New playlist" title="New playlist" onClick={() => { editPlaylist(null); }}>New</button></div>
         </form>
         <Switch>
           <Match when={playlists.loading}><p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading playlists.</p></Match>
           <Match when={playlists.error !== undefined}><p class="mt-2 text-[0.72rem] leading-5 text-destructive">Playlists unavailable.</p></Match>
           <Match when={(playlists()?.length ?? 0) === 0}><p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Create a playlist to collect videos.</p></Match>
-          <Match when={playlists()}>{(loadedPlaylists) => <ol class="mt-2 space-y-1" aria-label="Playlists"><For each={loadedPlaylists()}>{(playlist) => <li class="border border-border bg-card p-2"><button type="button" class="w-full text-left text-card-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" aria-pressed={props.selectedPlaylistId() === playlist.id} onClick={() => editPlaylist(props.selectedPlaylistId() === playlist.id ? null : playlist)}><span class="block truncate text-xs font-semibold">{playlist.name}</span><span class="mt-1 block truncate text-[0.68rem] text-muted-foreground">{formatPlaylistSortMode(playlist.sortMode)}</span></button><Show when={props.selectedPlaylistId() === playlist.id}><div class="mt-2 flex gap-2"><button type="button" class="flex-1 border border-border bg-background px-2 py-1 text-[0.68rem] font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" disabled={playlistBusy()} onClick={async () => { await updatePlaylist(playlist); }}>Update</button><button type="button" class="flex-1 border border-border bg-background px-2 py-1 text-[0.68rem] font-semibold text-destructive transition hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" disabled={playlistBusy()} onClick={async () => { await deletePlaylist(playlist.id); }}>Delete</button></div></Show></li>}</For></ol>}</Match>
+          <Match when={playlists()}>{(loadedPlaylists) => <ol class="mt-2 space-y-1" aria-label="Playlists"><For each={loadedPlaylists()}>{(playlist) => <li class="border-t border-border p-2"><button type="button" class="w-full text-left text-card-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" aria-pressed={props.selectedPlaylistId() === playlist.id} onClick={() => editPlaylist(props.selectedPlaylistId() === playlist.id ? null : playlist)}><span class="block truncate text-xs font-semibold">{playlist.name}</span><span class="mt-1 block truncate text-[0.68rem] text-muted-foreground">{formatPlaylistSortMode(playlist.sortMode)}</span></button><Show when={props.selectedPlaylistId() === playlist.id}><div class="mt-2 flex gap-2"><button type="button" class="flex-1 inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-background p-1 text-[0.68rem] font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" aria-label="Update playlist" title="Update playlist" disabled={playlistBusy()} onClick={async () => { await updatePlaylist(playlist); }}><Save size={14} /></button><button type="button" class="flex-1 inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-background p-1 text-[0.68rem] font-semibold text-destructive transition hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" aria-label="Delete playlist" title="Delete playlist" disabled={playlistBusy()} onClick={async () => { await deletePlaylist(playlist.id); }}><Trash2 size={14} /></button></div></Show></li>}</For></ol>}</Match>
         </Switch>
         <Show when={props.selectedPlaylistId() !== null}>
           <section class="mt-2 border-t border-border pt-2" aria-label="Selected playlist videos">

@@ -1,6 +1,9 @@
+import { createSourceAdapterRegistry, odyseeAdapter, peertubeAdapter, youtubeAdapter } from "@FeedElity/api";
 import { createContext } from "@FeedElity/api/context";
 import { appRouter } from "@FeedElity/api/routers/index";
+import { recoverRunningRefreshRuns } from "@FeedElity/api/services/refresh";
 import { auth } from "@FeedElity/auth";
+import { db } from "@FeedElity/db";
 import { env } from "@FeedElity/env/server";
 import { OpenAPIHandler } from "@orpc/openapi/fetch";
 import { OpenAPIReferencePlugin } from "@orpc/openapi/plugins";
@@ -12,6 +15,14 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 
 export const app = new Hono();
+
+recoverRunningRefreshRuns({
+  db,
+  sourceRegistry: createSourceAdapterRegistry([youtubeAdapter, odyseeAdapter, peertubeAdapter]),
+  now: () => new Date(),
+}).catch((error: unknown) => {
+  console.error("Refresh recovery failed.", error);
+});
 
 app.use(logger());
 app.use(

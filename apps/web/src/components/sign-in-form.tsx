@@ -4,6 +4,32 @@ import { createSignal, For, Show } from "solid-js";
 import z from "zod";
 
 import { authClient } from "@/lib/auth-client";
+import { client } from "@/utils/orpc";
+
+interface EmailPasswordValue {
+  readonly email: string;
+  readonly password: string;
+}
+
+function signInWithEmailPassword(value: EmailPasswordValue, onSuccess: () => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    authClient.signIn.email(
+      {
+        email: value.email,
+        password: value.password,
+      },
+      {
+        onSuccess: () => {
+          onSuccess();
+          resolve();
+        },
+        onError: (error) => {
+          reject(new Error(error.error.message));
+        },
+      },
+    );
+  });
+}
 
 export default function SignInForm({ onSwitchToSignUp }: { onSwitchToSignUp: () => void }) {
   const [submitError, setSubmitError] = createSignal<string | null>(null);
@@ -18,22 +44,26 @@ export default function SignInForm({ onSwitchToSignUp }: { onSwitchToSignUp: () 
     },
     onSubmit: async ({ value }) => {
       setSubmitError(null);
-      await authClient.signIn.email(
-        {
-          email: value.email,
-          password: value.password,
-        },
-        {
-          onSuccess: () => {
-            navigate({
-              to: "/dashboard",
-            });
-          },
-          onError: (error) => {
-            setSubmitError(error.error.message);
-          },
-        },
-      );
+      const navigateToDashboard = () => {
+        navigate({
+          to: "/dashboard",
+        });
+      };
+
+      try {
+        await signInWithEmailPassword(value, navigateToDashboard);
+      } catch (error) {
+        const signInMessage = error instanceof Error ? error.message : "Sign in failed.";
+        try {
+          await client.auth.setupMigratedPassword({
+            email: value.email,
+            password: value.password,
+          });
+          await signInWithEmailPassword(value, navigateToDashboard);
+        } catch {
+          setSubmitError(signInMessage);
+        }
+      }
     },
     validators: {
       onSubmit: z.object({

@@ -21,7 +21,7 @@ export function formatSourceIndicatorLabel(sourceType: SourceType, context: Sour
   return `${sourceLabel} primary content source, ${sourceCount} source records available`;
 }
 
-function SourceTypeIcon(props: { readonly sourceType: SourceType }) {
+export function SourceTypeIcon(props: { readonly sourceType: SourceType }) {
   const iconClass = "h-3.5 w-3.5";
   return (
     <Switch>

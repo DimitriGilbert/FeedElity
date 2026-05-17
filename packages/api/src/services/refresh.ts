@@ -15,18 +15,23 @@ import {
   listCatalogFeedById,
   listCatalogFeeds,
   listCatalogFeedsForCreator,
+  listRefreshFeedResultsForRun,
+  listRunningRefreshRuns,
   recordRefreshFeedResult,
   type RepositoryDb,
   updateFeedRefreshMetadata,
+  updateRefreshRunProgress,
 } from "../repositories/catalog";
 import type { SourceAdapterError } from "../sources";
 import type { SourceAdapterRegistry } from "../sources/registry";
 import { persistNormalizedCatalog } from "./ingestion";
+import { delayBetweenFeedFetchesMs, nextRefreshDate } from "./refresh-policy";
 
 export interface RefreshServiceDependencies {
   readonly db: RepositoryDb;
   readonly sourceRegistry: SourceAdapterRegistry;
   readonly now: () => Date;
+  readonly wait?: (milliseconds: number) => Promise<void>;
 }
 
 export interface RefreshAllInput {
@@ -49,6 +54,10 @@ export interface RefreshServiceResult {
   readonly feedResults: readonly RefreshFeedResult[];
   readonly selectedFeeds: readonly CatalogFeed[];
   readonly skippedFeeds: readonly SkippedFeed[];
+}
+
+export interface RefreshStartResult extends RefreshServiceResult {
+  readonly process: () => Promise<RefreshServiceResult>;
 }
 
 export interface SkippedFeed {
@@ -77,12 +86,70 @@ export async function refreshAll(
   input: RefreshAllInput = {},
 ): Promise<RefreshServiceResult> {
   const feeds = await listCatalogFeeds(dependencies.db);
-  return runRefresh(dependencies, {
+  const prepared = await prepareRefreshRun(dependencies, {
     scope: "all",
     force: input.force ?? false,
     requestedCreatorId: null,
     requestedFeedId: null,
     feeds,
+  });
+  return processPreparedRefreshRun(dependencies, prepared);
+}
+
+export async function startRefreshAll(
+  dependencies: RefreshServiceDependencies,
+  input: RefreshAllInput = {},
+): Promise<RefreshStartResult> {
+  const feeds = await listCatalogFeeds(dependencies.db);
+  const prepared = await prepareRefreshRun(dependencies, {
+    scope: "all",
+    force: input.force ?? false,
+    requestedCreatorId: null,
+    requestedFeedId: null,
+    feeds,
+  });
+  return {
+    run: prepared.run,
+    report: buildRefreshReport(prepared.run, [], prepared.selectedFeeds, prepared.skippedFeeds),
+    feedResults: [],
+    selectedFeeds: prepared.selectedFeeds,
+    skippedFeeds: prepared.skippedFeeds,
+    process: () => processPreparedRefreshRun(dependencies, prepared),
+  };
+}
+
+export async function recoverRunningRefreshRuns(dependencies: RefreshServiceDependencies): Promise<readonly RefreshRun[]> {
+  const runningRuns = await listRunningRefreshRuns(dependencies.db, { limit: 25 });
+  for (const run of runningRuns) {
+    scheduleRecoveredRefreshRun(dependencies, run);
+  }
+  return runningRuns;
+}
+
+function scheduleRecoveredRefreshRun(dependencies: RefreshServiceDependencies, run: RefreshRun): void {
+  setTimeout(() => {
+    resumeRefreshRun(dependencies, run).catch((error: unknown) => {
+      console.error("Recovered refresh run failed.", error);
+    });
+  }, 0);
+}
+
+export async function resumeRefreshRun(
+  dependencies: RefreshServiceDependencies,
+  run: RefreshRun,
+): Promise<RefreshServiceResult> {
+  const feeds = await feedsForRefreshRun(dependencies, run);
+  const completedResults = await listRefreshFeedResultsForRun(dependencies.db, { refreshRunId: run.id, limit: 100_000 });
+  const completedFeedIds = new Set(completedResults.map((result) => result.feedId));
+  const selection = selectFeedsForRefresh(feeds, run.force, run.startedAt);
+  const selectedFeeds = selection.selected.filter((feed) => !completedFeedIds.has(feed.id));
+  return processPreparedRefreshRun(dependencies, {
+    run,
+    force: run.force,
+    selectedFeeds,
+    reportFeeds: selection.selected,
+    skippedFeeds: selection.skipped,
+    existingFeedResults: completedResults,
   });
 }
 
@@ -91,13 +158,24 @@ export async function refreshCreator(
   input: RefreshCreatorInput,
 ): Promise<RefreshServiceResult> {
   const feeds = await listCatalogFeedsForCreator(dependencies.db, input.creatorId);
-  return runRefresh(dependencies, {
+  const prepared = await prepareRefreshRun(dependencies, {
     scope: "creator",
     force: input.force ?? false,
     requestedCreatorId: input.creatorId,
     requestedFeedId: null,
     feeds,
   });
+  return processPreparedRefreshRun(dependencies, prepared);
+}
+
+async function feedsForRefreshRun(dependencies: RefreshServiceDependencies, run: RefreshRun): Promise<readonly CatalogFeed[]> {
+  if (run.scope === "creator") {
+    return run.requestedCreatorId === null ? [] : listCatalogFeedsForCreator(dependencies.db, run.requestedCreatorId);
+  }
+  if (run.scope === "feed") {
+    return run.requestedFeedId === null ? [] : listCatalogFeedById(dependencies.db, run.requestedFeedId);
+  }
+  return listCatalogFeeds(dependencies.db);
 }
 
 export async function refreshFeed(
@@ -105,13 +183,14 @@ export async function refreshFeed(
   input: RefreshFeedInput,
 ): Promise<RefreshServiceResult> {
   const feeds = await listCatalogFeedById(dependencies.db, input.feedId);
-  return runRefresh(dependencies, {
+  const prepared = await prepareRefreshRun(dependencies, {
     scope: "feed",
     force: input.force ?? false,
     requestedCreatorId: null,
     requestedFeedId: input.feedId,
     feeds,
   });
+  return processPreparedRefreshRun(dependencies, prepared);
 }
 
 interface RunRefreshInput {
@@ -122,10 +201,19 @@ interface RunRefreshInput {
   readonly feeds: readonly CatalogFeed[];
 }
 
-async function runRefresh(
+interface PreparedRefreshRun {
+  readonly run: RefreshRun;
+  readonly force: boolean;
+  readonly selectedFeeds: readonly CatalogFeed[];
+  readonly reportFeeds?: readonly CatalogFeed[];
+  readonly skippedFeeds: readonly SkippedFeed[];
+  readonly existingFeedResults?: readonly RefreshFeedResult[];
+}
+
+async function prepareRefreshRun(
   dependencies: RefreshServiceDependencies,
   input: RunRefreshInput,
-): Promise<RefreshServiceResult> {
+): Promise<PreparedRefreshRun> {
   const startedAt = dependencies.now();
   const selection = selectFeedsForRefresh(input.feeds, input.force, startedAt);
   const selectedFeeds = selection.selected;
@@ -140,37 +228,129 @@ async function runRefresh(
     startedAt,
   });
 
+  return {
+    run: runningRun,
+    force: input.force,
+    selectedFeeds,
+    skippedFeeds: selection.skipped,
+    existingFeedResults: [],
+  };
+}
+
+async function processPreparedRefreshRun(
+  dependencies: RefreshServiceDependencies,
+  prepared: PreparedRefreshRun,
+): Promise<RefreshServiceResult> {
   const outcomes: FeedRefreshOutcome[] = [];
-  for (const feed of selectedFeeds) {
-    outcomes.push(await refreshOneFeed(dependencies, runningRun.id, feed, input.force));
+  try {
+    for (const [index, feed] of prepared.selectedFeeds.entries()) {
+      outcomes.push(await refreshOneFeed(dependencies, prepared.run.id, feed, prepared.force));
+      await updateRunningRefreshProgress(dependencies, prepared.run.id, prepared.existingFeedResults ?? [], outcomes);
+      if (index < prepared.selectedFeeds.length - 1) {
+        await waitBetweenFeeds(dependencies, feed, prepared.force);
+      }
+    }
+  } catch (cause: unknown) {
+    return completeCatastrophicRefreshFailure(dependencies, prepared, outcomes, cause);
   }
 
+  const existingFeedResults = prepared.existingFeedResults ?? [];
   const successes = outcomes.filter((outcome) => outcome.ok);
   const failures = outcomes.filter((outcome) => !outcome.ok);
+  const existingSuccesses = existingFeedResults.filter((result) => result.status === "succeeded");
+  const existingFailures = existingFeedResults.filter((result) => result.status === "failed");
   const completedAt = dependencies.now();
-  const status = statusForCounts(successes.length, failures.length);
-  const errorSummaryJson = failures.length === 0 ? null : JSON.stringify(failures.map((failure) => failure.summary));
+  const status = statusForCounts(successes.length + existingSuccesses.length, failures.length + existingFailures.length);
+  const failureSummaries = [...errorSummariesForResults(existingFailures), ...failures.map((failure) => failure.summary)];
+  const errorSummaryJson = failureSummaries.length === 0 ? null : JSON.stringify(failureSummaries);
   const completedRun = await completeRefreshRun(dependencies.db, {
-    id: runningRun.id,
+    id: prepared.run.id,
     status,
-    feedsRequestedCount: selectedFeeds.length,
-    feedsSkippedCount: selection.skipped.length,
-    feedsSucceededCount: successes.length,
-    feedsFailedCount: failures.length,
-    itemsDiscoveredCount: sum(successes, (success) => success.discoveredCount),
-    itemsCreatedCount: sum(successes, (success) => success.createdCount),
-    itemsUpdatedCount: sum(successes, (success) => success.updatedCount),
+    feedsRequestedCount: prepared.run.feedsRequestedCount,
+    feedsSkippedCount: prepared.run.feedsSkippedCount,
+    feedsSucceededCount: successes.length + existingSuccesses.length,
+    feedsFailedCount: failures.length + existingFailures.length,
+    itemsDiscoveredCount: sum(successes, (success) => success.discoveredCount) + sum(existingFeedResults, (result) => result.itemsDiscoveredCount),
+    itemsCreatedCount: sum(successes, (success) => success.createdCount) + sum(existingFeedResults, (result) => result.itemsCreatedCount),
+    itemsUpdatedCount: sum(successes, (success) => success.updatedCount) + sum(existingFeedResults, (result) => result.itemsUpdatedCount),
     completedAt,
     errorSummaryJson,
   });
-  const feedResults = outcomes.map((outcome) => outcome.result);
+  const feedResults = [...existingFeedResults, ...outcomes.map((outcome) => outcome.result)];
+  const reportFeeds = prepared.reportFeeds ?? prepared.selectedFeeds;
 
   return {
     run: completedRun,
-    report: buildRefreshReport(completedRun, feedResults, selectedFeeds, selection.skipped),
+    report: buildRefreshReport(completedRun, feedResults, reportFeeds, prepared.skippedFeeds),
     feedResults,
-    selectedFeeds,
-    skippedFeeds: selection.skipped,
+    selectedFeeds: prepared.selectedFeeds,
+    skippedFeeds: prepared.skippedFeeds,
+  };
+}
+
+async function updateRunningRefreshProgress(
+  dependencies: RefreshServiceDependencies,
+  refreshRunId: string,
+  existingFeedResults: readonly RefreshFeedResult[],
+  outcomes: readonly FeedRefreshOutcome[],
+): Promise<void> {
+  const successes = outcomes.filter((outcome) => outcome.ok);
+  const failures = outcomes.filter((outcome) => !outcome.ok);
+  const existingSuccesses = existingFeedResults.filter((result) => result.status === "succeeded");
+  const existingFailures = existingFeedResults.filter((result) => result.status === "failed");
+  await updateRefreshRunProgress(dependencies.db, {
+    id: refreshRunId,
+    feedsSucceededCount: successes.length + existingSuccesses.length,
+    feedsFailedCount: failures.length + existingFailures.length,
+    itemsDiscoveredCount: sum(successes, (success) => success.discoveredCount) + sum(existingFeedResults, (result) => result.itemsDiscoveredCount),
+    itemsCreatedCount: sum(successes, (success) => success.createdCount) + sum(existingFeedResults, (result) => result.itemsCreatedCount),
+    itemsUpdatedCount: sum(successes, (success) => success.updatedCount) + sum(existingFeedResults, (result) => result.itemsUpdatedCount),
+    errorSummaryJson: failures.length === 0 ? null : JSON.stringify(failures.map((failure) => failure.summary)),
+  });
+}
+
+async function completeCatastrophicRefreshFailure(
+  dependencies: RefreshServiceDependencies,
+  prepared: PreparedRefreshRun,
+  outcomes: readonly FeedRefreshOutcome[],
+  cause: unknown,
+): Promise<RefreshServiceResult> {
+  const existingFeedResults = prepared.existingFeedResults ?? [];
+  const successes = outcomes.filter((outcome) => outcome.ok);
+  const failures = outcomes.filter((outcome) => !outcome.ok);
+  const existingSuccesses = existingFeedResults.filter((result) => result.status === "succeeded");
+  const existingFailures = existingFeedResults.filter((result) => result.status === "failed");
+  const completedAt = dependencies.now();
+  const errorSummary = {
+    feedId: prepared.run.requestedFeedId ?? "refresh-run",
+    code: "catalog-persistence-failed",
+    message: cause instanceof Error ? cause.message : "Refresh run failed before all selected feeds were processed.",
+  } satisfies RefreshFeedErrorSummary;
+  const completedRun = await completeRefreshRun(dependencies.db, {
+    id: prepared.run.id,
+    status: successes.length === 0 ? "failed" : "partial",
+    feedsRequestedCount: prepared.run.feedsRequestedCount,
+    feedsSkippedCount: prepared.run.feedsSkippedCount,
+    feedsSucceededCount: successes.length + existingSuccesses.length,
+    feedsFailedCount: failures.length + existingFailures.length + 1,
+    itemsDiscoveredCount: sum(successes, (success) => success.discoveredCount) + sum(existingFeedResults, (result) => result.itemsDiscoveredCount),
+    itemsCreatedCount: sum(successes, (success) => success.createdCount) + sum(existingFeedResults, (result) => result.itemsCreatedCount),
+    itemsUpdatedCount: sum(successes, (success) => success.updatedCount) + sum(existingFeedResults, (result) => result.itemsUpdatedCount),
+    completedAt,
+    errorSummaryJson: JSON.stringify([
+      ...errorSummariesForResults(existingFailures),
+      ...failures.map((failure) => failure.summary),
+      errorSummary,
+    ]),
+  });
+  const feedResults = [...existingFeedResults, ...outcomes.map((outcome) => outcome.result)];
+  const reportFeeds = prepared.reportFeeds ?? prepared.selectedFeeds;
+  return {
+    run: completedRun,
+    report: buildRefreshReport(completedRun, feedResults, reportFeeds, prepared.skippedFeeds),
+    feedResults,
+    selectedFeeds: prepared.selectedFeeds,
+    skippedFeeds: prepared.skippedFeeds,
   };
 }
 
@@ -239,7 +419,7 @@ async function refreshOneFeed(
     const persisted = await persistNormalizedCatalog(dependencies.db, fetched.value, undefined);
     const completedAt = dependencies.now();
     const discoveredCount = fetched.value.items.length;
-    const nextRefreshAfter = nextRefreshDate(completedAt, feed.refreshCadenceSeconds);
+    const nextRefreshAfter = nextRefreshDate(completedAt, feed.sourceType, feed.id, feed.refreshCadenceSeconds);
     if (!force) {
       await updateFeedRefreshMetadata(dependencies.db, {
         feedId: feed.id,
@@ -272,7 +452,7 @@ async function recordFailure(
   refreshRunId: string,
   feedId: string,
   startedAt: Date,
-    summary: RefreshFeedErrorSummary,
+  summary: RefreshFeedErrorSummary,
 ): Promise<FeedRefreshFailure> {
   const completedAt = dependencies.now();
   const result = await recordRefreshFeedResult(dependencies.db, {
@@ -294,11 +474,18 @@ function fromAdapterError(feedId: string, error: SourceAdapterError): RefreshFee
   };
 }
 
-function nextRefreshDate(refreshedAt: Date, refreshCadenceSeconds: number | null): Date | null {
-  if (refreshCadenceSeconds === null) {
-    return null;
+async function waitBetweenFeeds(dependencies: RefreshServiceDependencies, feed: CatalogFeed, force: boolean): Promise<void> {
+  const delayMs = delayBetweenFeedFetchesMs(feed.sourceType, force);
+  if (delayMs <= 0) {
+    return;
   }
-  return new Date(refreshedAt.getTime() + refreshCadenceSeconds * 1000);
+  await (dependencies.wait ?? sleep)(delayMs);
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
 }
 
 function statusForCounts(successCount: number, failureCount: number): RefreshStatus {
@@ -383,6 +570,13 @@ function parseRefreshError(errorSummaryJson: string | null): RefreshFeedErrorSum
     throw new Error("Stored refresh feed error summary is not valid.");
   }
   return parsed;
+}
+
+function errorSummariesForResults(results: readonly RefreshFeedResult[]): readonly RefreshFeedErrorSummary[] {
+  return results.flatMap((result) => {
+    const error = parseRefreshError(result.errorSummaryJson);
+    return error === null ? [] : [error];
+  });
 }
 
 function isRefreshFeedErrorSummary(value: unknown): value is RefreshFeedErrorSummary {

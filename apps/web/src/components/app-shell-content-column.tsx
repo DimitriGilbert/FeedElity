@@ -1,15 +1,24 @@
 import type {
+  AddSourceValue,
   CatalogContentListItem,
   CatalogFeed,
   Playlist,
   SourceType,
   UserContentStatus,
 } from "@FeedElity/api";
-import { For, Match, Show, Switch, createMemo, createResource, createSignal, untrack } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createMemo, createResource, createSignal, untrack } from "solid-js";
+import CheckCircle from "lucide-solid/icons/circle-check";
+import ChevronDown from "lucide-solid/icons/chevron-down";
+import ChevronUp from "lucide-solid/icons/chevron-up";
+import Clock from "lucide-solid/icons/clock";
+import Heart from "lucide-solid/icons/heart";
+import LayoutGrid from "lucide-solid/icons/layout-grid";
+import X from "lucide-solid/icons/x";
 
 import { client } from "@/utils/orpc";
 
 import { ContentListItemRow } from "./app-shell-rows";
+import { AddSourceSection } from "./app-shell-source-sections";
 import {
   contentCatalogFiltersLabel,
   contentColumnClass,
@@ -40,6 +49,7 @@ import {
   type BrowsableCreator,
   type ContentListInput,
   type ContentViewMode,
+  type MiddlePanePanel,
   type ReaderDensity,
   type ShellMode,
 } from "./app-shell.contract";
@@ -128,7 +138,7 @@ interface ContentLoadMoreControlProps {
 
 function ContentLoadMoreControl(props: ContentLoadMoreControlProps) {
   return (
-    <div class="mt-2 border border-border bg-background px-2 py-1.5" data-load-more-control>
+    <div class="mt-2 border-t border-border px-2 py-1.5" data-load-more-control>
       <div class="flex items-center justify-between gap-2">
         <span class="text-[0.68rem] text-muted-foreground" data-loaded-count>
           {props.shownCount} loaded
@@ -136,13 +146,16 @@ function ContentLoadMoreControl(props: ContentLoadMoreControlProps) {
         <Show when={props.hasMore}>
           <button
             type="button"
-            class="border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            class="inline-flex items-center gap-1 rounded-sm border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
             disabled={props.busy}
+            aria-label={props.label}
+            title={props.label}
             onClick={async () => {
               await props.onLoadMore();
             }}
           >
-            {props.busy ? "Loading" : props.label}
+            <ChevronDown size={14} />
+            {props.busy ? "Loading" : "More"}
           </button>
         </Show>
       </div>
@@ -166,6 +179,9 @@ export interface ContentListColumnProps {
   readonly favoritesReloadKey: () => number;
   readonly contentStatuses: () => readonly UserContentStatus[];
   readonly statusReloadKey: () => number;
+  readonly middlePanePanel: () => MiddlePanePanel | null;
+  readonly onCloseMiddlePanePanel: () => void;
+  readonly onAddSource: (value: AddSourceValue) => Promise<void>;
   readonly onSelectContent: (contentItem: CatalogContentListItem) => Promise<void>;
   readonly onFavoriteChanged: () => void;
   readonly onMarkContentOpened: (contentItemId: string) => Promise<void>;
@@ -179,10 +195,17 @@ export function ContentListColumn(props: ContentListColumnProps) {
   const [sourceType, setSourceType] = createSignal<SourceType | null>(null);
   const [viewMode, setViewMode] = createSignal<ContentViewMode>(props.mode === "library" ? "subscribed" : "catalog");
   const [hidePlayed, setHidePlayed] = createSignal(false);
-  const [playlistActionError, setPlaylistActionError] = createSignal<string | null>(null);
   const [appendedContentPage, setAppendedContentPage] = createSignal<AppendedPageState<CatalogContentListItem>>(emptyAppendedPageState());
   const [contentPageBusy, setContentPageBusy] = createSignal(false);
   const [contentPageError, setContentPageError] = createSignal<string | null>(null);
+  const [controlsExpanded, setControlsExpanded] = createSignal(false);
+
+  createEffect(() => {
+    if (props.middlePanePanel() !== null) {
+      setControlsExpanded(false);
+    }
+  });
+
   const authenticatedPlaylistSource = createMemo(() => (props.isAuthenticated() ? "content-list-playlists" : null));
   const [playlists] = createResource(authenticatedPlaylistSource, () => client.overlays.playlists());
   const contentListInput = createMemo(() =>
@@ -282,35 +305,6 @@ export function ContentListColumn(props: ContentListColumnProps) {
   });
   const contentCount = createMemo(() => displayedContentItems().length);
 
-  const contentSectionTitle = createMemo(() => {
-    if (viewMode() === "favorites") {
-      return "Favorites";
-    }
-    if (viewMode() === "history-opened") {
-      return "History/Open";
-    }
-    if (viewMode() === "played") {
-      return "Played";
-    }
-
-    return props.mode === "library" ? "Library" : "Catalog";
-  });
-
-  const contentContextLabel = createMemo(() => {
-    if (viewMode() === "history-opened") {
-      return "Opened videos · local filters";
-    }
-    if (viewMode() === "played") {
-      return "Played videos · local filters";
-    }
-
-    if (viewMode() === "favorites") {
-      return "Saved videos";
-    }
-
-    return props.selectedFeed()?.title ?? props.selectedFeed()?.url ?? props.selectedCreator()?.displayName ?? (props.mode === "library" ? "Subscribed content" : "All sources");
-  });
-
   const visibleContentCollectionLabel = createMemo(() => {
     if (viewMode() === "favorites") {
       return "Favorite Library";
@@ -350,18 +344,12 @@ export function ContentListColumn(props: ContentListColumnProps) {
   const addContentToPlaylist = async (contentItemId: string) => {
     const playlistId = listTargetPlaylistId();
     if (playlistId === null) {
-      setPlaylistActionError("Create or select a playlist before adding videos.");
       return;
     }
 
-    setPlaylistActionError(null);
-    try {
-      await client.overlays.addPlaylistItem({ playlistId, contentItemId });
-      props.onSelectPlaylist(playlistId);
-      props.onPlaylistItemAdded();
-    } catch (error) {
-      setPlaylistActionError(formatError(error));
-    }
+    await client.overlays.addPlaylistItem({ playlistId, contentItemId });
+    props.onSelectPlaylist(playlistId);
+    props.onPlaylistItemAdded();
   };
 
   const loadMoreContentItems = async () => {
@@ -392,141 +380,150 @@ export function ContentListColumn(props: ContentListColumnProps) {
 
   return (
     <section
-      aria-labelledby="content-list-title"
+      aria-label="Content list"
       class={contentColumnClass}
       data-shell-column="content"
       data-selected-creator-id={props.selectedCreator()?.id ?? ""}
       data-selected-feed-id={props.selectedFeed()?.id ?? ""}
     >
       <div class={contentHeaderRegionClass} data-content-header-region>
-        <div class="flex items-center justify-between gap-3">
-          <h2 id="content-list-title" class="text-sm font-semibold tracking-tight text-card-foreground">
-            {contentSectionTitle()}
-          </h2>
-          <span class="min-w-0 truncate border border-border bg-background px-2 py-1 text-[0.68rem] text-muted-foreground">
-            {contentContextLabel()}
-          </span>
-        </div>
-        <p class="mt-2 text-[0.68rem] text-muted-foreground" data-content-loaded-count>
-          {contentCount()} loaded
-        </p>
-        <Show when={props.isAuthenticated()}>
-          <div class="mt-2 grid grid-cols-4 gap-2" aria-label="Content view">
-            <button
-              id={props.mode === "library" ? contentViewModeSubscribedId : contentViewModeAllId}
-              type="button"
-              class="border border-border bg-background px-2 py-1.5 text-xs font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-              aria-pressed={viewMode() === (props.mode === "library" ? "subscribed" : "catalog")}
-              onClick={() => setViewMode(props.mode === "library" ? "subscribed" : "catalog")}
-            >
-              All
-            </button>
-            <button
-              id={contentViewModeFavoritesId}
-              type="button"
-              class="border border-border bg-background px-2 py-1.5 text-xs font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-              aria-pressed={viewMode() === "favorites"}
-              onClick={() => setViewMode("favorites")}
-            >
-              Favorites
-            </button>
-            <button
-              id={contentViewModeHistoryId}
-              type="button"
-              class="border border-border bg-background px-2 py-1.5 text-xs font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-              aria-pressed={viewMode() === "history-opened"}
-              onClick={() => setViewMode("history-opened")}
-            >
-              History/Open
-            </button>
-            <button
-              id={contentViewModePlayedId}
-              type="button"
-              class="border border-border bg-background px-2 py-1.5 text-xs font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-              aria-pressed={viewMode() === "played"}
-              onClick={() => setViewMode("played")}
-            >
-              Played
-            </button>
-          </div>
-        </Show>
-        <Show when={showsCatalogFilters(viewMode()) || (props.isAuthenticated() && (viewMode() === "favorites" || viewMode() === "history-opened" || viewMode() === "played"))}>
-          <div class="mt-2 grid grid-cols-[1fr_auto] gap-2" aria-label={visibleFiltersLabel()}>
-            <label class="sr-only" for={contentSearchInputId}>
-              Search content
-            </label>
-            <input
-              id={contentSearchInputId}
-              class="min-w-0 border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
-              type="search"
-              value={search()}
-              placeholder="Search videos"
-              autocomplete="off"
-              onInput={(event) => setSearch(event.currentTarget.value)}
-            />
-            <label class="sr-only" for={contentSourceFilterId}>
-              Filter content by source
-            </label>
-            <select
-              id={contentSourceFilterId}
-              class="border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
-              value={sourceType() ?? allContentSourceFilterValue}
-              onChange={(event) => setSourceType(toSourceFilterValue(event.currentTarget.value))}
-            >
-              <option value={allContentSourceFilterValue}>All</option>
-              <For each={sourceFilterOptions}>
-                {(source) => <option value={source}>{formatSourceLabel(source)}</option>}
-              </For>
-            </select>
-          </div>
-        </Show>
-        <Show when={props.isAuthenticated()}>
-          <label class="mt-2 flex items-center justify-between gap-2 border border-border bg-background px-2 py-1.5 text-[0.72rem] text-muted-foreground" for={contentHidePlayedInputId}>
-            <span>Hide played</span>
-            <input
-              id={contentHidePlayedInputId}
-              type="checkbox"
-              checked={hidePlayed()}
-              onChange={(event) => setHidePlayed(event.currentTarget.checked)}
-            />
+        <div class="flex items-center gap-2">
+          <label class="sr-only" for={contentSearchInputId}>
+            Search content
           </label>
+          <input
+            id={contentSearchInputId}
+            class="min-w-0 flex-1 border border-input bg-background px-2 py-1 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+            type="search"
+            value={search()}
+            placeholder="Search videos"
+            autocomplete="off"
+            onInput={(event) => setSearch(event.currentTarget.value)}
+          />
+          <Show when={props.isAuthenticated()}>
+            <label class="flex items-center gap-1 text-[0.68rem] text-muted-foreground" for={contentHidePlayedInputId}>
+              <input
+                id={contentHidePlayedInputId}
+                type="checkbox"
+                checked={hidePlayed()}
+                onChange={(event) => setHidePlayed(event.currentTarget.checked)}
+              />
+              <span>Hide played</span>
+            </label>
+          </Show>
+          <span class="shrink-0 text-[0.68rem] text-muted-foreground" data-content-loaded-count>
+            {contentCount()}
+          </span>
+          <button
+            type="button"
+            class="shrink-0 border border-border bg-background p-1 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            aria-label={controlsExpanded() ? "Collapse filters" : "Expand filters"}
+            aria-expanded={controlsExpanded() ? "true" : "false"}
+            onClick={() => setControlsExpanded((prev) => !prev)}
+          >
+            <Show when={controlsExpanded()} fallback={<ChevronUp size={12} />}>
+              <ChevronDown size={12} />
+            </Show>
+          </button>
+        </div>
+        <Show when={controlsExpanded()}>
+          <Show when={props.isAuthenticated()}>
+            <div class="mt-2 grid grid-cols-4 gap-2" aria-label="Content view">
+              <button
+                id={props.mode === "library" ? contentViewModeSubscribedId : contentViewModeAllId}
+                type="button"
+                class="inline-flex flex-col items-center gap-0.5 border border-border bg-background px-2 py-1.5 text-[0.62rem] font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                aria-pressed={viewMode() === (props.mode === "library" ? "subscribed" : "catalog")}
+                aria-label="All"
+                title="All"
+                onClick={() => setViewMode(props.mode === "library" ? "subscribed" : "catalog")}
+              >
+                <LayoutGrid size={14} />
+                <span>All</span>
+              </button>
+              <button
+                id={contentViewModeFavoritesId}
+                type="button"
+                class="inline-flex flex-col items-center gap-0.5 border border-border bg-background px-2 py-1.5 text-[0.62rem] font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                aria-pressed={viewMode() === "favorites"}
+                aria-label="Favorites"
+                title="Favorites"
+                onClick={() => setViewMode("favorites")}
+              >
+                <Heart size={14} />
+                <span>Favs</span>
+              </button>
+              <button
+                id={contentViewModeHistoryId}
+                type="button"
+                class="inline-flex flex-col items-center gap-0.5 border border-border bg-background px-2 py-1.5 text-[0.62rem] font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                aria-pressed={viewMode() === "history-opened"}
+                aria-label="History/Open"
+                title="History/Open"
+                onClick={() => setViewMode("history-opened")}
+              >
+                <Clock size={14} />
+                <span>History</span>
+              </button>
+              <button
+                id={contentViewModePlayedId}
+                type="button"
+                class="inline-flex flex-col items-center gap-0.5 border border-border bg-background px-2 py-1.5 text-[0.62rem] font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                aria-pressed={viewMode() === "played"}
+                aria-label="Played"
+                title="Played"
+                onClick={() => setViewMode("played")}
+              >
+                <CheckCircle size={14} />
+                <span>Played</span>
+              </button>
+            </div>
+          </Show>
+          <Show when={showsCatalogFilters(viewMode()) || (props.isAuthenticated() && (viewMode() === "favorites" || viewMode() === "history-opened" || viewMode() === "played"))}>
+            <div class="mt-2 grid grid-cols-[1fr_auto] gap-2" aria-label={visibleFiltersLabel()}>
+              <label class="sr-only" for={contentSourceFilterId}>
+                Filter content by source
+              </label>
+              <select
+                id={contentSourceFilterId}
+                class="border border-input bg-background px-2 py-1 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+                value={sourceType() ?? allContentSourceFilterValue}
+                onChange={(event) => setSourceType(toSourceFilterValue(event.currentTarget.value))}
+              >
+                <option value={allContentSourceFilterValue}>All</option>
+                <For each={sourceFilterOptions}>
+                  {(source) => <option value={source}>{formatSourceLabel(source)}</option>}
+                </For>
+              </select>
+            </div>
+          </Show>
           <Show when={!showsCatalogFilters(viewMode())}>
             <p class="mt-2 text-[0.68rem] leading-5 text-muted-foreground">
-              Favorites and history are loaded from your Library, then search, source, creator, and Hide played are applied locally to the loaded videos.
+              Filters applied locally to loaded videos.
             </p>
           </Show>
-          <section class="mt-2 border border-border bg-background p-2" aria-label="Add feed-list videos to playlist" data-content-playlist-actions>
-            <div class="grid grid-cols-[auto_1fr] items-center gap-2">
-              <span class="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Playlist</span>
-              <Switch>
-                <Match when={playlists.loading}>
-                  <p class="text-[0.68rem] text-muted-foreground">Loading playlists.</p>
-                </Match>
-                <Match when={playlists.error !== undefined}>
-                  <p class="text-[0.68rem] text-destructive">Playlists unavailable.</p>
-                </Match>
-                <Match when={(playlists()?.length ?? 0) === 0}>
-                  <p class="text-[0.68rem] text-muted-foreground">Create a playlist in Sources to add videos from rows.</p>
-                </Match>
-                <Match when={(playlists()?.length ?? 0) > 0}>
-                  <label class="sr-only" for="content-list-playlist-target">Playlist for row add buttons</label>
-                  <select
-                    id="content-list-playlist-target"
-                    class="min-w-0 border border-input bg-background px-2 py-1 text-[0.68rem] text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
-                    value={listTargetPlaylistId() ?? ""}
-                    onChange={(event) => props.onSelectPlaylist(event.currentTarget.value)}
-                  >
-                    <For each={playlists() ?? emptyPlaylists}>{(playlist) => <option value={playlist.id}>{playlist.name}</option>}</For>
-                  </select>
-                </Match>
-              </Switch>
-            </div>
-            <Show when={playlistActionError()}>
-              {(message) => <p class="mt-2 text-[0.68rem] text-destructive">{message()}</p>}
-            </Show>
-          </section>
         </Show>
       </div>
+      <Show when={props.middlePanePanel() === "add-source"}>
+        <div class="border-b border-border" data-middle-pane-panel="add-source">
+          <div class="flex items-center justify-between gap-2 border-b border-border px-3 py-1.5">
+            <h3 class="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Add source</h3>
+            <button
+              type="button"
+              class="shrink-0 border border-border bg-background p-1 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              aria-label="Close add source panel"
+              title="Close"
+              onClick={props.onCloseMiddlePanePanel}
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <AddSourceSection
+            isAuthenticated={props.isAuthenticated}
+            onSourceAdded={props.onAddSource}
+          />
+        </div>
+      </Show>
       <div class={contentScrollRegionClass} data-content-scroll-region>
         <Switch>
           <Match when={contentItems.loading}>
@@ -554,7 +551,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
             </p>
           </Match>
           <Match when={displayedContentItems().length > 0}>
-              <ol class="space-y-1" aria-label={`${visibleContentCollectionLabel()} videos, ${contentCount()} shown`}>
+              <ol aria-label={`${visibleContentCollectionLabel()} videos, ${contentCount()} shown`}>
                 <For each={displayedContentItems()}>
                   {(contentItem) => (
                     <li>

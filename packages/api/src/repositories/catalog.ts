@@ -118,6 +118,16 @@ export interface CompleteRefreshRunInput {
   readonly errorSummaryJson?: string | null;
 }
 
+export interface UpdateRefreshRunProgressInput {
+  readonly id: string;
+  readonly feedsSucceededCount: number;
+  readonly feedsFailedCount: number;
+  readonly itemsDiscoveredCount: number;
+  readonly itemsCreatedCount: number;
+  readonly itemsUpdatedCount?: number;
+  readonly errorSummaryJson?: string | null;
+}
+
 export interface UpdateFeedRefreshMetadataInput {
   readonly feedId: string;
   readonly refreshedAt: Date;
@@ -148,6 +158,10 @@ export interface ListCatalogFeedsInput {
 }
 
 export interface ListRefreshRunsInput {
+  readonly limit: number;
+}
+
+export interface ListRunningRefreshRunsInput {
   readonly limit: number;
 }
 
@@ -545,6 +559,41 @@ export async function listRefreshRuns(db: RepositoryDb, input: ListRefreshRunsIn
   });
 
   return rows.map(toRefreshRun);
+}
+
+export async function listRunningRefreshRuns(db: RepositoryDb, input: ListRunningRefreshRunsInput): Promise<readonly RefreshRun[]> {
+  const rows = await db.query.refreshRun.findMany({
+    where: eq(schema.refreshRun.status, "running"),
+    orderBy: (refreshRun, { asc }) => [asc(refreshRun.startedAt)],
+    limit: input.limit,
+  });
+
+  return rows.map(toRefreshRun);
+}
+
+export async function getRefreshRunById(db: RepositoryDb, refreshRunId: string): Promise<RefreshRun | null> {
+  const row = await db.query.refreshRun.findFirst({ where: eq(schema.refreshRun.id, refreshRunId) });
+  return row === undefined ? null : toRefreshRun(row);
+}
+
+export async function updateRefreshRunProgress(db: RepositoryDb, input: UpdateRefreshRunProgressInput): Promise<RefreshRun> {
+  await db
+    .update(schema.refreshRun)
+    .set({
+      feedsSucceededCount: input.feedsSucceededCount,
+      feedsFailedCount: input.feedsFailedCount,
+      itemsDiscoveredCount: input.itemsDiscoveredCount,
+      itemsCreatedCount: input.itemsCreatedCount,
+      itemsUpdatedCount: input.itemsUpdatedCount ?? 0,
+      errorSummaryJson: input.errorSummaryJson ?? null,
+    })
+    .where(eq(schema.refreshRun.id, input.id));
+
+  const row = await db.query.refreshRun.findFirst({ where: eq(schema.refreshRun.id, input.id) });
+  if (row === undefined) {
+    throw new Error("Refresh run progress update did not produce a readable catalog record.");
+  }
+  return toRefreshRun(row);
 }
 
 export async function completeRefreshRun(db: RepositoryDb, input: CompleteRefreshRunInput): Promise<RefreshRun> {

@@ -6,30 +6,43 @@ import type {
   UserSetting,
   UserSubscriptionWithCreator,
 } from "@FeedElity/api";
-import { For, Match, Show, Switch, createMemo, createResource, createSignal, untrack } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createMemo, createResource, createSignal, onCleanup, onMount, untrack } from "solid-js";
+import ChevronDown from "lucide-solid/icons/chevron-down";
+import Plus from "lucide-solid/icons/plus";
+import RefreshCw from "lucide-solid/icons/refresh-cw";
+import Settings from "lucide-solid/icons/settings";
+import Zap from "lucide-solid/icons/zap";
 
 import { authClient } from "@/lib/auth-client";
 import { client } from "@/utils/orpc";
 
 import { ContentListColumn } from "./app-shell-content-column";
+import { PaneResizer } from "./pane-resizer";
 import { CreatorSourceRow, FeedRow } from "./app-shell-rows";
 import {
-  AddSourceSection,
   PlaylistColumnSection,
-  RefreshStatusSection,
-  SettingsColumnSection,
   SubscriptionActionButton,
 } from "./app-shell-source-sections";
 import {
   creatorListLimit,
   creatorSearchInputId,
   creatorSourceFilterId,
+  defaultLeftFraction,
+  defaultMiddleFraction,
   emptyAppendedPageState,
   feedListLimit,
+  findNearestSnap,
   formatError,
   formatSourceLabel,
+  leftPaneSnapFractions,
+  leftPaneTabLabels,
+  minLeftFraction,
+  minMiddleFraction,
+  minRightFraction,
+  middlePaneSnapFractions,
   pageHasMoreForKey,
   pageItemsForKey,
+  paneWidthsLocalStorageKey,
   shellGridClass,
   shellRootClass,
   sourceActionsRegionClass,
@@ -38,6 +51,7 @@ import {
   sourceCreatorListRegionClass,
   sourceFeedListRegionClass,
   sourceHeaderRegionClass,
+  toDesktopColumnTemplate,
   toFeedListInput,
   toCreatorListInput,
   toReaderDensityFromSettings,
@@ -45,8 +59,12 @@ import {
   type BrowsableCreator,
   type CreatorListInput,
   type FeedListInput,
+  type LeftPaneTab,
+  type MiddlePanePanel,
+  type PersistedPaneWidths,
   type ReaderDensity,
   type ShellMode,
+  type ViewerMode,
 } from "./app-shell.contract";
 import { SelectedContentViewer } from "./app-shell-viewer";
 
@@ -76,6 +94,7 @@ export {
   formatSettingValue,
   getShellColumnCount,
   hasInternalAppHeader,
+  leftPaneTabLabels,
   playlistDescriptionInputId,
   playlistNameInputId,
   playlistSortInputId,
@@ -109,12 +128,15 @@ export {
   viewerColumnClass,
   viewerScrollRegionClass,
   type ContentViewMode,
+  type LeftPaneTab,
+  type MiddlePanePanel,
   type PlayableSource,
   type ReaderDensity,
   type ShellMode,
   type ShellColumnDefinition,
   type ShellContentSelectionState,
   type ShellSelectionState,
+  type ViewerMode,
 } from "./app-shell.contract";
 
 const allCreatorSourceFilterValue = "all";
@@ -183,6 +205,8 @@ function appendUniqueFeeds(existingFeeds: readonly CatalogFeed[], nextFeeds: rea
 interface CreatorSourceColumnProps {
   readonly isAuthenticated: () => boolean;
   readonly mode: ShellMode;
+  readonly activeTab: () => LeftPaneTab;
+  readonly setActiveTab: (tab: LeftPaneTab) => void;
   readonly readerDensity: () => ReaderDensity;
   readonly settings: () => readonly UserSetting[];
   readonly settingsUnavailable: () => boolean;
@@ -191,6 +215,7 @@ interface CreatorSourceColumnProps {
   readonly selectedFeed: () => CatalogFeed | null;
   readonly selectedPlaylistId: () => string | null;
   readonly playlistItemsReloadKey: () => number;
+  readonly middlePanePanel: () => MiddlePanePanel | null;
   readonly onCatalogChanged: () => void;
   readonly onSettingsChanged: () => Promise<void>;
   readonly onClearCreator: () => void;
@@ -198,6 +223,8 @@ interface CreatorSourceColumnProps {
   readonly onSelectFeed: (feed: CatalogFeed | null) => void;
   readonly onSelectPlaylist: (playlistId: string | null) => void;
   readonly onSelectContent: (contentItem: CatalogContentListItem) => Promise<void>;
+  readonly onOpenMiddlePanePanel: (panel: MiddlePanePanel) => void;
+  readonly onOpenSettings: () => void;
 }
 
 interface LoadMoreControlProps {
@@ -212,7 +239,7 @@ interface LoadMoreControlProps {
 
 function LoadMoreControl(props: LoadMoreControlProps) {
   return (
-    <div class="mt-2 border border-border bg-background px-2 py-1.5" data-load-more-control>
+    <div class="mt-2 border-t border-border px-2 py-1.5" data-load-more-control>
       <div class="flex items-center justify-between gap-2">
         <span class="text-[0.68rem] text-muted-foreground" data-loaded-count>
           {props.shownCount} loaded
@@ -220,13 +247,16 @@ function LoadMoreControl(props: LoadMoreControlProps) {
         <Show when={props.hasMore}>
           <button
             type="button"
-            class="border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            class="inline-flex items-center gap-1 rounded-sm border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
             disabled={props.busy}
+            aria-label={props.label}
+            title={props.label}
             onClick={async () => {
               await props.onLoadMore();
             }}
           >
-            {props.busy ? "Loading" : props.label}
+            <ChevronDown size={14} />
+            {props.busy ? "Loading" : "More"}
           </button>
         </Show>
       </div>
@@ -247,10 +277,15 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [appendedFeedPage, setAppendedFeedPage] = createSignal<AppendedPageState<CatalogFeed>>(emptyAppendedPageState());
   const [feedPageBusy, setFeedPageBusy] = createSignal(false);
   const [feedPageError, setFeedPageError] = createSignal<string | null>(null);
+  const [refreshBusy, setRefreshBusy] = createSignal<"normal" | "force" | null>(null);
+  const [refreshError, setRefreshError] = createSignal<string | null>(null);
+  const [activeRefreshRunId, setActiveRefreshRunId] = createSignal<string | null>(null);
+  const [refreshPollKey, setRefreshPollKey] = createSignal(0);
+  const [refreshCompletedFeedsSeen, setRefreshCompletedFeedsSeen] = createSignal(0);
   const [libraryCreatorLimit, setLibraryCreatorLimit] = createSignal(creatorListLimit);
   const creatorListInput = createMemo(() => toCreatorListInput(search(), sourceType()));
   const creatorListResourceKey = createMemo(() => toCreatorListResourceKey(creatorListInput()));
-  const [creators, { refetch: refetchCreators }] = createResource(
+  const [creators] = createResource(
     creatorListResourceKey,
     () => client.catalog.creators(untrack(creatorListInput)),
   );
@@ -266,13 +301,25 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   );
   const feedListInput = createMemo(() => toFeedListInput(props.selectedCreatorId()));
   const feedListResourceKey = createMemo(() => toFeedListResourceKey(feedListInput()));
-  const [feeds, { refetch: refetchFeeds }] = createResource(
+  const [feeds] = createResource(
     feedListResourceKey,
     () => {
       const input = untrack(feedListInput);
       return input === null ? emptyCatalogFeeds : client.catalog.feeds(input);
     },
   );
+  const activeRefreshStatusResourceKey = createMemo(() => {
+    const runId = activeRefreshRunId();
+    if (runId === null) {
+      return null;
+    }
+
+    return `${runId}\u001f${refreshPollKey().toString()}`;
+  });
+  const [activeRefreshStatus] = createResource(activeRefreshStatusResourceKey, () => {
+    const runId = untrack(activeRefreshRunId);
+    return runId === null ? null : client.refresh.status({ runId, limit: 1, feedResultsLimit: 10 });
+  });
   const subscriptionCreatorIds = createMemo(() => new Set((subscriptions() ?? emptySubscriptions).map((subscription) => subscription.creator.id)));
   const listedCreators = createMemo<readonly BrowsableCreator[]>(() => {
     if (props.mode === "library") {
@@ -373,14 +420,6 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     }
   };
 
-  const refreshSourcePaneResources = async () => {
-    await refetchCreators();
-    await refetchSubscriptions();
-    if (props.selectedCreatorId() !== null) {
-      await refetchFeeds();
-    }
-  };
-
   const updateSubscription = async (creatorId: string, action: SubscriptionAction) => {
     if (action === "subscribe") {
       await client.overlays.subscribeToCreator({ creatorId });
@@ -394,21 +433,148 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     }
   };
 
+  let refreshPollTimer: ReturnType<typeof setTimeout> | null = null;
+  onCleanup(() => {
+    if (refreshPollTimer !== null) {
+      clearTimeout(refreshPollTimer);
+    }
+  });
+
+  createEffect(() => {
+    const loadedStatus = activeRefreshStatus();
+    if (loadedStatus === undefined || loadedStatus === null) {
+      return;
+    }
+
+    const run = loadedStatus.latestRun;
+    if (run === null) {
+      setRefreshBusy(null);
+      setActiveRefreshRunId(null);
+      setRefreshError("Refresh run could not be found.");
+      return;
+    }
+
+    const completedFeeds = run.feedsSucceededCount + run.feedsFailedCount;
+    if (completedFeeds > refreshCompletedFeedsSeen()) {
+      setRefreshCompletedFeedsSeen(completedFeeds);
+      props.onCatalogChanged();
+    }
+
+    if (run.status !== "running") {
+      setRefreshBusy(null);
+      setActiveRefreshRunId(null);
+      return;
+    }
+
+    if (refreshPollTimer !== null) {
+      clearTimeout(refreshPollTimer);
+    }
+    refreshPollTimer = setTimeout(() => {
+      setRefreshPollKey((key) => key + 1);
+    }, 2_500);
+  });
+
+  const runHeaderRefresh = async (force: boolean) => {
+    setRefreshBusy(force ? "force" : "normal");
+    setRefreshError(null);
+    setRefreshCompletedFeedsSeen(0);
+    try {
+      const started = await client.refresh.startAll({ force });
+      setActiveRefreshRunId(started.run.id);
+      setRefreshPollKey((key) => key + 1);
+    } catch (error) {
+      setRefreshError(formatError(error));
+      setRefreshBusy(null);
+    }
+  };
+
+  const refreshProgressText = createMemo(() => {
+    const run = activeRefreshStatus()?.latestRun ?? null;
+    if (run === null) {
+      return refreshBusy() === "force" ? "Force refresh starting." : "Refresh starting.";
+    }
+
+    const completedFeeds = run.feedsSucceededCount + run.feedsFailedCount;
+    const label = run.force ? "Force refresh" : "Refresh";
+    return `${label}: ${completedFeeds}/${run.feedsRequestedCount} feeds.`;
+  });
+
   return (
     <section
-      aria-labelledby="creator-source-title"
+      aria-label="Creator sources"
       class={sourceColumnClass}
       data-shell-column="creators"
     >
       <div class={sourceHeaderRegionClass} data-source-header-region>
         <div class="flex items-center justify-between gap-2">
-          <h2 id="creator-source-title" class="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-            {props.mode === "library" ? "Library" : "Catalog"}
-          </h2>
+          <div class="flex items-center gap-1.5">
+            <button
+              type="button"
+              class="shrink-0 border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+              aria-label="Add source"
+              title="Add source"
+              onClick={() => props.onOpenMiddlePanePanel("add-source")}
+            >
+              <Plus size={14} />
+            </button>
+            <Show when={props.isAuthenticated()}>
+              <div class="relative inline-flex">
+                <button
+                  type="button"
+                  class="shrink-0 border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                  aria-label="Refresh due feeds"
+                  title="Refresh due feeds"
+                  disabled={refreshBusy() !== null}
+                  onClick={async () => runHeaderRefresh(false)}
+                >
+                  <RefreshCw size={14} />
+                </button>
+                <details class="relative">
+                  <summary
+                    class="flex h-full cursor-pointer list-none items-center border border-l-0 border-border bg-background px-1 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                    aria-label="Open force refresh action"
+                    title="Force refresh"
+                  >
+                    <ChevronDown size={12} />
+                  </summary>
+                  <div class="absolute left-0 z-20 mt-1 min-w-40 border border-border bg-popover p-1 shadow-lg">
+                    <button
+                      type="button"
+                      class="flex w-full items-center gap-1 px-2 py-1.5 text-left text-[0.68rem] font-semibold text-popover-foreground transition hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                      aria-label="Force refresh all feeds"
+                      title="Force refresh all feeds"
+                      disabled={refreshBusy() !== null}
+                      onClick={async (event) => {
+                        event.currentTarget.closest("details")?.removeAttribute("open");
+                        await runHeaderRefresh(true);
+                      }}
+                    >
+                      <Zap size={14} /> Force refresh
+                    </button>
+                  </div>
+                </details>
+              </div>
+              <button
+                type="button"
+                class="shrink-0 border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                aria-label="Settings"
+                title="Settings"
+                onClick={() => props.onOpenSettings()}
+              >
+                <Settings size={14} />
+              </button>
+            </Show>
+          </div>
           <span class="text-[0.68rem] text-muted-foreground" data-creator-count>
             {creatorCount()} loaded
           </span>
         </div>
+        <Show when={refreshError()}>
+          {(message) => <p class="mt-1 text-[0.68rem] text-destructive">{message()}</p>}
+        </Show>
+        <Show when={refreshBusy()}>
+          <p class="mt-1 text-[0.68rem] text-muted-foreground" role="status">{refreshProgressText()}</p>
+        </Show>
         <label class="sr-only" for={creatorSearchInputId}>
           Search creators
         </label>
@@ -443,8 +609,40 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
             {(source) => <option value={source}>{formatSourceLabel(source)}</option>}
           </For>
         </select>
+        <div role="tablist" class="flex" data-left-pane-tab-bar>
+          <button
+            role="tab"
+            type="button"
+            aria-selected={props.activeTab() === "library"}
+            class={`flex-1 border-t-2 px-2 py-1.5 text-[0.68rem] font-semibold transition ${props.activeTab() === "library" ? "border-t-ring text-foreground" : "border-t-transparent text-muted-foreground hover:text-foreground"}`}
+            onClick={() => props.setActiveTab("library")}
+          >
+            {props.mode === "library" ? "Library" : "Catalog"}
+          </button>
+          <button
+            role="tab"
+            type="button"
+            aria-selected={props.activeTab() === "feeds"}
+            class={`flex-1 border-t-2 px-2 py-1.5 text-[0.68rem] font-semibold transition ${props.activeTab() === "feeds" ? "border-t-ring text-foreground" : "border-t-transparent text-muted-foreground hover:text-foreground"}`}
+            onClick={() => props.setActiveTab("feeds")}
+          >
+            {leftPaneTabLabels.feeds}
+          </button>
+          <Show when={props.isAuthenticated()}>
+            <button
+              role="tab"
+              type="button"
+              aria-selected={props.activeTab() === "playlists"}
+              class={`flex-1 border-t-2 px-2 py-1.5 text-[0.68rem] font-semibold transition ${props.activeTab() === "playlists" ? "border-t-ring text-foreground" : "border-t-transparent text-muted-foreground hover:text-foreground"}`}
+              onClick={() => props.setActiveTab("playlists")}
+            >
+              {leftPaneTabLabels.playlists}
+            </button>
+          </Show>
+        </div>
       </div>
       <div class={sourceCatalogRegionClass} data-source-catalog-region>
+        <Show when={props.activeTab() === "library"}>
         <div class={sourceCreatorListRegionClass} data-source-scroll-region>
           <Switch>
             <Match when={props.mode === "library" && subscriptions.loading}>
@@ -476,7 +674,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
             <Match when={listedCreators()}>
               {(loadedCreators) => (
                 <>
-                <ol class="space-y-1" aria-label="Creator sources">
+                <ol aria-label="Creator sources">
                   <For each={loadedCreators()}>
                     {(creator) => (
                       <li>
@@ -514,16 +712,13 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
             </Match>
           </Switch>
         </div>
-        <Show when={props.selectedCreator()}>
+        </Show>
+        <Show when={props.activeTab() === "feeds"}>
+        <Show when={props.selectedCreator()} fallback={<div class={sourceFeedListRegionClass} aria-label="Selected source feeds"><p class="text-[0.72rem] leading-5 text-muted-foreground">Select a source to see its feeds.</p></div>}>
           {(creator) => (
             <aside class={sourceFeedListRegionClass} aria-label="Selected source feeds" data-source-feed-scroll-region>
-              <div class="flex items-start justify-between gap-2">
-                <div class="min-w-0">
-                  <p class="truncate text-xs font-semibold text-foreground">{creator().displayName}</p>
-                  <p class="mt-1 text-[0.68rem] text-muted-foreground">
-                    {subscriptionCreatorIds().has(creator().id) ? "Subscribed" : "Catalog creator"}
-                  </p>
-                </div>
+              <div class="flex items-center justify-between gap-2">
+                <p class="min-w-0 truncate text-xs font-semibold text-foreground">{creator().displayName}</p>
                 <Show when={props.isAuthenticated()}>
                   <SubscriptionActionButton
                     creatorId={creator().id}
@@ -574,43 +769,19 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
             </aside>
           )}
         </Show>
-      </div>
-      <div class={sourceActionsRegionClass} data-source-actions-region>
-        <AddSourceSection
-          isAuthenticated={props.isAuthenticated}
-          onSourceAdded={async (value) => {
-            if (props.mode === "library") {
-              await client.overlays.subscribeToCreator({ creatorId: value.creator.id });
-            }
-
-            await refreshSourcePaneResources();
-            props.onSelectCreator(value.creator);
-            props.onCatalogChanged();
-          }}
-        />
-        <RefreshStatusSection
-          isAuthenticated={props.isAuthenticated}
-          selectedCreator={props.selectedCreator}
-          selectedFeed={props.selectedFeed}
-          onRefreshCompleted={async () => {
-            await refreshSourcePaneResources();
-            props.onCatalogChanged();
-          }}
-        />
-        <Show when={props.isAuthenticated()}>
-          <SettingsColumnSection
-            settings={props.settings}
-            settingsUnavailable={props.settingsUnavailable}
-            onSettingsChanged={props.onSettingsChanged}
-          />
-          <PlaylistColumnSection
-            selectedPlaylistId={props.selectedPlaylistId}
-            playlistItemsReloadKey={props.playlistItemsReloadKey}
-            onSelectPlaylist={props.onSelectPlaylist}
-            onSelectContent={props.onSelectContent}
-          />
+        </Show>
+        <Show when={props.activeTab() === "playlists" && props.isAuthenticated()}>
+          <div class={sourceCreatorListRegionClass} data-source-scroll-region>
+            <PlaylistColumnSection
+              selectedPlaylistId={props.selectedPlaylistId}
+              playlistItemsReloadKey={props.playlistItemsReloadKey}
+              onSelectPlaylist={props.onSelectPlaylist}
+              onSelectContent={props.onSelectContent}
+            />
+          </div>
         </Show>
       </div>
+      <div class={sourceActionsRegionClass} data-source-actions-region />
     </section>
   );
 }
@@ -630,8 +801,10 @@ export default function AppShell(props: AppShellProps) {
   const [playlistItemsReloadKey, setPlaylistItemsReloadKey] = createSignal(0);
   const [catalogReloadKey, setCatalogReloadKey] = createSignal(0);
   const [favoritesReloadKey, setFavoritesReloadKey] = createSignal(0);
-  const [statusReloadKey, setStatusReloadKey] = createSignal(0);
   const [statusSelectionError, setStatusSelectionError] = createSignal<string | null>(null);
+  const [activeTab, setActiveTab] = createSignal<LeftPaneTab>("library");
+  const [middlePanePanel, setMiddlePanePanel] = createSignal<MiddlePanePanel | null>(null);
+  const [viewerMode, setViewerMode] = createSignal<ViewerMode>("content");
   const settingsResourceInput = createMemo(() => {
     if (!isAuthenticated()) {
       return null;
@@ -646,15 +819,22 @@ export default function AppShell(props: AppShellProps) {
       return null;
     }
 
-    return statusReloadKey();
+    return "content-statuses";
   });
-  const [contentStatuses, { refetch: refetchContentStatuses }] = createResource(contentStatusesResourceInput, () =>
+  const [contentStatuses, { mutate: mutateContentStatuses }] = createResource(contentStatusesResourceInput, () =>
     client.overlays.contentStatuses(),
   );
   const selectedCreatorId = createMemo(() => selectedCreator()?.id ?? null);
   const selectedContentItemId = createMemo(() => selectedContent()?.id ?? null);
 
   const selectCreator = (creator: BrowsableCreator) => {
+    if (selectedCreator()?.id === creator.id) {
+      setSelectedCreator(null);
+      setSelectedFeed(null);
+      setSelectedContent(null);
+      return;
+    }
+
     setSelectedCreator(creator);
     setSelectedFeed(null);
     setSelectedContent(null);
@@ -665,9 +845,17 @@ export default function AppShell(props: AppShellProps) {
     setSelectedContent(null);
   };
 
-  const reconcileStatusState = async () => {
-    setStatusReloadKey((key) => key + 1);
-    await refetchContentStatuses();
+  const patchContentStatus = (status: UserContentStatus) => {
+    mutateContentStatuses((currentStatuses = emptyUserContentStatuses) => [
+      ...currentStatuses.filter((item) => item.contentItemId !== status.contentItemId || item.status !== status.status),
+      status,
+    ]);
+  };
+
+  const removeContentStatus = (contentItemId: string, status: UserContentStatus["status"]) => {
+    mutateContentStatuses((currentStatuses = emptyUserContentStatuses) =>
+      currentStatuses.filter((item) => item.contentItemId !== contentItemId || item.status !== status),
+    );
   };
 
   const markContentOpened = async (contentItemId: string) => {
@@ -675,8 +863,12 @@ export default function AppShell(props: AppShellProps) {
       return;
     }
 
-    await client.overlays.markContentOpened({ contentItemId });
-    await reconcileStatusState();
+    const result = await client.overlays.toggleContentOpened({ contentItemId });
+    if (result.status === null) {
+      removeContentStatus(contentItemId, "opened");
+      return;
+    }
+    patchContentStatus(result.status);
   };
 
   const markContentPlayed = async (contentItemId: string) => {
@@ -684,26 +876,139 @@ export default function AppShell(props: AppShellProps) {
       return;
     }
 
-    await client.overlays.markContentPlayed({ contentItemId });
-    await reconcileStatusState();
+    const result = await client.overlays.toggleContentPlayed({ contentItemId });
+    if (result.status === null) {
+      removeContentStatus(contentItemId, "played");
+      return;
+    }
+    patchContentStatus(result.status);
+  };
+
+  const autoMarkContentOpened = async (contentItemId: string) => {
+    if (!isAuthenticated()) {
+      return;
+    }
+
+    const result = await client.overlays.markContentOpened({ contentItemId });
+    patchContentStatus(result.status);
   };
 
   const selectContent = async (contentItem: CatalogContentListItem) => {
     setSelectedContent(contentItem);
     setStatusSelectionError(null);
     try {
-      await markContentOpened(contentItem.id);
+      await autoMarkContentOpened(contentItem.id);
     } catch (error) {
       setStatusSelectionError(`Opened status update failed: ${formatError(error)}`);
     }
   };
 
+  let containerEl: HTMLDivElement | undefined;
+
+  const [leftFraction, setLeftFraction] = createSignal(defaultLeftFraction);
+  const [middleFraction, setMiddleFraction] = createSignal(defaultMiddleFraction);
+  const [isDesktop, setIsDesktop] = createSignal(false);
+
+  const rightFraction = createMemo(() => Math.max(0, 1 - leftFraction() - middleFraction()));
+
+  const gridStyle = createMemo(() => ({
+    "grid-template-columns": toDesktopColumnTemplate(leftFraction(), middleFraction(), rightFraction()),
+  }));
+
+  const persistPaneWidths = (left: number, middle: number) => {
+    try {
+      localStorage.setItem(paneWidthsLocalStorageKey, JSON.stringify({ left, middle }));
+    } catch {
+      // localStorage may be unavailable
+    }
+  };
+
+  const handleLeftResize = (deltaX: number) => {
+    const width = containerEl?.clientWidth;
+    if (width === undefined || width === 0) {
+      return;
+    }
+    const delta = deltaX / width;
+    const candidateLeft = leftFraction() + delta;
+    const clampedLeft = Math.max(minLeftFraction, Math.min(candidateLeft, 1 - middleFraction() - minRightFraction));
+    setLeftFraction(clampedLeft);
+  };
+
+  const handleMiddleResize = (deltaX: number) => {
+    const width = containerEl?.clientWidth;
+    if (width === undefined || width === 0) {
+      return;
+    }
+    const delta = deltaX / width;
+    const candidateMiddle = middleFraction() + delta;
+    const clampedMiddle = Math.max(minMiddleFraction, Math.min(candidateMiddle, 1 - leftFraction() - minRightFraction));
+    setMiddleFraction(clampedMiddle);
+  };
+
+  const snapLeft = () => {
+    const snapped = findNearestSnap(leftFraction(), leftPaneSnapFractions);
+    const right = 1 - snapped - middleFraction();
+    if (right >= minRightFraction && middleFraction() >= minMiddleFraction) {
+      setLeftFraction(snapped);
+      persistPaneWidths(snapped, middleFraction());
+      return;
+    }
+    const maxMiddle = 1 - snapped - minRightFraction;
+    if (maxMiddle >= minMiddleFraction) {
+      setLeftFraction(snapped);
+      setMiddleFraction(maxMiddle);
+      persistPaneWidths(snapped, maxMiddle);
+      return;
+    }
+    persistPaneWidths(leftFraction(), middleFraction());
+  };
+
+  const snapMiddle = () => {
+    const snapped = findNearestSnap(middleFraction(), middlePaneSnapFractions);
+    const right = 1 - leftFraction() - snapped;
+    if (right >= minRightFraction) {
+      setMiddleFraction(snapped);
+      persistPaneWidths(leftFraction(), snapped);
+      return;
+    }
+    persistPaneWidths(leftFraction(), middleFraction());
+  };
+
+  onMount(() => {
+    try {
+      const stored = localStorage.getItem(paneWidthsLocalStorageKey);
+      if (stored !== null) {
+        const parsed: unknown = JSON.parse(stored);
+        if (typeof parsed === "object" && parsed !== null && "left" in parsed && "middle" in parsed) {
+          const candidate = parsed as PersistedPaneWidths;
+          if (typeof candidate.left === "number" && typeof candidate.middle === "number") {
+            const right = 1 - candidate.left - candidate.middle;
+            if (candidate.left >= minLeftFraction && candidate.middle >= minMiddleFraction && right >= minRightFraction) {
+              setLeftFraction(candidate.left);
+              setMiddleFraction(candidate.middle);
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore malformed localStorage data
+    }
+
+    const query = window.matchMedia("(min-width: 1024px)");
+    setIsDesktop(query.matches);
+    const handler = (event: MediaQueryListEvent) => setIsDesktop(event.matches);
+    query.addEventListener("change", handler);
+    onCleanup(() => query.removeEventListener("change", handler));
+  });
+
   return (
     <main class={shellRootClass}>
-      <div class={shellGridClass} data-reader-density={readerDensity()}>
+      <div class={shellGridClass} ref={(el) => { containerEl = el; }} style={gridStyle()} data-reader-density={readerDensity()}>
         <CreatorSourceColumn
           isAuthenticated={isAuthenticated}
           mode={mode}
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
           readerDensity={readerDensity}
           settings={() => settings() ?? emptyUserSettings}
           settingsUnavailable={() => settings.error !== undefined}
@@ -712,6 +1017,7 @@ export default function AppShell(props: AppShellProps) {
           selectedFeed={selectedFeed}
           selectedPlaylistId={selectedPlaylistId}
           playlistItemsReloadKey={playlistItemsReloadKey}
+          middlePanePanel={middlePanePanel}
           onCatalogChanged={() => setCatalogReloadKey((key) => key + 1)}
           onSettingsChanged={async () => {
             await refetchSettings();
@@ -725,6 +1031,8 @@ export default function AppShell(props: AppShellProps) {
           onSelectFeed={selectFeed}
           onSelectPlaylist={setSelectedPlaylistId}
           onSelectContent={selectContent}
+          onOpenMiddlePanePanel={setMiddlePanePanel}
+          onOpenSettings={() => setViewerMode("settings")}
         />
         <ContentListColumn
           isAuthenticated={isAuthenticated}
@@ -737,7 +1045,18 @@ export default function AppShell(props: AppShellProps) {
           favoritesReloadKey={favoritesReloadKey}
           readerDensity={readerDensity}
           contentStatuses={() => contentStatuses() ?? emptyUserContentStatuses}
-          statusReloadKey={statusReloadKey}
+          statusReloadKey={() => 0}
+          middlePanePanel={middlePanePanel}
+          onCloseMiddlePanePanel={() => setMiddlePanePanel(null)}
+          onAddSource={async (value) => {
+            if (mode === "library") {
+              await client.overlays.subscribeToCreator({ creatorId: value.creator.id });
+            }
+
+            setSelectedCreator(value.creator);
+            setCatalogReloadKey((key) => key + 1);
+            setMiddlePanePanel(null);
+          }}
           onSelectContent={selectContent}
           onFavoriteChanged={() => setFavoritesReloadKey((key) => key + 1)}
           onMarkContentOpened={markContentOpened}
@@ -753,12 +1072,47 @@ export default function AppShell(props: AppShellProps) {
           contentStatuses={() => contentStatuses() ?? emptyUserContentStatuses}
           contentStatusesLoading={() => contentStatuses.loading}
           statusSelectionError={statusSelectionError}
+          viewerMode={viewerMode}
+          settings={() => settings() ?? emptyUserSettings}
+          settingsUnavailable={() => settings.error !== undefined}
+          onCloseSettings={() => setViewerMode("content")}
+          onSettingsChanged={async () => {
+            await refetchSettings();
+          }}
           onSelectPlaylist={setSelectedPlaylistId}
           onPlaylistItemAdded={() => setPlaylistItemsReloadKey((key) => key + 1)}
           onFavoriteChanged={() => setFavoritesReloadKey((key) => key + 1)}
           onMarkContentOpened={markContentOpened}
           onMarkContentPlayed={markContentPlayed}
         />
+        <Show when={isDesktop()}>
+          <div
+            class="absolute inset-y-0 z-10"
+            style={{ left: `calc(${leftFraction() * 100}% - 3px)`, width: "6px" }}
+          >
+            <PaneResizer
+              onResize={handleLeftResize}
+              onDragEnd={snapLeft}
+              ariaLabel="Resize source pane"
+              ariaValueNow={Math.round(leftFraction() * 100)}
+              ariaValueMin={Math.round(minLeftFraction * 100)}
+              ariaValueMax={Math.round((1 - minMiddleFraction - minRightFraction) * 100)}
+            />
+          </div>
+          <div
+            class="absolute inset-y-0 z-10"
+            style={{ left: `calc(${(leftFraction() + middleFraction()) * 100}% - 3px)`, width: "6px" }}
+          >
+            <PaneResizer
+              onResize={handleMiddleResize}
+              onDragEnd={snapMiddle}
+              ariaLabel="Resize feed pane"
+              ariaValueNow={Math.round(middleFraction() * 100)}
+              ariaValueMin={Math.round(minMiddleFraction * 100)}
+              ariaValueMax={Math.round((1 - minLeftFraction - minRightFraction) * 100)}
+            />
+          </div>
+        </Show>
       </div>
     </main>
   );

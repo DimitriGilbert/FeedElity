@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { CatalogContentSource, RefreshRun, RefreshRunReport, UserSetting } from "@FeedElity/api";
+import type { LeftPaneTab, MiddlePanePanel, ViewerMode } from "./app-shell.contract";
 
 import {
   addSourceHelpId,
@@ -21,14 +22,24 @@ import {
   creatorListLimit,
   creatorSearchInputId,
   creatorSourceFilterId,
+  defaultLeftFraction,
+  defaultMiddleFraction,
   desktopShellGridClass,
   feedListLimit,
+  findNearestSnap,
   firstPageOffset,
   formatRefreshReportSummary,
   formatRefreshRunSummary,
   formatSettingValue,
   getShellColumnCount,
   hasInternalAppHeader,
+  leftPaneSnapFractions,
+  leftPaneTabLabels,
+  middlePaneSnapFractions,
+  minLeftFraction,
+  minMiddleFraction,
+  minRightFraction,
+  paneWidthsLocalStorageKey,
   playlistDescriptionInputId,
   playlistNameInputId,
   playlistSortInputId,
@@ -51,10 +62,10 @@ import {
   sourceFeedListRegionClass,
   sourceHeaderRegionClass,
   toContentListInput,
+  toDesktopColumnTemplate,
   toFeedListInput,
   toPlayableSources,
   toReaderDensityFromSettings,
-  toRefreshStatusResourceKey,
   toSafePlaybackUrl,
   toShellContentSelectionState,
   toCreatorListInput,
@@ -71,6 +82,7 @@ const changedUiSourceFiles = [
   "./app-shell-source-sections.tsx",
   "./app-shell-viewer.tsx",
   "./source-indicator.tsx",
+  "./pane-resizer.tsx",
   "./header.tsx",
   "./user-menu.tsx",
   "./sign-in-form.tsx",
@@ -98,7 +110,8 @@ test("shell exposes the required three-pane RSS reader contract", () => {
   expect(getShellColumnCount()).toBe(3);
   expect(shellColumns.map((column) => column.id)).toEqual([...shellPaneIds]);
   expect(shellColumns.map((column) => column.title)).toEqual(["Sources", "Feed", "Viewer"]);
-  expect(desktopShellGridClass).toBe("lg:grid-cols-[1fr_3fr_8fr]");
+  expect(desktopShellGridClass).toBe("lg:grid lg:h-full lg:min-h-0 lg:overflow-hidden");
+  expect(shellGridClass).not.toContain("grid-cols-[");
 });
 
 test("shell renders exactly three top-level pane sections", async () => {
@@ -109,7 +122,7 @@ test("shell renders exactly three top-level pane sections", async () => {
   expect(source).toContain('data-shell-column="creators"');
   expect(source).toContain('data-shell-column="content"');
   expect(source).toContain('data-shell-column="viewer"');
-  expect(shellGridClass).toContain("lg:grid-cols-[1fr_3fr_8fr]");
+  expect(shellGridClass).not.toContain("grid-cols-[");
 });
 
 test("shell panes use the base responsive column classes without mobile pane state", async () => {
@@ -131,7 +144,7 @@ test("shell panes use the base responsive column classes without mobile pane sta
 });
 
 test("desktop shell panes keep viewport height and hide outer overflow", () => {
-  expect(desktopShellGridClass).toBe("lg:grid-cols-[1fr_3fr_8fr]");
+  expect(desktopShellGridClass).toBe("lg:grid lg:h-full lg:min-h-0 lg:overflow-hidden");
   expect(shellGridClass).toContain("lg:h-full");
   expect(shellGridClass).toContain("lg:min-h-0");
   expect(shellGridClass).toContain("lg:overflow-hidden");
@@ -308,7 +321,7 @@ test("creator source-type filter scopes the creator list without changing playba
   expect(source).toContain(`title="Filters creator rows by catalog source type. Select a creator to inspect all feeds."`);
   expect(source).toContain("creator.sourceType === sourceType()");
   expect(source).toContain("id=\"viewer-source-switcher\"");
-  expect(source).toContain("onChange={(event) => setSelectedSourceId(event.currentTarget.value)}");
+  expect(source).toContain("onClick={() => setSelectedSourceId(source.id)}");
 });
 
 test("selected feed is explicit and shapes catalog content input", async () => {
@@ -324,22 +337,19 @@ test("selected feed is explicit and shapes catalog content input", async () => {
   expect(source).toContain("Filter feed");
 });
 
-test("feed selection exposes real protected feed refresh controls", async () => {
+test("header refresh exposes normal click and force dropdown actions", async () => {
   const source = await readAppShellSource();
 
-  expect(toRefreshStatusResourceKey(false, 0)).toBeNull();
-  expect(toRefreshStatusResourceKey(true, 0)).toBe(0);
-  expect(toRefreshStatusResourceKey(true, 3)).toBe(3);
-  expect(source).toContain("selectedFeed={props.selectedFeed}");
-  expect(source).toContain("onRefreshCompleted={async () => {");
-  expect(source).toContain("const statusResourceKey = createMemo(() => toRefreshStatusResourceKey(props.isAuthenticated(), reloadKey()))");
-  expect(source).toContain("createResource(\n    statusResourceKey,");
-  expect(source).toContain("const runFeedRefresh = async (force: boolean) => {");
-  expect(source).toContain("client.refresh.runFeed({ feedId: feed.id, force })");
-  expect(source).toContain("disabled={busyAction() !== null || props.selectedFeed() === null}");
-  expect(source).toContain("Normal feed");
-  expect(source).toContain("Force feed");
-  expect(source).toContain("Force refresh the selected feed now?");
+  expect(source).toContain("const runHeaderRefresh = async (force: boolean) => {");
+  expect(source).toContain("client.refresh.startAll({ force })");
+  expect(source).toContain("client.refresh.status({ runId, limit: 1, feedResultsLimit: 10 })");
+  expect(source).toContain("props.onCatalogChanged();");
+  expect(source).toContain("props.onCatalogChanged();");
+  expect(source).toContain("aria-label=\"Refresh due feeds\"");
+  expect(source).toContain("onClick={async () => runHeaderRefresh(false)}");
+  expect(source).toContain("aria-label=\"Open force refresh action\"");
+  expect(source).toContain("aria-label=\"Force refresh all feeds\"");
+  expect(source).toContain("await runHeaderRefresh(true);");
 });
 
 test("feed rows expose selected state icon source metadata and real creator images only", async () => {
@@ -421,22 +431,19 @@ test("refresh UI is wired to real API procedures without background polling", as
   const source = await readAppShellSource();
 
   expect(refreshStatusRegionId).toBe("refresh-status-history");
-  expect(source).toContain("client.refresh.status({ limit: 5, feedResultsLimit: 3 })");
   expect(source).not.toContain("props.results.slice");
-  expect(source).toContain("client.refresh.runAll({ force })");
-  expect(source).toContain("client.refresh.runCreator({ creatorId: creator.id, force })");
-  expect(source).toContain("client.refresh.runFeed({ feedId: feed.id, force })");
-  expect(source).toContain('globalThis.confirm("Force refresh all sources now?")');
-  expect(source).toContain("globalThis.confirm(`Force refresh ${creator.displayName} now?`)");
-  expect(source).toContain('globalThis.confirm("Force refresh the selected feed now?")');
-  expect(source).toContain("Manual refresh in progress: {action().replace(\"-\", \" \")}.");
-  expect(source).toContain("Manual only");
-  expect(source).toContain("Sign in to run manual refreshes.");
-  expect(source).toContain("disabled={busyAction() !== null || props.selectedCreator() === null}");
-  expect(source).toContain("disabled={busyAction() !== null || props.selectedFeed() === null}");
+  expect(source).toContain("client.refresh.startAll({ force })");
+  expect(source).toContain("client.refresh.status({ runId, limit: 1, feedResultsLimit: 10 })");
+  expect(source).toContain("props.onCatalogChanged();");
+  expect(source).toContain("Refresh due feeds");
+  expect(source).toContain("Force refresh all feeds");
+  expect(source).not.toContain("globalThis.confirm");
+  expect(source).not.toContain("window.confirm");
+  expect(source).not.toContain("confirm(");
+  expect(source).not.toContain("Open normal and force refresh controls");
+  expect(source).not.toContain("data-middle-pane-panel=\"refresh\"");
+  expect(source).toContain("refreshPollTimer = setTimeout(() => {");
   expect(source).not.toContain("setInterval");
-  expect(source).not.toContain("setTimeout");
-  expect(source).not.toContain("poll");
 });
 
 test("refresh results expose feed labels errors and skipped reasons", async () => {
@@ -488,20 +495,16 @@ test("refresh results expose feed labels errors and skipped reasons", async () =
   };
 
   expect(formatRefreshReportSummary(report)).toBe("partial: 0/1 feeds refreshed, 1 skipped, 0 new items");
-  expect(source).toContain("function formatFeedLabel(feed: Pick<CatalogFeed, \"title\" | \"url\">): string");
-  expect(source).toContain("<RefreshReportFeedList feeds={report().feeds} />");
-  expect(source).toContain("formatRefreshSkipReason(feed.skipReason)");
-  expect(source).toContain("{error().message}");
-  expect(source).toContain("parseRefreshFeedResultError(result.errorSummaryJson)");
-  expect(source).toContain("{formatFeedLabel(result.feed)}");
+  expect(source).not.toContain("<RefreshReportFeedList");
+  expect(source).not.toContain("formatRefreshSkipReason(feed.skipReason)");
+  expect(source).not.toContain("parseRefreshFeedResultError(result.errorSummaryJson)");
 });
 
 test("refresh completion invalidates source pane resources and catalog content", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("onRefreshCompleted={async () => {");
-  expect(source).toContain("await refreshSourcePaneResources();");
   expect(source).toContain("props.onCatalogChanged();");
+  expect(source).toContain("setCatalogReloadKey((key) => key + 1);");
   expect(source).toContain("return \"catalog\";");
   expect(source).toContain("return \"subscribed\";");
   expect(source).toContain("toContentItemsResourceKey(mode, contentListInput(), reloadKey)");
@@ -542,11 +545,8 @@ test("add source UI is authenticated and wired to the real ingestion procedure",
   expect(source).toContain("client.ingestion.addSource({ sourceInput: trimmedSourceInput })");
   expect(source).toContain("const result: AddSourceResult = await client.ingestion.addSource");
   expect(source).toContain("await props.onSourceAdded(result.value)");
-  expect(source).toContain("props.onSelectCreator(value.creator)");
-  expect(source).toContain("props.onCatalogChanged()");
-  expect(source).toContain("catalogReloadKey={catalogReloadKey}");
-  expect(source).toContain("await refetchCreators()");
-  expect(source).toContain("await refetchFeeds()");
+  expect(source).toContain("setSelectedCreator(value.creator)");
+  expect(source).toContain("setCatalogReloadKey((key) => key + 1)");
   expect(source).toContain("Paste a creator, channel, feed, or video URL supported by the YouTube, Odysee, or PeerTube adapters.");
   expect(source).toContain("Sign in to add or subscribe to sources. Public catalog browsing stays available.");
   expect(source).not.toContain("client.ingestion.batchAddSources");
@@ -576,7 +576,6 @@ test("selected viewer is wired to anonymous catalog content detail", async () =>
   expect(source).toContain("const selectedContentItemId = createMemo(() => props.selectedContent()?.id ?? null)");
   expect(source).toContain("data-selected-content-item-id={selectedContentItemId() ?? \"\"}");
   expect(source).toContain("<ContentDetailBody detail={detail()} />");
-  expect(source).toContain("<ContentDetailMetadata detail={detail()} playableSources={playableSources()} />");
 });
 
 test("viewer has no internal metadata aside or rejected selection bar copy", async () => {
@@ -589,15 +588,13 @@ test("viewer has no internal metadata aside or rejected selection bar copy", asy
   expect(source).not.toContain("Choose a public catalog item");
 });
 
-test("selected viewer places playback before metadata in source order", async () => {
+test("selected viewer places playback before body in source order", async () => {
   const source = await readAppShellSource();
   const playbackIndex = source.indexOf("<PlaybackSurface\n                  source={selectedPlayableSource()}");
   const bodyIndex = source.indexOf("<ContentDetailBody detail={detail()} />");
-  const metadataIndex = source.indexOf("<ContentDetailMetadata detail={detail()} playableSources={playableSources()} />");
 
   expect(playbackIndex).toBeGreaterThan(-1);
   expect(bodyIndex).toBeGreaterThan(playbackIndex);
-  expect(metadataIndex).toBeGreaterThan(bodyIndex);
 });
 
 test("selected viewer derives playable sources only from safe API source URLs", () => {
@@ -677,7 +674,7 @@ test("selected viewer supports source switching and real playback render contrac
   const source = await readAppShellSource();
 
   expect(source).toContain("id=\"viewer-source-switcher\"");
-  expect(source).toContain("onChange={(event) => setSelectedSourceId(event.currentTarget.value)}");
+  expect(source).toContain("onClick={() => setSelectedSourceId(source.id)}");
   expect(source).toContain("<iframe");
   expect(source).toContain("src={props.source?.url ?? \"\"}");
   expect(source).toContain("<video class=\"h-full w-full\" src={props.source?.url ?? \"\"} controls preload=\"metadata\" onPlay={props.onNativePlay}>");
@@ -686,36 +683,33 @@ test("selected viewer supports source switching and real playback render contrac
 test("native video playback marks selected content played after authenticated guard", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("onNativePlay={markSelectedContentPlayed}");
+  expect(source).toContain("onNativePlay={toggleSelectedContentPlayed}");
   expect(source).toContain("readonly onNativePlay: () => Promise<void>;");
   expect(source).toContain("onPlay={props.onNativePlay}");
-  expect(source).toContain("const markSelectedContentPlayed = async () => {");
+  expect(source).toContain("const toggleSelectedContentPlayed = async () => {");
   expect(source).toContain("if (!props.isAuthenticated() || contentItemId === null) {\n      return;\n    }\n\n    setStatusActionBusy(\"played\");");
   expect(source).toContain("await props.onMarkContentPlayed(contentItemId);");
-  expect(source).toContain("setStatusActionError(formatError(error));");
   expect(source).toContain("const markContentPlayed = async (contentItemId: string) => {");
-  expect(source).toContain("if (!isAuthenticated()) {\n      return;\n    }\n\n    await client.overlays.markContentPlayed({ contentItemId });");
+  expect(source).toContain("const result = await client.overlays.toggleContentPlayed({ contentItemId });");
+  expect(source).toContain("patchContentStatus(result.status);");
 });
 
 test("iframe playback has explicit real mark played workflow", async () => {
   const source = await readAppShellSource();
 
   expect(source).toContain("<iframe");
-  expect(source).toContain("<ContentStatusActionControls");
-  expect(source).toContain("aria-label=\"Opened and played actions for selected video\"");
-  expect(source).toContain("onMarkPlayed={markSelectedContentPlayed}");
-  expect(source).toContain("{props.status.played ? \"Played\" : \"Mark played\"}");
+  expect(source).toContain("aria-label={selectedContentStatus().played ? \"Unmark played\" : \"Mark played\"}");
   expect(source).toContain("await props.onMarkContentPlayed(contentItemId);");
-  expect(source).toContain("await client.overlays.markContentPlayed({ contentItemId });");
+  expect(source).toContain("await client.overlays.toggleContentPlayed({ contentItemId });");
 });
 
 test("anonymous users never call protected played procedure from viewer or playback", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("<Show when={props.isAuthenticated()}>\n                  <Show when={props.statusSelectionError()}");
-  expect(source).toContain("if (!props.isAuthenticated() || contentItemId === null) {\n      return null;\n    }");
+  expect(source).toContain("<Show when={props.isAuthenticated()}>\n                  <div class=\"mt-2 flex flex-wrap items-center gap-1.5\">");
+  expect(source).toContain("if (!props.isAuthenticated() || contentItemId === null) {\n      return;\n    }");
   expect(source).toContain("const markContentPlayed = async (contentItemId: string) => {");
-  expect(source).toContain("if (!isAuthenticated()) {\n      return;\n    }\n\n    await client.overlays.markContentPlayed({ contentItemId });");
+  expect(source).toContain("const result = await client.overlays.toggleContentPlayed({ contentItemId });");
   expect(source).not.toContain("Sign in to mark played");
   expect(source).not.toContain("Login to mark played");
 });
@@ -762,13 +756,11 @@ test("playlist management is compact and collapsible inside existing panes", asy
 test("add-to-playlist is discoverable from content rows and viewer with real API calls", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("data-content-playlist-actions");
-  expect(source).toContain("content-list-playlist-target");
   expect(source).toContain("data-content-row-add-playlist");
   expect(source).toContain("Add to playlist");
   expect(source).toContain("const addContentToPlaylist = async (contentItemId: string) => {");
   expect(source).toContain("await client.overlays.addPlaylistItem({ playlistId, contentItemId });");
-  expect(source).toContain("<PlaylistAddControls");
+  expect(source).toContain("viewer-playlist-target");
   expect(source).not.toContain("alert(\"playlist");
 });
 
@@ -812,7 +804,6 @@ test("playlist UI remains inside the approved three-pane shell", async () => {
   const source = await readAppShellSource();
 
   expect(source).toContain("<PlaylistColumnSection");
-  expect(source).toContain("<PlaylistAddControls");
   expect(source).not.toContain("data-shell-column=\"playlists\"");
   expect(source).not.toContain("grid-cols-[1fr_3fr_8fr_");
   expect(source).not.toContain("<dialog");
@@ -846,7 +837,7 @@ test("typed settings expose bounded known reader density controls", async () => 
   expect(toReaderDensityFromSettings([])).toBe("comfortable");
   expect(toReaderDensityFromSettings([compactSetting])).toBe("compact");
   expect(toReaderDensityFromSettings([{ ...compactSetting, valueJson: JSON.stringify("wide") }])).toBe("comfortable");
-  expect(source).toContain("<section class=\"mt-2 border border-border bg-background p-2\" aria-labelledby=\"reader-density-title\" data-typed-settings>");
+  expect(source).toContain("<section class=\"mt-2 border-t border-border p-2\" aria-labelledby=\"reader-density-title\" data-typed-settings>");
   expect(source).toContain("id={readerDensityInputId}");
   expect(source).toContain("const nextReaderDensity = readerDensityValues.find((value) => value === event.currentTarget.value)");
   expect(source).toContain("await client.overlays.saveSetting({ key: readerDensitySettingKey, value: nextReaderDensity });");
@@ -876,15 +867,15 @@ test("raw settings editor is retained only as collapsed advanced settings", asyn
   expect(typedSettingsIndex).toBeGreaterThan(-1);
   expect(advancedSettingsIndex).toBeGreaterThan(typedSettingsIndex);
   expect(rawKeyInputIndex).toBeGreaterThan(advancedSettingsIndex);
-  expect(source).toContain("<details class=\"mt-2 border border-border bg-background p-2\" data-advanced-settings>");
+  expect(source).toContain("<details class=\"mt-2 border-t border-border p-2\" data-advanced-settings>");
   expect(source).toContain("<summary class=\"cursor-pointer text-[0.72rem] font-semibold text-foreground\">Advanced settings</summary>");
   expect(source).not.toContain("open data-advanced-settings");
 });
 
-test("settings UI is authenticated-only and remains in the source column", async () => {
+test("settings UI is authenticated-only and renders in the viewer settings takeover", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("data-source-actions-region");
+  expect(source).toContain("data-settings-viewer");
   expect(source).toContain("<SettingsColumnSection");
   expect(source).not.toContain('data-shell-column="settings"');
   expect(source).not.toContain("grid-cols-[1fr_3fr_8fr_");
@@ -914,8 +905,7 @@ test("favorites view is an authenticated content-pane filter using protected pro
   expect(contentViewModeHistoryId).toBe("content-view-history");
   expect(contentViewModePlayedId).toBe("content-view-played");
   expect(source).toContain("const [viewMode, setViewMode] = createSignal<ContentViewMode>(props.mode === \"library\" ? \"subscribed\" : \"catalog\")");
-  expect(source).toContain("<Show when={props.isAuthenticated()}>\n          <div class=\"mt-2 grid grid-cols-4 gap-2\" aria-label=\"Content view\">");
-  expect(source).toContain("return client.overlays.favoriteContentItems()");
+  expect(source).toContain("<Show when={props.isAuthenticated()}>\n            <div class=\"mt-2 grid grid-cols-4 gap-2\" aria-label=\"Content view\">");  expect(source).toContain("return client.overlays.favoriteContentItems()");
   expect(source).toContain("return client.catalog.contentItems(input)");
   expect(source).toContain("setViewMode(\"favorites\")");
   expect(source).toContain("setViewMode(\"history-opened\")");
@@ -932,7 +922,7 @@ test("history and played views use protected contentHistory procedures", async (
   expect(source).toContain("client.overlays.contentHistory({ status: \"played\" })");
   expect(source).toContain("return listOpenedHistoryContentItems()");
   expect(source).toContain("return listPlayedHistoryContentItems()");
-  expect(source).toContain("Favorites and history are loaded from your Library, then search, source, creator, and Hide played are applied locally to the loaded videos.");
+  expect(source).toContain("Filters applied locally to loaded videos.");
 });
 
 test("anonymous users do not call protected status or history procedures", async () => {
@@ -940,7 +930,7 @@ test("anonymous users do not call protected status or history procedures", async
 
   expect(source).toContain("if (props.isAuthenticated() && viewMode() === \"history-opened\")");
   expect(source).toContain("if (props.isAuthenticated() && viewMode() === \"played\")");
-  expect(source).toContain("if (!isAuthenticated()) {\n      return null;\n    }\n\n    return statusReloadKey();");
+  expect(source).toContain("if (!isAuthenticated()) {\n      return null;\n    }\n\n    return \"content-statuses\";");
   expect(source).not.toContain("if (!props.isAuthenticated() && (viewMode() === \"history-opened\" || viewMode() === \"played\"))");
   expect(source).not.toContain("if (!props.isAuthenticated() && hidePlayed())");
   expect(source).not.toContain("Sign in to view history");
@@ -963,8 +953,6 @@ test("favorite toggles are real authenticated actions in list rows and viewer", 
 
   expect(source).toContain("client.overlays.toggleContentFavorite({ contentItemId })");
   expect(source).toContain("<ContentListItemRow");
-  expect(source).toContain("<FavoriteActionControls");
-  expect(source).toContain("Favorite action for selected video");
   expect(source).toContain("onFavoriteChanged={() => setFavoritesReloadKey((key) => key + 1)}");
   expect(source).toContain("props.onFavoriteChanged()");
 });
@@ -989,7 +977,7 @@ test("anonymous users do not see favorite controls or protected favorite calls",
   expect(source).toContain("if (props.isAuthenticated() && viewMode() === \"favorites\")");
   expect(source).toContain("if (!props.isAuthenticated()) {\n      return null;\n    }");
   expect(source).not.toContain("if (!props.isAuthenticated() && viewMode() === \"favorites\")");
-  expect(source).toContain("<Show when={props.isAuthenticated}>\n        <div class=\"mt-2 flex items-center justify-end gap-2\">");
+  expect(source).toContain("<Show when={props.isAuthenticated}>\n        <div class=\"mt-1 flex items-center justify-end gap-1\">");
   expect(source).not.toContain("Sign in to favorite");
   expect(source).not.toContain("Login to favorite");
 });
@@ -1000,7 +988,7 @@ test("content statuses load only for authenticated users", async () => {
 
   expect(source).toContain("client.overlays.contentStatuses()");
   expect(statusProcedureMatches).toHaveLength(1);
-  expect(source).toContain("if (!isAuthenticated()) {\n      return null;\n    }\n\n    return statusReloadKey();");
+  expect(source).toContain("if (!isAuthenticated()) {\n      return null;\n    }\n\n    return \"content-statuses\";");
   expect(source).toContain("createResource(contentStatusesResourceInput, () =>");
   expect(source).toContain("const emptyUserContentStatuses: readonly UserContentStatus[] = [];");
   expect(source).toContain("contentStatuses={() => contentStatuses() ?? emptyUserContentStatuses}");
@@ -1016,7 +1004,7 @@ test("resource reload dependencies use stable primitive source keys", async () =
   expect(source).toContain("function toContentItemsResourceKey(mode: ContentItemsResourceMode, input: ContentListInput, reloadKey: number): string");
   expect(source).toContain("input.offset.toString()");
   expect(source).toContain("createResource(contentItemsResourceKey, () =>");
-  expect(source).toContain("return statusReloadKey();");
+  expect(source).toContain('return "content-statuses";');
   expect(source).toContain("return `${contentItemId}\\u001f${props.favoritesReloadKey().toString()}`;");
   expect(source).not.toContain("return { mode: \"catalog\", input: contentListInput(), reloadKey: props.catalogReloadKey() }");
   expect(source).not.toContain("return { mode: \"subscribed\", input: contentListInput(), reloadKey: props.catalogReloadKey() }");
@@ -1031,7 +1019,7 @@ test("mobile navigation adds no timers observers or unstable resource source obj
   expect(source).not.toContain("ResizeObserver");
   expect(source).not.toContain("MutationObserver");
   expect(source).not.toContain("setInterval");
-  expect(source).not.toContain("setTimeout");
+  expect(source).toContain("refreshPollTimer = setTimeout(() => {");
   expect(source).not.toMatch(/createResource\(\s*\(\) => \(\{/);
   expect(source).not.toMatch(/createResource\(\s*\(\) => \{/);
 });
@@ -1058,11 +1046,9 @@ test("load-more controls page creators feeds and content without timers or obser
   expect(source).not.toContain("setCatalogCreators");
   expect(source).not.toContain("setLoadedFeeds");
   expect(source).not.toContain("setLoadedContentItems");
-  expect(source).not.toContain("createEffect");
   expect(source).toContain("data-content-loaded-count");
   expect(source).not.toContain("IntersectionObserver");
   expect(source).not.toContain("setInterval");
-  expect(source).not.toContain("setTimeout");
 });
 
 test("app shell uses stable module-level empty arrays for fallback accessors", async () => {
@@ -1074,8 +1060,8 @@ test("app shell uses stable module-level empty arrays for fallback accessors", a
   expect(source).toContain("const emptyCatalogContentSources: readonly CatalogContentSource[] = [];");
   expect(source).toContain("settings={() => settings() ?? emptyUserSettings}");
   expect(source).toContain("contentStatuses={() => contentStatuses() ?? emptyUserContentStatuses}");
-  expect(source).toContain("playlists={playlists() ?? emptyPlaylists}");
-  expect(source).toContain("toPlayableSources(contentDetail()?.sources ?? emptyCatalogContentSources)");
+  expect(source).toContain("playlists() ?? emptyPlaylists");
+  expect(source).toContain("contentDetail()?.sources ?? emptyCatalogContentSources");
   expect(source).not.toContain("settings() ?? []");
   expect(source).not.toContain("contentStatuses() ?? []");
   expect(source).not.toContain("playlists() ?? []");
@@ -1086,24 +1072,26 @@ test("selecting content marks opened only after authenticated guard", async () =
 
   expect(source).toContain("const selectContent = async (contentItem: CatalogContentListItem) => {");
   expect(source).toContain("setSelectedContent(contentItem);\n    setStatusSelectionError(null);");
-  expect(source).toContain("await markContentOpened(contentItem.id);");
+  expect(source).toContain("await autoMarkContentOpened(contentItem.id);");
   expect(source).toContain("Opened status update failed: ${formatError(error)}");
   expect(source).toContain("const markContentOpened = async (contentItemId: string) => {");
-  expect(source).toContain("if (!isAuthenticated()) {\n      return;\n    }\n\n    await client.overlays.markContentOpened({ contentItemId });");
+  expect(source).toContain("const result = await client.overlays.toggleContentOpened({ contentItemId });");
 });
 
-test("opened and played actions reconcile status state", async () => {
+test("opened and played actions patch local status state without refetching", async () => {
   const source = await readAppShellSource();
-  const reconcileStatusStart = source.indexOf("const reconcileStatusState = async () => {");
   const markOpenedStart = source.indexOf("const markContentOpened = async (contentItemId: string) => {");
-  const reconcileStatusSource = source.slice(reconcileStatusStart, markOpenedStart);
+  const markPlayedEnd = source.indexOf("const autoMarkContentOpened = async (contentItemId: string) => {");
+  const statusMutationSource = source.slice(markOpenedStart, markPlayedEnd);
 
   expect(source).toContain("await client.overlays.markContentOpened({ contentItemId });");
-  expect(source).toContain("await client.overlays.markContentPlayed({ contentItemId });");
-  expect(source).toContain("const reconcileStatusState = async () => {");
-  expect(reconcileStatusSource).toContain("setStatusReloadKey((key) => key + 1);");
-  expect(reconcileStatusSource).not.toContain("setCatalogReloadKey");
-  expect(reconcileStatusSource).toContain("await refetchContentStatuses();");
+  expect(source).toContain("const [contentStatuses, { mutate: mutateContentStatuses }] = createResource(contentStatusesResourceInput, () =>");
+  expect(source).toContain("const patchContentStatus = (status: UserContentStatus) => {");
+  expect(source).toContain("const removeContentStatus = (contentItemId: string, status: UserContentStatus[\"status\"]) => {");
+  expect(statusMutationSource).toContain("const result = await client.overlays.toggleContentOpened({ contentItemId });");
+  expect(statusMutationSource).toContain("const result = await client.overlays.toggleContentPlayed({ contentItemId });");
+  expect(statusMutationSource).not.toContain("setCatalogReloadKey");
+  expect(statusMutationSource).not.toContain("refetchContentStatuses");
   expect(source).toContain("await props.onMarkContentOpened(contentItemId);");
   expect(source).toContain("await props.onMarkContentPlayed(contentItemId);");
 });
@@ -1130,9 +1118,8 @@ test("content rows expose opened and played state with semantic attributes", asy
   expect(source).toContain('data-content-status="favorite"');
   expect(source).toContain("data-favorite={props.isFavorite ? \"true\" : \"false\"}");
   expect(source).toContain("props.status.played ? \"bg-muted\" : props.status.opened ? \"bg-card\" : \"bg-background\"");
-  expect(source).toContain("{props.status.opened ? \"Opened\" : \"Mark opened\"}");
-  expect(source).toContain("{props.status.played ? \"Played\" : \"Mark played\"}");
-  expect(source).toContain("Opened and played actions for selected video");
+  expect(source).toContain("{props.status.opened ? \"Unmark opened\" : \"Mark opened\"}");
+  expect(source).toContain("{props.status.played ? \"Unmark played\" : \"Mark played\"}");
 });
 
 test("content rows expose concise icon source indicators and avoid fake thumbnails", async () => {
@@ -1182,9 +1169,6 @@ test("row-level source affordances use icons instead of visible source-name chip
 test("creator rows avoid single-source claims while selected feed list shows feed sources", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("title=\"Use the filter above to scope creator rows by catalog source type; select a creator to inspect its feeds.\"");
-  expect(source).toContain("Feeds");
-  expect(source).toContain("Catalog creator");
   expect(source).toContain("aria-label=\"Feeds for selected creator\"");
   expect(source).toContain("<For each={selectedCreatorFeeds()}>");
   expect(source).toContain("<FeedRow");
@@ -1198,8 +1182,7 @@ test("viewer playback source selector stays accessible for multiple playable sou
   expect(source).toContain("<Show when={playableSources().length > 1}>");
   expect(source).toContain("const playbackSourceSwitcherLabel = createMemo(() => `Playback source, ${playableSources().length} options`);");
   expect(source).toContain("aria-label={playbackSourceSwitcherLabel()}");
-  expect(source).toContain("title={playbackSourceSwitcherLabel()}");
-  expect(source).toContain("onChange={(event) => setSelectedSourceId(event.currentTarget.value)}");
+  expect(source).toContain("onClick={() => setSelectedSourceId(source.id)}");
   expect(source).toContain("<For each={playableSources()}>");
 });
 
@@ -1215,15 +1198,13 @@ test("subscription UI is authenticated and wired to real protected procedures", 
   expect(source).toContain("<Show when={props.isAuthenticated && props.showSubscriptionControl}>");
   expect(source).toContain("<Show when={props.isAuthenticated()}>\n                  <SubscriptionActionButton");
   expect(source).toContain("{props.isSubscribed ? \"Unsubscribe\" : \"Subscribe\"}");
-  expect(source).toContain("Subscribed");
   expect(source).not.toContain("Add subscription");
 });
 
-test("creator pane keeps refresh API actions beside subscription actions", async () => {
+test("creator pane keeps header refresh action beside subscription actions", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("client.refresh.runCreator({ creatorId: creator.id, force })");
-  expect(source).toContain("client.refresh.runAll({ force })");
+  expect(source).toContain("client.refresh.startAll({ force })");
   expect(source).toContain("Refresh");
 });
 
@@ -1267,7 +1248,7 @@ test("subscribed library content uses one protected endpoint without client fan-
   expect(source).toContain("return client.overlays.subscribedContentItems(input);");
   expect(source).not.toContain("subscriptions.flatMap");
   expect(source).not.toContain("toSubscribedCreatorContentListInputs");
-  expect(source).toContain("if (props.mode === \"library\") {\n              await client.overlays.subscribeToCreator({ creatorId: value.creator.id });\n            }");
+  expect(source).toContain("if (mode === \"library\") {\n              await client.overlays.subscribeToCreator({ creatorId: value.creator.id });\n            }");
 });
 
 test("viewer empty state uses neutral video copy", async () => {
@@ -1342,4 +1323,117 @@ test("theme file owns the semantic palette", async () => {
   expect(source).toContain("--color-background: var(--background);");
   expect(source).toContain("--color-card: var(--card);");
   expect(source).toContain("--color-muted-foreground: var(--muted-foreground);");
+});
+
+test("pane resizer exposes separator role with aria orientation and keyboard step", async () => {
+  const resizerSource = await Bun.file(new URL("./pane-resizer.tsx", import.meta.url)).text();
+
+  expect(resizerSource).toContain('role="separator"');
+  expect(resizerSource).toContain('aria-orientation="vertical"');
+  expect(resizerSource).toContain("aria-label={props.ariaLabel ?? \"Resize pane\"}");
+  expect(resizerSource).toContain("aria-valuenow={props.ariaValueNow}");
+  expect(resizerSource).toContain("aria-valuemin={props.ariaValueMin}");
+  expect(resizerSource).toContain("aria-valuemax={props.ariaValueMax}");
+  expect(resizerSource).toContain("tabindex=\"0\"");
+  expect(resizerSource).toContain("onKeyDown");
+  expect(resizerSource).toContain("event.key === \"ArrowLeft\"");
+  expect(resizerSource).toContain("event.key === \"ArrowRight\"");
+  expect(resizerSource).toContain("const keyboardStep = 20");
+  expect(resizerSource).toContain("onMouseDown={onMouseDown}");
+  expect(resizerSource).toContain("onTouchStart={onTouchStart}");
+});
+
+test("left pane tabs use role tablist and role tab with aria-selected", async () => {
+  const source = await readAppShellSource();
+
+  expect(source).toContain("role=\"tablist\"");
+  expect(source).toContain("data-left-pane-tab-bar");
+  expect(source).toContain("role=\"tab\"");
+  expect(source).toContain("aria-selected={props.activeTab() === \"library\"}");
+  expect(source).toContain("aria-selected={props.activeTab() === \"feeds\"}");
+  expect(source).toContain("aria-selected={props.activeTab() === \"playlists\"}");
+  expect(source).toContain("{leftPaneTabLabels.feeds}");
+  expect(source).toContain("{leftPaneTabLabels.playlists}");
+});
+
+test("LeftPaneTab type covers library feeds and playlists", () => {
+  const tabs: readonly LeftPaneTab[] = ["library", "feeds", "playlists"];
+
+  expect(tabs).toHaveLength(3);
+  expect(leftPaneTabLabels.library).toBe("Library");
+  expect(leftPaneTabLabels.feeds).toBe("Feeds");
+  expect(leftPaneTabLabels.playlists).toBe("Playlists");
+});
+
+test("MiddlePanePanel type covers add-source panel", () => {
+  const panels: readonly MiddlePanePanel[] = ["add-source"];
+
+  expect(panels).toHaveLength(1);
+});
+
+test("ViewerMode type covers content and settings", () => {
+  const modes: readonly ViewerMode[] = ["content", "settings"];
+
+  expect(modes).toHaveLength(2);
+});
+
+test("snap fractions and toDesktopColumnTemplate produce valid grid templates", () => {
+  expect(leftPaneSnapFractions).toEqual([0.04, 0.08, 0.16]);
+  expect(middlePaneSnapFractions).toEqual([0.16, 0.24, 0.32]);
+  expect(defaultLeftFraction).toBe(0.08);
+  expect(defaultMiddleFraction).toBe(0.24);
+  expect(minLeftFraction).toBe(0.04);
+  expect(minMiddleFraction).toBe(0.16);
+  expect(minRightFraction).toBe(0.40);
+
+  expect(findNearestSnap(0.05, leftPaneSnapFractions)).toBe(0.04);
+  expect(findNearestSnap(0.07, leftPaneSnapFractions)).toBe(0.08);
+  expect(findNearestSnap(0.15, leftPaneSnapFractions)).toBe(0.16);
+  expect(findNearestSnap(0.23, middlePaneSnapFractions)).toBe(0.24);
+  expect(findNearestSnap(0.25, middlePaneSnapFractions)).toBe(0.24);
+
+  expect(toDesktopColumnTemplate(1, 3, 8)).toBe("1fr 3fr 8fr");
+  expect(toDesktopColumnTemplate(0.08, 0.24, 0.68)).toBe("0.08fr 0.24fr 0.68fr");
+});
+
+test("collapsible content controls use aria-expanded and auto-collapse on middle pane panel", async () => {
+  const source = await readAppShellSource();
+
+  expect(source).toContain("const [controlsExpanded, setControlsExpanded] = createSignal(false)");
+  expect(source).toContain("aria-expanded={controlsExpanded() ? \"true\" : \"false\"}");
+  expect(source).toContain("if (props.middlePanePanel() !== null) {\n      setControlsExpanded(false);\n    }");
+});
+
+test("middle pane panels render add-source without refresh panel", async () => {
+  const source = await readAppShellSource();
+
+  expect(source).toContain("data-middle-pane-panel=\"add-source\"");
+  expect(source).not.toContain("data-middle-pane-panel=\"refresh\"");
+  expect(source).toContain("<AddSourceSection");
+  expect(source).not.toContain("<RefreshStatusSection");
+});
+
+test("settings viewer takeover has back button and data-settings-viewer attribute", async () => {
+  const source = await readAppShellSource();
+
+  expect(source).toContain("data-settings-viewer");
+  expect(source).toContain("aria-label=\"Close settings\"");
+  expect(source).toContain("props.onCloseSettings");
+  expect(source).toContain("() => setViewerMode(\"settings\")");
+  expect(source).toContain("() => setViewerMode(\"content\")");
+});
+
+test("pane widths are persisted to localStorage with stable key", () => {
+  expect(paneWidthsLocalStorageKey).toBe("feedelity.pane-widths");
+});
+
+test("viewer source switcher uses button group with SourceTypeIcon instead of select", async () => {
+  const source = await readAppShellSource();
+  const sourceIndicator = await Bun.file(new URL("./source-indicator.tsx", import.meta.url)).text();
+
+  expect(source).toContain("<SourceTypeIcon sourceType={source.sourceType} />");
+  expect(sourceIndicator).toContain("export function SourceTypeIcon");
+  expect(source).toContain("role=\"group\"");
+  expect(source).toContain("aria-pressed={isActive()}");
+  expect(source).toContain("aria-label={source.label}");
 });

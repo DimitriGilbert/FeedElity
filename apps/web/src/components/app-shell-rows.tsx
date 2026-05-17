@@ -1,12 +1,22 @@
 import type { CatalogContentListItem, CatalogFeed, PlaylistItemWithContent } from "@FeedElity/api";
 import type { JSX } from "solid-js";
 import { Show, createMemo, createSignal } from "solid-js";
+import ChevronDown from "lucide-solid/icons/chevron-down";
+import ChevronUp from "lucide-solid/icons/chevron-up";
+import CircleCheck from "lucide-solid/icons/circle-check";
+import CirclePlay from "lucide-solid/icons/circle-play";
+import Eye from "lucide-solid/icons/eye";
+import EyeOff from "lucide-solid/icons/eye-off";
+import Heart from "lucide-solid/icons/heart";
+import Plus from "lucide-solid/icons/plus";
+import Target from "lucide-solid/icons/target";
+import X from "lucide-solid/icons/x";
 
 import type { BrowsableCreator, ContentStatusFlags, ReaderDensity } from "./app-shell.contract";
 import { SourceIconBadge } from "./source-indicator";
 
 function readerDensityPaddingClass(readerDensity: ReaderDensity): string {
-  return readerDensity === "compact" ? "p-1.5" : "p-2";
+  return readerDensity === "compact" ? "px-1 py-1" : "px-1 py-1.5";
 }
 
 function formatFeedDateTime(value: Date | null): string {
@@ -50,32 +60,25 @@ export interface CreatorSourceRowProps {
 }
 
 export function CreatorSourceRow(props: CreatorSourceRowProps) {
+  const creatorRowClass = createMemo(() =>
+    `border-t border-border ${readerDensityPaddingClass(props.readerDensity)} transition hover:border-ring hover:bg-accent hover:text-accent-foreground ${props.isSelected ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : "text-card-foreground"}`,
+  );
+
   return (
-    <div class={`border border-border bg-card ${readerDensityPaddingClass(props.readerDensity)} text-card-foreground transition hover:border-ring hover:bg-accent hover:text-accent-foreground`}>
-      <button
-        type="button"
-        class="w-full text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-        aria-pressed={props.isSelected}
-        data-selected={props.isSelected ? "true" : "false"}
-        onClick={() => props.onSelectCreator(props.creator)}
-      >
-        <span class="block truncate text-xs font-semibold">{props.creator.displayName}</span>
-        <span class="mt-1 flex items-center justify-between gap-2 text-[0.68rem] text-muted-foreground">
-          <span class="truncate" title="Use the filter above to scope creator rows by catalog source type; select a creator to inspect its feeds.">
-            Feeds
-          </span>
-          <Show when={props.isSubscribed}>
-            <span class="shrink-0 border border-border bg-background px-1 py-0.5 text-[0.62rem] font-semibold uppercase tracking-[0.12em] text-foreground">
-              Subscribed
-            </span>
-          </Show>
-        </span>
-      </button>
-      <Show when={props.isAuthenticated && props.showSubscriptionControl}>
-        <div class="mt-2 flex justify-end">
+    <div class={creatorRowClass()} data-selected={props.isSelected ? "true" : "false"}>
+      <div class="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          class="min-w-0 flex-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          aria-pressed={props.isSelected}
+          onClick={() => props.onSelectCreator(props.creator)}
+        >
+          <span class="block truncate text-xs font-semibold">{props.creator.displayName}</span>
+        </button>
+        <Show when={props.isAuthenticated && props.showSubscriptionControl}>
           {props.subscriptionControl}
-        </div>
-      </Show>
+        </Show>
+      </div>
     </div>
   );
 }
@@ -93,7 +96,7 @@ export interface PlaylistItemRowProps {
 
 export function PlaylistItemRow(props: PlaylistItemRowProps) {
   return (
-    <li class="border border-border bg-background p-2">
+    <li class="border-t border-border p-2">
       <button
         type="button"
         class="w-full text-left text-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
@@ -108,34 +111,40 @@ export function PlaylistItemRow(props: PlaylistItemRowProps) {
         <Show when={props.showManualControls}>
           <button
             type="button"
-            class="border border-border bg-card px-1 py-1 text-[0.68rem] text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            class="inline-flex items-center justify-center rounded-sm border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            aria-label="Move up"
+            title="Move up"
             disabled={props.busy || props.itemIndex === 0}
             onClick={async () => {
               await props.onMove(props.item, -1);
             }}
           >
-            Up
+            <ChevronUp size={14} />
           </button>
           <button
             type="button"
-            class="border border-border bg-card px-1 py-1 text-[0.68rem] text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            class="inline-flex items-center justify-center rounded-sm border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            aria-label="Move down"
+            title="Move down"
             disabled={props.busy || props.itemIndex === props.itemCount - 1}
             onClick={async () => {
               await props.onMove(props.item, 1);
             }}
           >
-            Down
+            <ChevronDown size={14} />
           </button>
         </Show>
         <button
           type="button"
-          class="border border-border bg-card px-1 py-1 text-[0.68rem] text-destructive transition hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+          class="inline-flex items-center justify-center rounded-sm border border-border bg-card p-1 text-destructive transition hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+          aria-label="Remove from playlist"
+          title="Remove from playlist"
           disabled={props.busy}
           onClick={async () => {
             await props.onRemove(props.item);
           }}
         >
-          Remove
+          <X size={14} />
         </button>
       </div>
     </li>
@@ -155,7 +164,7 @@ export function FeedRow(props: FeedRowProps) {
   const feedTitle = createMemo(() => props.feed.title ?? props.feed.url);
   const feedUrl = createMemo(() => (props.feed.title === null ? null : props.feed.url));
   const rowClass = createMemo(() =>
-    `border border-border ${readerDensityPaddingClass(props.readerDensity ?? "comfortable")} transition hover:border-ring hover:bg-accent hover:text-accent-foreground ${selected() ? "bg-card" : "bg-background"}`,
+    `border-t border-border ${readerDensityPaddingClass(props.readerDensity ?? "comfortable")} transition hover:border-ring hover:bg-accent hover:text-accent-foreground ${selected() ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : "bg-background"}`,
   );
   const rowBodyClass = createMemo(() =>
     props.creatorImageUrl === null || props.creatorImageUrl === undefined
@@ -252,7 +261,7 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
   const contentButtonClass = createMemo(() =>
     rowImageUrl() === null
       ? "group w-full text-left text-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-      : "group grid w-full grid-cols-[4.75rem_1fr] gap-2 text-left text-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+      : "group grid w-full grid-cols-[7.5rem_1fr] gap-2 text-left text-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
   );
 
   const toggleFavorite = async () => {
@@ -305,7 +314,7 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
 
   return (
     <div
-      class={`border border-border ${readerDensityPaddingClass(props.readerDensity)} transition hover:border-ring hover:bg-accent hover:text-accent-foreground ${props.status.played ? "bg-muted" : props.status.opened ? "bg-card" : "bg-background"}`}
+      class={`border-t border-border ${readerDensityPaddingClass(props.readerDensity)} transition hover:border-ring hover:bg-accent hover:text-accent-foreground ${props.selected ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : props.status.played ? "bg-muted" : props.status.opened ? "bg-card" : "bg-background"}`}
       data-selected={props.selected ? "true" : "false"}
       data-opened={props.status.opened ? "true" : "false"}
       data-played={props.status.played ? "true" : "false"}
@@ -315,6 +324,7 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
         type="button"
         class={contentButtonClass()}
         aria-pressed={props.selected}
+        title={props.contentItem.title}
         onClick={async () => {
           await props.onSelectContent(props.contentItem);
         }}
@@ -334,37 +344,33 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
         <span class="min-w-0">
           <span class="flex items-start justify-between gap-2">
             <span class="min-w-0 truncate text-xs font-semibold">{props.contentItem.title}</span>
-            <span data-content-source-chip data-content-source-indicator>
+            <span class="flex shrink-0 items-center gap-0.5" data-content-source-chip data-content-source-indicator>
+              <Show when={props.selected}>
+                <Target size={14} class="text-selected-foreground" data-content-status="selected" aria-label="Selected" />
+              </Show>
+              <Show when={props.status.opened}>
+                <EyeOff size={12} class="text-muted-foreground" data-content-status="opened" aria-label="Opened" />
+              </Show>
+              <Show when={props.status.played}>
+                <CircleCheck size={12} class="text-muted-foreground" data-content-status="played" aria-label="Played" />
+              </Show>
+              <Show when={props.isFavorite}>
+                <Heart size={12} class="text-primary" data-content-status="favorite" aria-label="Favorite" />
+              </Show>
               <SourceIconBadge sourceType={props.contentItem.sourceType} context="content" sourceCount={props.contentItem.sourceCount} />
             </span>
           </span>
-          <span class="mt-1 block truncate text-[0.68rem] text-muted-foreground">
+          <span class="mt-0.5 block truncate text-[0.68rem] text-muted-foreground">
             {props.contentItem.creator.displayName}
           </span>
-          <span class="mt-1 flex items-center justify-between gap-2 text-[0.68rem] text-muted-foreground">
+          <span class="mt-0.5 flex items-center justify-between gap-2 text-[0.68rem] text-muted-foreground">
             <span class="truncate">{props.formatPublishedAt(props.contentItem.publishedAt)}</span>
             <span class="shrink-0">{props.formatDuration(props.contentItem.durationSeconds)}</span>
           </span>
-          <Show when={props.selected || props.status.opened || props.status.played || props.isFavorite}>
-            <span class="mt-1 flex items-center gap-1 text-[0.62rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-              <Show when={props.selected}>
-                <span class="border border-border bg-background px-1 py-0.5" data-content-status="selected">Selected</span>
-              </Show>
-              <Show when={props.status.opened}>
-                <span class="border border-border bg-background px-1 py-0.5" data-content-status="opened">Opened</span>
-              </Show>
-              <Show when={props.status.played}>
-                <span class="border border-border bg-background px-1 py-0.5" data-content-status="played">Played</span>
-              </Show>
-              <Show when={props.isFavorite}>
-                <span class="border border-border bg-background px-1 py-0.5" data-content-status="favorite">Favorite</span>
-              </Show>
-            </span>
-          </Show>
         </span>
       </button>
       <Show when={props.isAuthenticated}>
-        <div class="mt-2 flex items-center justify-end gap-2">
+        <div class="mt-1 flex items-center justify-end gap-1">
           <Show when={statusError()}>
             {(message) => <p class="min-w-0 flex-1 truncate text-[0.68rem] text-destructive">{message()}</p>}
           </Show>
@@ -376,39 +382,47 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
           </Show>
           <button
             type="button"
-            class="border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            class="rounded-sm border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            aria-label="Add to playlist"
+            title="Add to playlist"
             disabled={playlistBusy() || props.targetPlaylistId === null}
             onClick={addToPlaylist}
             data-content-row-add-playlist
           >
-            Add to playlist
+            <Plus size={12} />
           </button>
           <button
             type="button"
-            class="border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            class="rounded-sm border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
             aria-pressed={props.status.opened}
-            disabled={statusBusy() !== null || props.status.opened}
+            aria-label={props.status.opened ? "Unmark opened" : "Mark opened"}
+            title={props.status.opened ? "Unmark opened" : "Mark opened"}
+            disabled={statusBusy() !== null}
             onClick={markOpened}
           >
-            {props.status.opened ? "Opened" : "Mark opened"}
+            {props.status.opened ? <EyeOff size={12} /> : <Eye size={12} />}
           </button>
           <button
             type="button"
-            class="border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            class="rounded-sm border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
             aria-pressed={props.status.played}
-            disabled={statusBusy() !== null || props.status.played}
+            aria-label={props.status.played ? "Unmark played" : "Mark played"}
+            title={props.status.played ? "Unmark played" : "Mark played"}
+            disabled={statusBusy() !== null}
             onClick={markPlayed}
           >
-            {props.status.played ? "Played" : "Mark played"}
+            {props.status.played ? <CircleCheck size={12} /> : <CirclePlay size={12} />}
           </button>
           <button
             type="button"
-            class="border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            class="rounded-sm border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
             aria-pressed={props.isFavorite}
+            aria-label={props.favoritesView || props.isFavorite ? "Remove favorite" : "Favorite"}
+            title={props.favoritesView || props.isFavorite ? "Remove favorite" : "Favorite"}
             disabled={favoriteBusy()}
             onClick={toggleFavorite}
           >
-            {props.favoritesView || props.isFavorite ? "Remove favorite" : "Favorite"}
+            <Heart size={12} />
           </button>
         </div>
       </Show>

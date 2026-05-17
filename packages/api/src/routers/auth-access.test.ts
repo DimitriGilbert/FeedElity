@@ -4,6 +4,7 @@ import type { Client } from "@libsql/client";
 import { call } from "@orpc/server";
 import { drizzle } from "drizzle-orm/libsql";
 
+import { verifyCredentialPassword } from "@FeedElity/auth/password";
 import * as schema from "@FeedElity/db/schema";
 
 import type { AccountState, Context } from "../context";
@@ -156,6 +157,54 @@ describe("auth access rules", () => {
         context: authenticatedContext(testDatabase.db, "migrated-user", "migrated_pending_password_setup"),
       }),
     ).rejects.toHaveProperty("code", "FORBIDDEN");
+  });
+
+  test("migrated pending users can set an initial credential password", async () => {
+    await insertUser(
+      testDatabase.db,
+      "migrated-user",
+      "migrated@example.test",
+      "migrated_pending_password_setup",
+    );
+
+    const result = await call(appRouter.auth.setupMigratedPassword, {
+      email: "MIGRATED@example.test",
+      password: "new-password-123",
+      name: "Migrated Owner",
+    }, { context: anonymousContext(testDatabase.db) });
+
+    const users = await testDatabase.db.select().from(schema.user);
+    const accounts = await testDatabase.db.select().from(schema.account);
+
+    expect(result).toEqual({ email: "migrated@example.test" });
+    expect(users[0]).toMatchObject({
+      id: "migrated-user",
+      name: "Migrated Owner",
+      accountState: "active",
+    });
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]).toMatchObject({
+      accountId: "migrated-user",
+      providerId: "credential",
+      userId: "migrated-user",
+    });
+    const passwordHash = accounts[0]?.password;
+    if (passwordHash === null || passwordHash === undefined) {
+      throw new Error("Expected migrated credential account to store a password hash.");
+    }
+    expect(passwordHash).not.toBe("new-password-123");
+    expect(await verifyCredentialPassword(passwordHash, "new-password-123")).toBe(true);
+  });
+
+  test("active users cannot be claimed through migrated password setup", async () => {
+    await insertUser(testDatabase.db, "active-user", "active@example.test", "active");
+
+    await expect(
+      call(appRouter.auth.setupMigratedPassword, {
+        email: "active@example.test",
+        password: "new-password-123",
+      }, { context: anonymousContext(testDatabase.db) }),
+    ).rejects.toHaveProperty("code", "NOT_FOUND");
   });
 
   test("authenticated users can idempotently subscribe to an existing catalog creator", async () => {
@@ -483,6 +532,22 @@ const schemaStatements = [
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
   )`,
+  `CREATE TABLE account (
+    id TEXT PRIMARY KEY NOT NULL,
+    account_id TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+    access_token TEXT,
+    refresh_token TEXT,
+    id_token TEXT,
+    access_token_expires_at INTEGER,
+    refresh_token_expires_at INTEGER,
+    scope TEXT,
+    password TEXT,
+    created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
+    updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
+  )`,
+  "CREATE INDEX account_userId_idx ON account (user_id)",
   `CREATE TABLE creator (
     id TEXT PRIMARY KEY NOT NULL,
     source_type TEXT NOT NULL,
@@ -513,6 +578,22 @@ const schemaStatements = [
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
   )`,
   "CREATE UNIQUE INDEX content_item_source_identity_uidx ON content_item (source_type, source_external_id)",
+  `CREATE TABLE content_source (
+    id TEXT PRIMARY KEY NOT NULL,
+    content_item_id TEXT NOT NULL REFERENCES content_item(id) ON DELETE CASCADE,
+    source_type TEXT NOT NULL,
+    source_external_id TEXT,
+    embed_url TEXT,
+    native_media_url TEXT,
+    canonical_url TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    metadata_json TEXT,
+    created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
+    updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
+  )`,
+  "CREATE UNIQUE INDEX content_source_canonical_uidx ON content_source (source_type, canonical_url)",
+  "CREATE UNIQUE INDEX content_source_item_priority_uidx ON content_source (content_item_id, priority)",
+  "CREATE INDEX content_source_content_item_id_idx ON content_source (content_item_id)",
   `CREATE TABLE subscription (
     id TEXT PRIMARY KEY NOT NULL,
     user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,

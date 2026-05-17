@@ -19,6 +19,8 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-selected: var(--selected);
+  --color-selected-foreground: var(--selected-foreground);
 }
 
 :root {
@@ -40,6 +42,8 @@
   --border: oklch(0.31 0.075 257);
   --input: oklch(0.31 0.075 257);
   --ring: oklch(0.83 0.21 126);
+  --selected: oklch(0.23 0.09 160);
+  --selected-foreground: oklch(0.78 0.16 126);
 }
 
 html,
@@ -69,4 +73,47 @@ body {
 button,
 a {
   -webkit-tap-highlight-color: transparent;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(0.38 0.085 257) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: oklch(0.38 0.085 257);
+  border-radius: 3px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.48 0.1 257);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+[data-selected="true"] {
+  background-color: var(--selected);
+}
+
+[data-selected="true"]:hover {
+  background-color: var(--selected);
+}
+
+[data-selected="true"] > * {
+  color: var(--selected-foreground);
+}
+
+[data-selected="true"] .text-muted-foreground {
+  color: oklch(0.65 0.08 160);
 }

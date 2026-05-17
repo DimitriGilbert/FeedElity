@@ -43,6 +43,18 @@ export interface ContentListInput {
 
 export type ShellMode = "catalog" | "library";
 
+export type LeftPaneTab = "library" | "feeds" | "playlists";
+
+export type MiddlePanePanel = "add-source";
+
+export type ViewerMode = "content" | "settings";
+
+export const leftPaneTabLabels: Record<LeftPaneTab, string> = {
+  library: "Library",
+  feeds: "Feeds",
+  playlists: "Playlists",
+};
+
 export type ReaderDensity = "comfortable" | "compact";
 
 export type BrowsableCreator = CatalogCreator | UserSubscriptionWithCreator["creator"];
@@ -138,11 +150,46 @@ export interface PlayableSource {
 
 export const shellPaneIds = ["creators", "content", "viewer"] as const;
 
-export const desktopShellGridClass = "lg:grid-cols-[1fr_3fr_8fr]";
+export const desktopShellGridClass = "lg:grid lg:h-full lg:min-h-0 lg:overflow-hidden";
 
 export const shellRootClass = "h-full w-dvw overflow-x-hidden bg-background text-foreground lg:min-h-0";
 
-export const shellGridClass = `flex min-h-full w-full flex-col lg:grid lg:h-full lg:min-h-0 ${desktopShellGridClass} lg:overflow-hidden`;
+export const shellGridClass = "flex min-h-full w-full flex-col relative lg:grid lg:h-full lg:min-h-0 lg:overflow-hidden";
+
+export const leftPaneSnapFractions: readonly [number, number, number] = [0.04, 0.08, 0.16];
+
+export const middlePaneSnapFractions: readonly [number, number, number] = [0.16, 0.24, 0.32];
+
+export const defaultLeftFraction = 0.08;
+
+export const defaultMiddleFraction = 0.24;
+
+export const minLeftFraction = 0.04;
+
+export const minMiddleFraction = 0.16;
+
+export const minRightFraction = 0.40;
+
+export const paneWidthsLocalStorageKey = "feedelity.pane-widths";
+
+export type PersistedPaneWidths = { left: number; middle: number };
+
+export function findNearestSnap(value: number, snaps: readonly number[]): number {
+  let nearest = snaps[0];
+  let minDiff = Math.abs(value - snaps[0]);
+  for (let i = 1; i < snaps.length; i++) {
+    const diff = Math.abs(value - snaps[i]);
+    if (diff < minDiff) {
+      minDiff = diff;
+      nearest = snaps[i];
+    }
+  }
+  return nearest;
+}
+
+export function toDesktopColumnTemplate(left: number, middle: number, right: number): string {
+  return `${left}fr ${middle}fr ${right}fr`;
+}
 
 export const sourceColumnClass =
   "min-h-[12rem] border-b border-border bg-muted lg:flex lg:h-full lg:min-h-0 lg:flex-col lg:overflow-hidden lg:border-b-0 lg:border-r";
@@ -162,7 +209,7 @@ export const contentColumnClass =
 
 export const contentHeaderRegionClass = "border-b border-border px-3 py-2 lg:shrink-0";
 
-export const contentScrollRegionClass = "px-3 py-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto";
+export const contentScrollRegionClass = "lg:min-h-0 lg:flex-1 lg:overflow-y-auto";
 
 export const viewerColumnClass = "min-h-[30rem] bg-background lg:flex lg:h-full lg:min-h-0 lg:flex-col lg:overflow-hidden";
 

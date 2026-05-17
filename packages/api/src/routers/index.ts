@@ -1,15 +1,20 @@
 import { ORPCError } from "@orpc/server";
 import type { RouterClient } from "@orpc/server";
+import { hashCredentialPassword } from "@FeedElity/auth/password";
+import * as schema from "@FeedElity/db/schema";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import type { AuthenticatedSession } from "../context";
 import { protectedProcedure, publicProcedure } from "../index";
 import { runImportMigration } from "../migration/run-migration";
+import type { RepositoryDb } from "../repositories/catalog";
 import {
   getCatalogContentDetail,
   getCatalogContentItemById,
   getCatalogCreatorSummaryById,
   getCatalogFeedById,
+  getRefreshRunById,
   listCatalogContentItems,
   listCatalogCreators,
   listCatalogFeedsForBrowsing,
@@ -20,8 +25,10 @@ import {
   addPlaylistItem,
   createPlaylist,
   deletePlaylistForUser,
+  deleteContentStatusForUser,
   deleteUserSettingForUser,
   findOrCreateContentStatus,
+  getContentStatusForUser,
   findOrCreateSubscription,
   getNextPlaylistItemPositionForUserPlaylist,
   getPlaylistForUser,
@@ -41,7 +48,7 @@ import {
   updatePlaylistForUser,
 } from "../repositories/overlays";
 import { addSource, batchAddSources } from "../services/ingestion";
-import { refreshAll, refreshCreator, refreshFeed } from "../services/refresh";
+import { refreshAll, refreshCreator, refreshFeed, startRefreshAll } from "../services/refresh";
 import { createSourceAdapterRegistry } from "../sources";
 
 const playlistItemsInput = z.object({
@@ -183,6 +190,7 @@ const refreshFeedInput = z.object({
 
 const refreshStatusInput = z
   .object({
+    runId: z.string().min(1).optional(),
     limit: z.number().int().min(1).max(20).default(5),
     feedResultsLimit: z.number().int().min(1).max(50).default(3),
   })
@@ -190,6 +198,12 @@ const refreshStatusInput = z
 
 const deleteSettingInput = z.object({
   key: settingKeyInput,
+});
+
+const migratedPasswordSetupInput = z.object({
+  email: z.email().transform((email) => email.toLowerCase()),
+  password: z.string().min(8).max(128),
+  name: z.string().trim().min(2).max(120).optional(),
 });
 
 interface PublicSessionView {
@@ -224,6 +238,50 @@ function toPublicSessionView(session: AuthenticatedSession): PublicSessionView {
   };
 }
 
+async function setupMigratedPassword(
+  db: RepositoryDb,
+  input: z.infer<typeof migratedPasswordSetupInput>,
+): Promise<{ readonly email: string }> {
+  const user = await db.query.user.findFirst({ where: eq(schema.user.email, input.email) });
+  if (user === undefined || user.accountState !== "migrated_pending_password_setup") {
+    throw new ORPCError("NOT_FOUND");
+  }
+
+  const password = await hashCredentialPassword(input.password);
+  const now = new Date();
+  const existingCredentialAccount = await db.query.account.findFirst({
+    where: and(eq(schema.account.providerId, "credential"), eq(schema.account.accountId, user.id)),
+  });
+  if (existingCredentialAccount === undefined) {
+    await db
+      .insert(schema.account)
+      .values({
+        id: crypto.randomUUID(),
+        accountId: user.id,
+        providerId: "credential",
+        userId: user.id,
+        password,
+        createdAt: now,
+        updatedAt: now,
+      });
+  } else {
+    await db
+      .update(schema.account)
+      .set({ password, updatedAt: now })
+      .where(eq(schema.account.id, existingCredentialAccount.id));
+  }
+  await db
+    .update(schema.user)
+    .set({
+      accountState: "active",
+      ...(input.name === undefined ? {} : { name: input.name }),
+      updatedAt: now,
+    })
+    .where(eq(schema.user.id, user.id));
+
+  return { email: input.email };
+}
+
 export const appRouter = {
   healthCheck: publicProcedure.handler(() => {
     return "OK";
@@ -234,6 +292,11 @@ export const appRouter = {
         return null;
       }
       return toPublicSessionView(context.session);
+    }),
+  },
+  auth: {
+    setupMigratedPassword: publicProcedure.input(migratedPasswordSetupInput).handler(({ input, context }) => {
+      return setupMigratedPassword(context.db, input);
     }),
   },
   catalog: {
@@ -258,8 +321,10 @@ export const appRouter = {
     status: publicProcedure.input(refreshStatusInput).handler(async ({ input, context }) => {
       const runLimit = input?.limit ?? 5;
       const feedResultsLimit = input?.feedResultsLimit ?? 3;
-      const runs = await listRefreshRuns(context.db, { limit: runLimit });
-      const latestRun = runs.at(0) ?? null;
+      const latestRun = input?.runId === undefined
+        ? (await listRefreshRuns(context.db, { limit: runLimit })).at(0) ?? null
+        : await getRefreshRunById(context.db, input.runId);
+      const runs = input?.runId === undefined ? await listRefreshRuns(context.db, { limit: runLimit }) : latestRun === null ? [] : [latestRun];
       return {
         latestRun,
         recentRuns: runs,
@@ -269,12 +334,26 @@ export const appRouter = {
             : await listRefreshFeedResultsWithFeedsForRun(context.db, { refreshRunId: latestRun.id, limit: feedResultsLimit }),
       };
     }),
+    startAll: protectedProcedure.input(refreshRunInput).handler(async ({ input, context }) => {
+      const started = await startRefreshAll(
+        {
+          db: context.db,
+          sourceRegistry: context.sourceRegistry ?? createSourceAdapterRegistry(),
+          now: () => new Date(),
+          wait: sleep,
+        },
+        { force: input.force ?? false },
+      );
+      scheduleBackgroundRefresh(started.process);
+      return { run: started.run, report: started.report };
+    }),
     runAll: protectedProcedure.input(refreshRunInput).handler(({ input, context }) => {
       return refreshAll(
         {
           db: context.db,
           sourceRegistry: context.sourceRegistry ?? createSourceAdapterRegistry(),
           now: () => new Date(),
+          wait: sleep,
         },
         { force: input.force ?? false },
       );
@@ -289,6 +368,7 @@ export const appRouter = {
           db: context.db,
           sourceRegistry: context.sourceRegistry ?? createSourceAdapterRegistry(),
           now: () => new Date(),
+          wait: sleep,
         },
         { creatorId: input.creatorId, force: input.force ?? false },
       );
@@ -303,6 +383,7 @@ export const appRouter = {
           db: context.db,
           sourceRegistry: context.sourceRegistry ?? createSourceAdapterRegistry(),
           now: () => new Date(),
+          wait: sleep,
         },
         { feedId: input.feedId, force: input.force ?? false },
       );
@@ -408,6 +489,44 @@ export const appRouter = {
       });
 
       return { status };
+    }),
+    toggleContentOpened: protectedProcedure.input(contentStatusInput).handler(async ({ input, context }) => {
+      if ((await getCatalogContentItemById(context.db, input.contentItemId)) === null) {
+        throw new ORPCError("NOT_FOUND");
+      }
+
+      const existing = await getContentStatusForUser(context.db, context.session.user.id, input.contentItemId, "opened");
+      if (existing !== null) {
+        await deleteContentStatusForUser(context.db, context.session.user.id, input.contentItemId, "opened");
+        return { opened: false, status: null };
+      }
+
+      const status = await findOrCreateContentStatus(context.db, {
+        userId: context.session.user.id,
+        contentItemId: input.contentItemId,
+        status: "opened",
+      });
+
+      return { opened: true, status };
+    }),
+    toggleContentPlayed: protectedProcedure.input(contentStatusInput).handler(async ({ input, context }) => {
+      if ((await getCatalogContentItemById(context.db, input.contentItemId)) === null) {
+        throw new ORPCError("NOT_FOUND");
+      }
+
+      const existing = await getContentStatusForUser(context.db, context.session.user.id, input.contentItemId, "played");
+      if (existing !== null) {
+        await deleteContentStatusForUser(context.db, context.session.user.id, input.contentItemId, "played");
+        return { played: false, status: null };
+      }
+
+      const status = await findOrCreateContentStatus(context.db, {
+        userId: context.session.user.id,
+        contentItemId: input.contentItemId,
+        status: "played",
+      });
+
+      return { played: true, status };
     }),
     toggleContentFavorite: protectedProcedure.input(contentStatusInput).handler(async ({ input, context }) => {
       if ((await getCatalogContentItemById(context.db, input.contentItemId)) === null) {
@@ -525,3 +644,17 @@ export const appRouter = {
 };
 export type AppRouter = typeof appRouter;
 export type AppRouterClient = RouterClient<typeof appRouter>;
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+function scheduleBackgroundRefresh(processRefresh: () => Promise<unknown>): void {
+  setTimeout(() => {
+    processRefresh().catch((error: unknown) => {
+      console.error("Background refresh run failed.", error);
+    });
+  }, 0);
+}

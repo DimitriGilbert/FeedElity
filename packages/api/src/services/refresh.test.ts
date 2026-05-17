@@ -12,6 +12,7 @@ import {
   findOrCreateCreator,
   findOrCreateFeed,
   listRefreshFeedResultsForRun,
+  recordRefreshFeedResult,
   type RepositoryDb,
 } from "../repositories/catalog";
 import { createSourceAdapterRegistry, parseHttpUrl } from "../sources";
@@ -22,7 +23,8 @@ import type {
   SourceDetectionFailure,
   SourceDetectionSuccess,
 } from "../sources";
-import { refreshAll, refreshCreator, refreshFeed } from "./refresh";
+import { refreshAll, refreshCreator, refreshFeed, resumeRefreshRun, startRefreshAll } from "./refresh";
+import { nextRefreshDate } from "./refresh-policy";
 
 interface TestDatabase {
   readonly client: Client;
@@ -53,7 +55,7 @@ describe("manual refresh orchestration", () => {
     const feeds = await seedFeeds(testDatabase.db);
     const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
 
-    const result = await refreshAll({ db: testDatabase.db, sourceRegistry: registry, now: fixedNow }, { force: false });
+    const result = await refreshAll(refreshDependencies(registry), { force: false });
 
     expect(sorted(result.selectedFeeds.map((feed) => feed.id))).toEqual(sorted([feeds.dueFeedId, feeds.creatorTwoFeedId]));
     expect(result.run).toMatchObject({
@@ -100,12 +102,15 @@ describe("manual refresh orchestration", () => {
     await seedFeeds(testDatabase.db);
     const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
 
-    await refreshAll({ db: testDatabase.db, sourceRegistry: registry, now: fixedNow }, { force: false });
+    await refreshAll(refreshDependencies(registry), { force: false });
 
     const refreshedFeed = await requireFeed(testDatabase.db, "due-feed");
     const skippedFeed = await requireFeed(testDatabase.db, "not-due-feed");
+    const expectedNextRefreshAfter = nextRefreshDate(new Date("2026-05-16T12:00:00.000Z"), "youtube", refreshedFeed.id, 900);
     expect(refreshedFeed.lastNormalRefreshAt?.toISOString()).toBe("2026-05-16T12:00:00.000Z");
-    expect(refreshedFeed.nextRefreshAfter?.toISOString()).toBe("2026-05-16T12:15:00.000Z");
+    expect(refreshedFeed.nextRefreshAfter?.toISOString()).toBe(expectedNextRefreshAfter.toISOString());
+    expect(refreshedFeed.nextRefreshAfter?.getTime()).toBeGreaterThanOrEqual(new Date("2026-05-16T12:15:00.000Z").getTime());
+    expect(refreshedFeed.nextRefreshAfter?.getTime()).toBeLessThanOrEqual(new Date("2026-05-16T12:30:00.000Z").getTime());
     expect(skippedFeed.lastNormalRefreshAt).toBeNull();
     expect(skippedFeed.nextRefreshAfter?.toISOString()).toBe("2026-05-16T13:00:00.000Z");
   });
@@ -114,7 +119,7 @@ describe("manual refresh orchestration", () => {
     await seedFeeds(testDatabase.db);
     const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
 
-    const result = await refreshAll({ db: testDatabase.db, sourceRegistry: registry, now: fixedNow }, { force: true });
+    const result = await refreshAll(refreshDependencies(registry), { force: true });
 
     expect(sorted(result.selectedFeeds.map((feed) => feed.sourceExternalId))).toEqual(sorted([
       "due-feed",
@@ -136,7 +141,7 @@ describe("manual refresh orchestration", () => {
     await seedFeeds(testDatabase.db);
     const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
 
-    await refreshAll({ db: testDatabase.db, sourceRegistry: registry, now: fixedNow }, { force: true });
+    await refreshAll(refreshDependencies(registry), { force: true });
 
     const dueFeed = await requireFeed(testDatabase.db, "due-feed");
     const noCadenceFeed = await requireFeed(testDatabase.db, "no-cadence-feed");
@@ -151,7 +156,7 @@ describe("manual refresh orchestration", () => {
     const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
 
     const result = await refreshCreator(
-      { db: testDatabase.db, sourceRegistry: registry, now: fixedNow },
+      refreshDependencies(registry),
       { creatorId: feeds.creatorOneId, force: true },
     );
 
@@ -168,7 +173,7 @@ describe("manual refresh orchestration", () => {
     const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
 
     const result = await refreshFeed(
-      { db: testDatabase.db, sourceRegistry: registry, now: fixedNow },
+      refreshDependencies(registry),
       { feedId: feeds.notDueFeedId, force: true },
     );
 
@@ -182,7 +187,7 @@ describe("manual refresh orchestration", () => {
     const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
 
     const result = await refreshFeed(
-      { db: testDatabase.db, sourceRegistry: registry, now: fixedNow },
+      refreshDependencies(registry),
       { feedId: feeds.notDueFeedId, force: false },
     );
 
@@ -210,7 +215,7 @@ describe("manual refresh orchestration", () => {
     const feeds = await seedFeeds(testDatabase.db);
     const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: ["not-due-feed"] })]);
 
-    const result = await refreshAll({ db: testDatabase.db, sourceRegistry: registry, now: fixedNow }, { force: true });
+    const result = await refreshAll(refreshDependencies(registry), { force: true });
 
     expect(result.run).toMatchObject({ status: "partial", feedsRequestedCount: 4, feedsSucceededCount: 3, feedsFailedCount: 1 });
     expect(result.run.errorSummaryJson).toContain(feeds.notDueFeedId);
@@ -229,7 +234,7 @@ describe("manual refresh orchestration", () => {
       createRefreshAdapter({ failingFeedExternalIds: ["due-feed", "creator-two-feed"] }),
     ]);
 
-    const result = await refreshAll({ db: testDatabase.db, sourceRegistry: registry, now: fixedNow }, { force: false });
+    const result = await refreshAll(refreshDependencies(registry), { force: false });
 
     expect(result.run).toMatchObject({
       status: "failed",
@@ -248,6 +253,61 @@ describe("manual refresh orchestration", () => {
       ]),
     );
   });
+
+  test("force refresh paces every selected feed without dropping any requested feed", async () => {
+    await seedFeeds(testDatabase.db);
+    const waitedMilliseconds: number[] = [];
+    const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
+
+    const result = await refreshAll(refreshDependencies(registry, async (milliseconds) => {
+      waitedMilliseconds.push(milliseconds);
+    }), { force: true });
+
+    expect(result.selectedFeeds).toHaveLength(4);
+    expect(result.feedResults).toHaveLength(4);
+    expect(result.run).toMatchObject({ force: true, feedsRequestedCount: 4, feedsSucceededCount: 4, feedsSkippedCount: 0 });
+    expect(waitedMilliseconds).toEqual([30_000, 30_000, 30_000]);
+  });
+
+  test("start refresh creates a running run before background processing completes", async () => {
+    await seedFeeds(testDatabase.db);
+    const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
+
+    const started = await startRefreshAll(refreshDependencies(registry), { force: true });
+
+    expect(started.run).toMatchObject({ status: "running", force: true, feedsRequestedCount: 4, feedsSucceededCount: 0 });
+    expect(started.feedResults).toHaveLength(0);
+    expect(await listRefreshFeedResultsForRun(testDatabase.db, { refreshRunId: started.run.id, limit: 10 })).toHaveLength(0);
+
+    const completed = await started.process();
+
+    expect(completed.run).toMatchObject({ status: "succeeded", feedsRequestedCount: 4, feedsSucceededCount: 4 });
+    expect(completed.feedResults).toHaveLength(4);
+  });
+
+  test("resume refresh skips feeds that already have recorded results", async () => {
+    await seedFeeds(testDatabase.db);
+    const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
+    const started = await startRefreshAll(refreshDependencies(registry), { force: true });
+    const alreadyCompletedFeed = started.selectedFeeds[0];
+    if (alreadyCompletedFeed === undefined) {
+      throw new Error("Expected seeded refresh to select feeds.");
+    }
+    await recordRefreshFeedResult(testDatabase.db, {
+      refreshRunId: started.run.id,
+      feedId: alreadyCompletedFeed.id,
+      status: "succeeded",
+      itemsDiscoveredCount: 1,
+      itemsCreatedCount: 1,
+      startedAt: fixedNow(),
+      completedAt: fixedNow(),
+    });
+
+    const completed = await resumeRefreshRun(refreshDependencies(registry), started.run);
+
+    expect(completed.run).toMatchObject({ status: "succeeded", feedsRequestedCount: 4, feedsSucceededCount: 4 });
+    expect(completed.feedResults).toHaveLength(4);
+  });
 });
 
 function fixedNow(): Date {
@@ -256,6 +316,13 @@ function fixedNow(): Date {
 
 function sorted(values: readonly string[]): readonly string[] {
   return [...values].sort();
+}
+
+function refreshDependencies(
+  registry: ReturnType<typeof createSourceAdapterRegistry>,
+  wait: (milliseconds: number) => Promise<void> = async () => {},
+) {
+  return { db: testDatabase.db, sourceRegistry: registry, now: fixedNow, wait };
 }
 
 async function seedFeeds(db: RepositoryDb): Promise<TestFeedSet> {

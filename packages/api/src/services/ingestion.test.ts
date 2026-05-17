@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import * as schema from "@FeedElity/db/schema";
 
 import type { RepositoryDb } from "../repositories/catalog";
-import { listCatalogContentItems } from "../repositories/catalog";
+import { findFeedBySourceIdentity, listCatalogContentItems } from "../repositories/catalog";
 import { listSubscriptionsForUser } from "../repositories/overlays";
 import { createSourceAdapterRegistry, parseHttpUrl } from "../sources";
 import type {
@@ -48,11 +48,25 @@ describe("source ingestion service", () => {
     }
     expect(result.value.creator).toMatchObject({ sourceType: "youtube", sourceExternalId: "creator-one" });
     expect(result.value.feeds).toHaveLength(1);
+    expect(result.value.feeds.at(0)?.refreshCadenceSeconds).toBe(7200);
     expect(result.value.contentItems).toHaveLength(2);
     expect(result.value.contentSources).toHaveLength(2);
     expect(result.value.feedContents).toHaveLength(2);
     expect(result.value.subscription).toBeNull();
     expect(result.value.created).toEqual({ creators: 1, feeds: 1, contentItems: 2, contentSources: 2 });
+  });
+
+  test("applies source default cadence when adapter payload omits refresh cadence", async () => {
+    const registry = createSourceAdapterRegistry([createFixtureAdapter()]);
+
+    const result = await addSource(
+      { db: testDatabase.db, sourceRegistry: registry },
+      { sourceInput: "https://ingest.example.test/creator-one" },
+    );
+
+    expect(result.ok).toBe(true);
+    const feed = await findFeedBySourceIdentity(testDatabase.db, { sourceType: "youtube", sourceExternalId: "creator-one-feed" });
+    expect(feed?.refreshCadenceSeconds).toBe(7200);
   });
 
   test("repeating the same source input reuses existing records without duplicates", async () => {

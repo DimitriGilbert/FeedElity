@@ -22,6 +22,7 @@ import type { UserSubscription } from "../domain/overlays";
 import type { SourceAdapterError, SourceAdapterErrorCode } from "../sources";
 import type { SourceAdapterRegistry } from "../sources/registry";
 import type { NormalizedCatalogPayload } from "../sources/types";
+import { effectiveRefreshCadenceSeconds } from "./refresh-policy";
 
 export interface IngestionServiceDependencies {
   readonly db: RepositoryDb;
@@ -183,7 +184,11 @@ export async function persistNormalizedCatalog(
 
   for (const feedInput of payload.feeds) {
     const existingFeed = await findFeedBySourceIdentity(db, feedInput);
-    const feed = await findOrCreateFeed(db, { ...feedInput, creatorId: creator.id });
+    const feed = await findOrCreateFeed(db, {
+      ...feedInput,
+      creatorId: creator.id,
+      refreshCadenceSeconds: effectiveRefreshCadenceSeconds(feedInput.sourceType, feedInput.refreshCadenceSeconds),
+    });
     feeds.push(feed);
     if (existingFeed === null) {
       createdFeeds += 1;
