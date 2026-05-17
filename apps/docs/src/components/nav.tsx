@@ -20,7 +20,7 @@ function Nav() {
 
         <div className="hidden items-center gap-8 md:flex">
           <a
-            href="#features"
+            href="/#features"
             className="text-sm text-neutral-400 transition-colors hover:text-neutral-50"
           >
             Features
@@ -31,22 +31,15 @@ function Nav() {
           >
             Docs
           </Link>
-          <a
-            href="https://github.com/anomalyco/FeedElity"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-sm text-neutral-400 transition-colors hover:text-neutral-50"
-          >
-            GitHub
-          </a>
         </div>
 
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" asChild>
+          <Button variant="ghost" size="icon" asChild>
             <a
-              href="https://github.com/anomalyco/FeedElity"
+              href="https://github.com/DimitriGilbert/Re-FeedElity"
               target="_blank"
               rel="noopener noreferrer"
+              aria-label="GitHub"
             >
               <svg
                 className="size-4"
@@ -60,7 +53,6 @@ function Nav() {
                   clipRule="evenodd"
                 />
               </svg>
-              <span className="hidden sm:inline">GitHub</span>
             </a>
           </Button>
 
@@ -80,7 +72,7 @@ function Nav() {
         <div className="border-t border-neutral-800/50 bg-neutral-950/95 backdrop-blur-xl md:hidden">
           <div className="mx-auto flex max-w-6xl flex-col gap-4 px-6 py-4">
             <a
-              href="#features"
+              href="/#features"
               className="text-sm text-neutral-400 transition-colors hover:text-neutral-50"
               onClick={() => setMobileOpen(false)}
             >
@@ -94,7 +86,7 @@ function Nav() {
               Docs
             </Link>
             <a
-              href="https://github.com/anomalyco/FeedElity"
+              href="https://github.com/DimitriGilbert/Re-FeedElity"
               target="_blank"
               rel="noopener noreferrer"
               className="text-sm text-neutral-400 transition-colors hover:text-neutral-50"

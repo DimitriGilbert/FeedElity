@@ -22,7 +22,7 @@ function Footer() {
 
           <nav className="flex flex-col gap-3 text-sm">
             <a
-              href="#features"
+              href="/#features"
               className="text-neutral-400 transition-colors hover:text-neutral-50"
             >
               Features
@@ -34,7 +34,7 @@ function Footer() {
               Documentation
             </Link>
             <a
-              href="https://github.com/anomalyco/FeedElity"
+              href="https://github.com/DimitriGilbert/Re-FeedElity"
               target="_blank"
               rel="noopener noreferrer"
               className="text-neutral-400 transition-colors hover:text-neutral-50"

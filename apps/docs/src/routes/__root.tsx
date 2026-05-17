@@ -36,6 +36,7 @@ export const Route = createRootRoute({
       },
       { property: "og:url", content: siteUrl },
       { property: "og:type", content: "website" },
+      { property: "og:image", content: `${siteUrl}/og-image.png` },
       { name: "twitter:card", content: "summary_large_image" },
       {
         name: "twitter:title",
