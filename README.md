@@ -4,6 +4,8 @@ Follow creators across YouTube, Odysee, and PeerTube from one place. FeedElity p
 
 Runs as a web app or a desktop app (Electrobun). Local-first by default: the desktop shell bundles its own backend and SQLite database. Point it at a remote server instead if you want.
 
+![FeedElity screenshot — three-column layout with a video opened in the viewer](apps/docs/public/screenshot.webp)
+
 ## Stack
 
 | Layer | Choice |
