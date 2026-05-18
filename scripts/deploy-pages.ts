@@ -11,6 +11,21 @@ const domain =
 const repoRoot = resolve(import.meta.dirname, "..");
 const distDir = resolve(repoRoot, "apps/docs/dist/client");
 
+function run(command: string, args: string[]): number {
+  const proc = Bun.spawnSync([command, ...args], {
+    cwd: repoRoot,
+    stdio: ["inherit", "inherit", "inherit"],
+  });
+  if (proc.exitCode !== 0) {
+    console.error(`Failed: ${command} ${args.join(" ")}`);
+    process.exit(proc.exitCode ?? 1);
+  }
+  return proc.exitCode;
+}
+
+console.log("Building docs site...");
+run("bun", ["run", "build", "--filter", "docs"]);
+
 writeFileSync(resolve(distDir, "CNAME"), `${domain}\n`);
 
 console.log(`Deploying docs from ${distDir} to gh-pages (domain: ${domain})`);
