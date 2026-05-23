@@ -1,18 +1,17 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import { DocsLayout } from "~/components/docs-layout";
+import { buildSeo } from "~/lib/seo";
 
 export const Route = createFileRoute("/docs/self-hosting")({
-  head: () => ({
-    meta: [
-      { title: "Self-Hosting Guide - FeedElity Docs" },
-      {
-        name: "description",
-        content:
-          "Deploy FeedElity on your own server. Docker Compose, environment variables, database options, backup, and updating.",
-      },
-    ],
-  }),
+  head: () =>
+    buildSeo({
+      title: "Self-Hosting Guide - FeedElity Docs",
+      description:
+        "Deploy FeedElity on your own server. Docker Compose, environment variables, database options, backup, and updating.",
+      pathname: "/docs/self-hosting",
+      type: "article",
+    }),
   component: SelfHostingPage,
 });
 

@@ -1,18 +1,17 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import { DocsLayout } from "~/components/docs-layout";
+import { buildSeo } from "~/lib/seo";
 
 export const Route = createFileRoute("/docs/getting-started")({
-  head: () => ({
-    meta: [
-      { title: "Getting Started - FeedElity Docs" },
-      {
-        name: "description",
-        content:
-          "Get started with FeedElity. Learn what FeedElity is, requirements, quick start, and development setup.",
-      },
-    ],
-  }),
+  head: () =>
+    buildSeo({
+      title: "Getting Started - FeedElity Docs",
+      description:
+        "Get started with FeedElity. Learn what FeedElity is, requirements, quick start, and development setup.",
+      pathname: "/docs/getting-started",
+      type: "article",
+    }),
   component: GettingStartedPage,
 });
 

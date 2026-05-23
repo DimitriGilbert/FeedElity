@@ -8,11 +8,28 @@ import {
 import appCss from "../styles.css?url";
 import { Nav } from "~/components/nav";
 import { Footer } from "~/components/footer";
+import {
+  defaultDescription,
+  defaultTitle,
+  getSiteUrl,
+  siteName,
+} from "~/lib/seo";
 
-const siteUrl =
-  typeof import.meta !== "undefined" && import.meta.env?.VITE_SITE_URL
-    ? import.meta.env.VITE_SITE_URL
-    : "https://feedelity.dbuild.dev";
+const organizationJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  name: siteName,
+  url: getSiteUrl(),
+  sameAs: ["https://github.com/DimitriGilbert/FeedElity"],
+};
+
+const websiteJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  name: siteName,
+  url: getSiteUrl(),
+  description: defaultDescription,
+};
 
 export const Route = createRootRoute({
   head: () => ({
@@ -22,30 +39,10 @@ export const Route = createRootRoute({
         name: "viewport",
         content: "width=device-width, initial-scale=1",
       },
-      { title: "FeedElity - Self-Hosted Video RSS Client" },
+      { title: defaultTitle },
       {
         name: "description",
-        content:
-          "Personal-first, video-oriented RSS client. Follow creators across YouTube, Odysee, and PeerTube. Self-hosted, private, modern.",
-      },
-      { property: "og:title", content: "FeedElity - Self-Hosted Video RSS Client" },
-      {
-        property: "og:description",
-        content:
-          "Personal-first, video-oriented RSS client. Self-hosted, private, modern.",
-      },
-      { property: "og:url", content: siteUrl },
-      { property: "og:type", content: "website" },
-      { property: "og:image", content: `${siteUrl}/og-image.png` },
-      { name: "twitter:card", content: "summary_large_image" },
-      {
-        name: "twitter:title",
-        content: "FeedElity - Self-Hosted Video RSS Client",
-      },
-      {
-        name: "twitter:description",
-        content:
-          "Personal-first, video-oriented RSS client. Self-hosted, private, modern.",
+        content: defaultDescription,
       },
     ],
     links: [
@@ -53,6 +50,8 @@ export const Route = createRootRoute({
         rel: "stylesheet",
         href: appCss,
       },
+      { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
+      { rel: "manifest", href: "/site.webmanifest" },
     ],
   }),
   component: RootLayout,
@@ -63,6 +62,15 @@ function RootLayout() {
     <html lang="en">
       <head>
         <HeadContent />
+        <script
+          type="application/ld+json"
+          // JSON-LD is static site metadata and must be emitted as raw JSON.
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationJsonLd) }}
+        />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteJsonLd) }}
+        />
       </head>
       <body>
         <Nav />

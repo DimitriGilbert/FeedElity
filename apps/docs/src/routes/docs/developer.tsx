@@ -1,18 +1,17 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import { DocsLayout } from "~/components/docs-layout";
+import { buildSeo } from "~/lib/seo";
 
 export const Route = createFileRoute("/docs/developer")({
-  head: () => ({
-    meta: [
-      { title: "Developer Docs - FeedElity Docs" },
-      {
-        name: "description",
-        content:
-          "Developer documentation for FeedElity. Architecture, monorepo layout, API layer, database schema, source adapters, and contributing guidelines.",
-      },
-    ],
-  }),
+  head: () =>
+    buildSeo({
+      title: "Developer Docs - FeedElity Docs",
+      description:
+        "Developer documentation for FeedElity. Architecture, monorepo layout, API layer, database schema, source adapters, and contributing guidelines.",
+      pathname: "/docs/developer",
+      type: "article",
+    }),
   component: DeveloperPage,
 });
 

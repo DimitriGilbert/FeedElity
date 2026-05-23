@@ -1,0 +1,17 @@
+{
+  "name": "FeedElity Docs",
+  "short_name": "FeedElity",
+  "description": "Self-hosted video RSS client for following creators across YouTube, Odysee, and PeerTube.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

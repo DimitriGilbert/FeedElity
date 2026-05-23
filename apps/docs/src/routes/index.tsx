@@ -2,19 +2,17 @@ import { createFileRoute } from "@tanstack/react-router";
 
 import { Hero } from "~/components/hero";
 import { Features } from "~/components/features";
+import { buildSeo } from "~/lib/seo";
 import screenshotUrl from "../../public/screenshot.webp";
 
 export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "FeedElity - Self-Hosted Video RSS Client" },
-      {
-        name: "description",
-        content:
-          "Follow creators across YouTube, Odysee, and PeerTube in one fast, self-hosted interface. No tracking, no algorithms, just your content.",
-      },
-    ],
-  }),
+  head: () =>
+    buildSeo({
+      title: "FeedElity - Self-Hosted Video RSS Client",
+      description:
+        "Follow creators across YouTube, Odysee, and PeerTube in one fast, self-hosted interface. No tracking, no algorithms, just your content.",
+      pathname: "/",
+    }),
   component: HomePage,
 });
 
