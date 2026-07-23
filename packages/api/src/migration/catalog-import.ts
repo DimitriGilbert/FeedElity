@@ -13,6 +13,7 @@ import type { RecordMigrationMappingInput } from "../repositories/overlays";
 import type {
   StrapiContentOption,
   StrapiCreator,
+  StrapiCreatorContent,
   StrapiCreatorOption,
   StrapiExport,
   StrapiFeed,
@@ -56,6 +57,42 @@ export interface ImportStrapiCatalogInput {
 interface SupportedFeed {
   readonly oldFeed: StrapiFeed;
   readonly sourceType: SourceType;
+}
+
+/**
+ * Source identity and playback URLs extracted from a content_option with
+ * name="source". The legacy catalog stored each content item's source identity
+ * here (not only in feed_content links), so this is what lets content without a
+ * feed_content link still be imported.
+ */
+interface SourceIdentity {
+  readonly sourceType: SourceType;
+  readonly sourceExternalId: string;
+  readonly canonicalUrl: string;
+  readonly embedUrl: string | null;
+  readonly nativeMediaUrl: string | null;
+}
+
+/**
+ * Resolved source identity for a content item, preferring a feed_content link's
+ * external id and falling back to the content's source option.
+ */
+interface ResolvedContentSource {
+  readonly sourceType: SourceType;
+  readonly sourceExternalId: string;
+  readonly canonicalUrl: string;
+  readonly embedUrl: string | null;
+  readonly nativeMediaUrl: string | null;
+}
+
+/**
+ * Anchor identity for a creator. Feed-backed creators anchor on their feed's
+ * source identity; creators without a supported feed anchor on a stable legacy
+ * identity derived from their content's source type.
+ */
+interface CreatorAnchor {
+  readonly sourceType: SourceType;
+  readonly sourceExternalId: string;
 }
 
 interface ContentOptionSummary {
@@ -104,6 +141,11 @@ export async function importStrapiCatalog(
   const feedOptionsByFeedId = groupByOldId(input.exportData.feedOptions, (feedOption) => feedOption.feedId);
   const contentOptionsByContentId = groupByOldId(input.exportData.contentOptions, (contentOption) => contentOption.contentId);
   const creatorOptionsByCreatorId = groupByOldId(input.exportData.creatorOptions, (creatorOption) => creatorOption.creatorId);
+  // The legacy catalog stored each content item's source identity in a content_option
+  // with name="source". Index it by content id so content without a feed_content link
+  // can still be imported, and creators without a feed can still be anchored.
+  const sourceOptionByContentId = indexSourceOptionByContentId(input.exportData.contentOptions);
+  const creatorContentsByCreatorId = groupByOldId(input.exportData.creatorContents, (content) => content.creatorId);
 
   for (const feed of input.exportData.feeds) {
     const sourceType = toSupportedSourceType(feed.type);
@@ -120,13 +162,13 @@ export async function importStrapiCatalog(
   }
 
   for (const creator of input.exportData.creators) {
-    const primaryFeed = findPrimarySupportedFeedForCreator(creator, supportedFeeds);
-    if (primaryFeed === null) {
+    const anchor = resolveCreatorAnchor(creator, supportedFeeds, creatorContentsByCreatorId, sourceOptionByContentId);
+    if (anchor === null) {
       reportedRecords.push({
         oldEntityType: "strapi-creator",
         oldEntityId: String(creator.oldId),
         severity: "error",
-        reason: "Creator has no supported feed source to anchor a global catalog identity.",
+        reason: "Creator has no supported feed source and no content with a supported source to anchor a global catalog identity.",
       });
       continue;
     }
@@ -134,8 +176,8 @@ export async function importStrapiCatalog(
     const creatorOptionSummary = summarizeCreatorOptions(creatorOptionsByCreatorId.get(creator.oldId) ?? []);
     reportedRecords.push(...creatorOptionSummary.reportedRecords);
     const importedCreator = await findOrCreateCreator(db, {
-      sourceType: primaryFeed.sourceType,
-      sourceExternalId: primaryFeed.oldFeed.externalId,
+      sourceType: anchor.sourceType,
+      sourceExternalId: anchor.sourceExternalId,
       displayName: creator.name,
       description: creator.description,
       imageUrl: creatorOptionSummary.imageUrl,
@@ -203,31 +245,32 @@ export async function importStrapiCatalog(
       .filter(isImportableFeedContentLink);
     const primaryLink = importableLinks[0];
     const creatorId = importedCreatorIds.get(content.creatorId);
+    const optionSummary = summarizeContentOptions(contentOptionsByContentId.get(content.oldId) ?? []);
 
-    if (primaryLink === undefined || creatorId === undefined) {
+    const resolvedSource = resolveContentSource(primaryLink ?? null, optionSummary.sourceOption, sourceOptionByContentId.get(content.oldId) ?? null);
+
+    if (resolvedSource === null || creatorId === undefined) {
       reportedRecords.push({
         oldEntityType: "strapi-creator-content",
         oldEntityId: String(content.oldId),
         severity: "error",
-        reason: "Content has no importable feed content link with a supported source.",
+        reason: "Content has no importable feed content link and no supported source option to anchor a global catalog identity.",
       });
-      reportedRecords.push(...summarizeContentOptions(contentOptionsByContentId.get(content.oldId) ?? []).reportedRecords);
+      reportedRecords.push(...optionSummary.reportedRecords);
       continue;
     }
 
-    const optionSummary = summarizeContentOptions(contentOptionsByContentId.get(content.oldId) ?? []);
     reportedRecords.push(...optionSummary.reportedRecords);
-    const sourceUrls = buildContentSourceUrls(primaryLink.feed.sourceType, primaryLink.feedContent.externalId, optionSummary.sourceOption);
     const importedContent = await findOrCreateContentItem(db, {
       creatorId,
-      sourceType: primaryLink.feed.sourceType,
-      sourceExternalId: primaryLink.feedContent.externalId,
+      sourceType: resolvedSource.sourceType,
+      sourceExternalId: resolvedSource.sourceExternalId,
       title: content.title,
       description: content.data,
       publishedAt: content.publication === null ? null : new Date(content.publication),
       durationSeconds: optionSummary.durationSeconds,
       thumbnailUrl: optionSummary.thumbnailUrl,
-      canonicalUrl: sourceUrls.canonicalUrl,
+      canonicalUrl: resolvedSource.canonicalUrl,
       metadataJson: JSON.stringify({ strapiOldId: content.oldId, strapiType: content.type }),
     });
     importedContentIds.set(content.oldId, importedContent.id);
@@ -241,11 +284,11 @@ export async function importStrapiCatalog(
 
     const importedSource = await findOrCreateContentSource(db, {
       contentItemId: importedContent.id,
-      sourceType: primaryLink.feed.sourceType,
-      sourceExternalId: primaryLink.feedContent.externalId,
-      canonicalUrl: sourceUrls.canonicalUrl,
-      embedUrl: sourceUrls.embedUrl,
-      nativeMediaUrl: sourceUrls.nativeMediaUrl,
+      sourceType: resolvedSource.sourceType,
+      sourceExternalId: resolvedSource.sourceExternalId,
+      canonicalUrl: resolvedSource.canonicalUrl,
+      embedUrl: resolvedSource.embedUrl,
+      nativeMediaUrl: resolvedSource.nativeMediaUrl,
       priority: 0,
       metadataJson: JSON.stringify({ strapiContentOldId: content.oldId }),
     });
@@ -346,16 +389,203 @@ function toSupportedSourceType(sourceType: StrapiFeed["type"]): SourceType | nul
   return null;
 }
 
-function findPrimarySupportedFeedForCreator(
+function toSupportedSourceTypeFromString(sourceType: string): SourceType | null {
+  if (sourceType === "youtube" || sourceType === "odysee" || sourceType === "peertube") {
+    return sourceType;
+  }
+  return null;
+}
+
+/**
+ * Indexes the first content_option with name="source" per content id. The legacy
+ * catalog stored source identity here, so this is the fallback identity for content
+ * without a feed_content link and the anchor for creators without a feed.
+ */
+function indexSourceOptionByContentId(
+  contentOptions: readonly StrapiContentOption[],
+): Map<number, StrapiContentOption> {
+  const byContentId = new Map<number, StrapiContentOption>();
+  for (const option of contentOptions) {
+    if (option.name === "source" && !byContentId.has(option.contentId)) {
+      byContentId.set(option.contentId, option);
+    }
+  }
+  return byContentId;
+}
+
+/**
+ * Extracts a stable source identity and playback URLs from a source content_option.
+ * The option's type may carry the platform directly (e.g. "youtube") or be a Strapi
+ * media type (e.g. "video:embed"); in the latter case the platform is inferred from
+ * the URL host. Returns null for unsupported or unparseable sources.
+ */
+function extractSourceIdentity(sourceOption: StrapiContentOption): SourceIdentity | null {
+  const explicitType = toSupportedSourceTypeFromString(sourceOption.type);
+  const url = parseAbsoluteUrl(sourceOption.value);
+  if (url === null) {
+    return null;
+  }
+
+  const sourceType = explicitType ?? inferSourceTypeFromUrl(url);
+  if (sourceType === null) {
+    return null;
+  }
+
+  if (sourceType === "youtube") {
+    const videoId = extractYouTubeVideoId(url, sourceOption.value);
+    if (videoId === null) {
+      return null;
+    }
+    return {
+      sourceType,
+      sourceExternalId: videoId,
+      canonicalUrl: `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,
+      embedUrl: `https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}`,
+      nativeMediaUrl: null,
+    };
+  }
+
+  if (sourceType === "odysee") {
+    const claimHash = extractOdyseeClaimHash(sourceOption.value);
+    if (claimHash === null) {
+      return null;
+    }
+    return {
+      sourceType,
+      sourceExternalId: claimHash,
+      canonicalUrl: `https://odysee.com/$/embed/${claimHash}`,
+      embedUrl: `https://odysee.com/$/embed/${claimHash}`,
+      nativeMediaUrl: sourceOption.value,
+    };
+  }
+
+  // PeerTube: the source URL is the best canonical identity available.
+  return {
+    sourceType,
+    sourceExternalId: sourceOption.value,
+    canonicalUrl: sourceOption.value,
+    embedUrl: null,
+    nativeMediaUrl: null,
+  };
+}
+
+function inferSourceTypeFromUrl(url: URL): SourceType | null {
+  const host = url.hostname;
+  if (host === "www.youtube-nocookie.com" || host === "www.youtube.com" || host === "youtube.com" || host === "youtu.be") {
+    return "youtube";
+  }
+  if (host === "odysee.com" || host === "player.odycdn.com") {
+    return "odysee";
+  }
+  return null;
+}
+
+function extractYouTubeVideoId(url: URL, rawValue: string): string | null {
+  if (url.pathname.startsWith("/embed/")) {
+    const segment = url.pathname.slice("/embed/".length).split("/")[0];
+    if (isNonEmptyText(segment)) {
+      return segment;
+    }
+  }
+  const queryVideoId = url.searchParams.get("v");
+  if (queryVideoId !== null && isNonEmptyText(queryVideoId)) {
+    return queryVideoId;
+  }
+  if (url.hostname === "youtu.be") {
+    const segment = url.pathname.slice(1).split("/")[0];
+    if (isNonEmptyText(segment)) {
+      return segment;
+    }
+  }
+  const shortIdMatch = rawValue.match(/[?&]([A-Za-z0-9_-]{6,})$/);
+  return shortIdMatch === null ? null : shortIdMatch[1] ?? null;
+}
+
+function extractOdyseeClaimHash(rawValue: string): string | null {
+  const match = rawValue.match(/([0-9a-fA-F]{40})/);
+  return match === null || match[1] === undefined ? null : match[1].toLowerCase();
+}
+
+function parseAbsoluteUrl(value: string): URL | null {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      return null;
+    }
+    return url;
+  } catch (error: unknown) {
+    if (error instanceof TypeError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Resolves a creator's anchor identity. Creators with a supported feed anchor on
+ * that feed's source identity (unchanged behavior). Creators without a feed anchor
+ * on the source type of their first content item that carries a supported source
+ * option, using a stable legacy identity so the import stays idempotent.
+ */
+function resolveCreatorAnchor(
   creator: StrapiCreator,
   supportedFeeds: ReadonlyMap<number, SupportedFeed>,
-): SupportedFeed | null {
+  creatorContentsByCreatorId: ReadonlyMap<number, readonly StrapiCreatorContent[]>,
+  sourceOptionByContentId: ReadonlyMap<number, StrapiContentOption>,
+): CreatorAnchor | null {
   for (const supportedFeed of supportedFeeds.values()) {
     if (supportedFeed.oldFeed.creatorId === creator.oldId) {
-      return supportedFeed;
+      return { sourceType: supportedFeed.sourceType, sourceExternalId: supportedFeed.oldFeed.externalId };
+    }
+  }
+
+  const contents = creatorContentsByCreatorId.get(creator.oldId) ?? [];
+  for (const content of contents) {
+    const sourceOption = sourceOptionByContentId.get(content.oldId);
+    if (sourceOption === undefined) {
+      continue;
+    }
+    const identity = extractSourceIdentity(sourceOption);
+    if (identity !== null) {
+      return {
+        sourceType: identity.sourceType,
+        sourceExternalId: `legacy-creator:${creator.oldId}`,
+      };
     }
   }
   return null;
+}
+
+/**
+ * Resolves a content item's source identity, preferring a feed_content link's
+ * external id (with URLs built from the feed's source type) and falling back to
+ * the source content_option when no feed_content link is importable.
+ */
+function resolveContentSource(
+  primaryLink: { readonly feed: SupportedFeed; readonly feedContent: StrapiFeedContent } | null,
+  summarySourceOption: StrapiContentOption | null,
+  indexedSourceOption: StrapiContentOption | null,
+): ResolvedContentSource | null {
+  if (primaryLink !== null) {
+    const sourceUrls = buildContentSourceUrls(primaryLink.feed.sourceType, primaryLink.feedContent.externalId, summarySourceOption);
+    return {
+      sourceType: primaryLink.feed.sourceType,
+      sourceExternalId: primaryLink.feedContent.externalId,
+      canonicalUrl: sourceUrls.canonicalUrl,
+      embedUrl: sourceUrls.embedUrl,
+      nativeMediaUrl: sourceUrls.nativeMediaUrl,
+    };
+  }
+
+  const sourceOption = indexedSourceOption ?? summarySourceOption;
+  if (sourceOption === null) {
+    return null;
+  }
+  const identity = extractSourceIdentity(sourceOption);
+  if (identity === null) {
+    return null;
+  }
+  return identity;
 }
 
 function summarizeCreatorOptions(options: readonly StrapiCreatorOption[]): CreatorOptionSummary {

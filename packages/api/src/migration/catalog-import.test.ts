@@ -5,7 +5,7 @@ import { drizzle } from "drizzle-orm/libsql";
 
 import * as schema from "@FeedElity/db/schema";
 
-import { getCatalogContentDetail, listCatalogContentItems, listCatalogFeeds, type RepositoryDb } from "../repositories/catalog";
+import { getCatalogContentDetail, listCatalogContentItems, listCatalogCreators, listCatalogFeeds, type RepositoryDb } from "../repositories/catalog";
 import { findOrCreateMigrationRun, listMigrationMappingsForRun, recordMigrationMapping } from "../repositories/overlays";
 import { importStrapiCatalog, type CatalogImportReportedRecord } from "./catalog-import";
 import { validStrapiExportFixture } from "./strapi-export.fixtures";
@@ -423,13 +423,13 @@ describe("Strapi catalog import mapper", () => {
         oldEntityType: "strapi-creator",
         oldEntityId: "10",
         severity: "error",
-        reason: "Creator has no supported feed source to anchor a global catalog identity.",
+        reason: "Creator has no supported feed source and no content with a supported source to anchor a global catalog identity.",
       },
       {
         oldEntityType: "strapi-creator-content",
         oldEntityId: "40",
         severity: "error",
-        reason: "Content has no importable feed content link with a supported source.",
+        reason: "Content has no importable feed content link and no supported source option to anchor a global catalog identity.",
       },
       {
         oldEntityType: "strapi-content-option",
@@ -444,6 +444,75 @@ describe("Strapi catalog import mapper", () => {
         reason: "Feed content row references a feed source that is not supported by the new catalog.",
       },
     ]);
+  });
+
+  test("imports content without a feed content link by deriving identity from the source option", async () => {
+    const migrationRun = await findOrCreateMigrationRun(testDatabase.db, {
+      sourceExportFingerprint: "catalog-import-source-option-fallback",
+      status: "running",
+    });
+    const feed = validStrapiExportFixture.feeds[0];
+    const creator = validStrapiExportFixture.creators[0];
+    const content = validStrapiExportFixture.creatorContents[0];
+    const sourceOption = validStrapiExportFixture.contentOptions.find((option) => option.name === "source");
+    const thumbOption = validStrapiExportFixture.contentOptions.find((option) => option.name === "thumb");
+    if (feed === undefined || creator === undefined || content === undefined || sourceOption === undefined || thumbOption === undefined) {
+      throw new Error("Expected fixture creator, content, and source/thumb options for source-option fallback test.");
+    }
+
+    // Drop the feed (so the creator has no feed) and drop feed contents (so the
+    // content has no feed_content link). The content still carries a source option
+    // with a youtube-nocookie embed URL, which must anchor both the creator and the
+    // content item.
+    const exportWithoutFeed: StrapiExport = {
+      ...validStrapiExportFixture,
+      feeds: [],
+      feedContents: [],
+      feedOptions: [],
+      contentOptions: [
+        { ...sourceOption, value: "https://www.youtube-nocookie.com/embed/yt-source-option-video" },
+        { ...thumbOption, value: "https://i.ytimg.com/vi/yt-source-option-video/hqdefault.jpg" },
+      ],
+    };
+
+    const result = await importStrapiCatalog(testDatabase.db, {
+      migrationRunId: migrationRun.id,
+      exportData: exportWithoutFeed,
+    });
+
+    const contentItems = await listCatalogContentItems(testDatabase.db);
+    expect(contentItems).toHaveLength(1);
+    expect(result.counts.contentItems).toBe(1);
+    expect(result.counts.creators).toBe(1);
+    expect(result.counts.feeds).toBe(0);
+    expect(result.counts.contentSources).toBe(1);
+
+    const imported = contentItems[0];
+    if (imported === undefined) {
+      throw new Error("Expected source-option-backed content to be imported.");
+    }
+    expect(imported.sourceType).toBe("youtube");
+    expect(imported.sourceExternalId).toBe("yt-source-option-video");
+    expect(imported.canonicalUrl).toBe("https://www.youtube.com/watch?v=yt-source-option-video");
+
+    const detail = await getCatalogContentDetail(testDatabase.db, imported.id);
+    const source = detail?.sources[0];
+    if (source === undefined) {
+      throw new Error("Expected imported content to have a content source row.");
+    }
+    expect(source.sourceType).toBe("youtube");
+    expect(source.sourceExternalId).toBe("yt-source-option-video");
+    expect(source.embedUrl).toBe("https://www.youtube-nocookie.com/embed/yt-source-option-video");
+    expect(source.canonicalUrl).toBe("https://www.youtube.com/watch?v=yt-source-option-video");
+
+    const creators = await listCatalogCreators(testDatabase.db, { limit: 100 });
+    expect(creators).toHaveLength(1);
+    const importedCreator = creators[0];
+    if (importedCreator === undefined) {
+      throw new Error("Expected the no-feed creator to be imported via its content source option.");
+    }
+    expect(importedCreator.sourceType).toBe("youtube");
+    expect(importedCreator.sourceExternalId).toBe("legacy-creator:10");
   });
 
   test("PeerTube content without source option uses a valid canonical URL fallback", async () => {
