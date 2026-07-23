@@ -20,9 +20,16 @@ export function createAuth() {
     secret: env.BETTER_AUTH_SECRET,
     baseURL: env.BETTER_AUTH_URL,
     advanced: {
+      // Force the cookie secure-prefix + Secure attribute off over HTTP (dev/LAN).
+      // better-auth auto-detects from baseURL protocol, but set it explicitly so
+      // the dev server never emits Secure cookies that the browser drops.
+      useSecureCookies: env.NODE_ENV === "production",
       defaultCookieAttributes: {
-        sameSite: "none",
-        secure: true,
+        // Over plain HTTP (local/LAN dev) the browser drops Secure cookies, so
+        // login silently fails. Only enforce Secure + SameSite=None in production
+        // (HTTPS). Dev runs cross-origin over HTTP and needs lax, non-secure cookies.
+        sameSite: env.NODE_ENV === "production" ? "none" : "lax",
+        secure: env.NODE_ENV === "production",
         httpOnly: true,
       },
     },
