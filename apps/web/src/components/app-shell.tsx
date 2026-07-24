@@ -364,6 +364,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     const runId = untrack(activeRefreshRunId);
     return runId === null ? null : client.refresh.status({ runId, limit: 1, feedResultsLimit: 10 });
   });
+  const activeRefreshStatusValue = createMemo(() => activeRefreshStatus.latest);
   const subscriptionCreatorIds = createMemo(() => new Set((subscriptions() ?? emptySubscriptions).map((subscription) => subscription.creator.id)));
   const listedCreators = createMemo<readonly BrowsableCreator[]>(() => {
     if (props.mode === "library") {
@@ -494,7 +495,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   });
 
   createEffect(() => {
-    const loadedStatus = activeRefreshStatus();
+    const loadedStatus = activeRefreshStatusValue();
     if (loadedStatus === undefined || loadedStatus === null) {
       return;
     }
@@ -507,16 +508,16 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
       return;
     }
 
-    const completedFeeds = run.feedsSucceededCount + run.feedsFailedCount;
-    if (completedFeeds > refreshCompletedFeedsSeen()) {
-      setRefreshCompletedFeedsSeen(completedFeeds);
-      props.onCatalogChanged();
-    }
-
     if (run.status !== "running") {
       setRefreshBusy(null);
       setActiveRefreshRunId(null);
+      props.onCatalogChanged();
       return;
+    }
+
+    const completedFeeds = run.feedsSucceededCount + run.feedsFailedCount;
+    if (completedFeeds > refreshCompletedFeedsSeen()) {
+      setRefreshCompletedFeedsSeen(completedFeeds);
     }
 
     if (refreshPollTimer !== null) {
@@ -542,7 +543,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   };
 
   const refreshProgressText = createMemo(() => {
-    const run = activeRefreshStatus()?.latestRun ?? null;
+    const run = activeRefreshStatusValue()?.latestRun ?? null;
     if (run === null) {
       return "0/...";
     }
@@ -551,7 +552,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     return `${completedFeeds}/${run.feedsRequestedCount}`;
   });
   const refreshProviderMessage = createMemo(() => {
-    const status = activeRefreshStatus();
+    const status = activeRefreshStatusValue();
     const failedResult = status?.latestFeedResults.find((feedResult) => feedResult.status === "failed");
     return refreshFeedResultErrorMessage(status?.latestRun?.errorSummaryJson ?? null)
       ?? (failedResult === undefined ? null : refreshFeedResultErrorMessage(failedResult.errorSummaryJson));
