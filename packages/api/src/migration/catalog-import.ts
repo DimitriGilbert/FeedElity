@@ -13,7 +13,6 @@ import type { RecordMigrationMappingInput } from "../repositories/overlays";
 import type {
   StrapiContentOption,
   StrapiCreator,
-  StrapiCreatorContent,
   StrapiCreatorOption,
   StrapiExport,
   StrapiFeed,
@@ -86,9 +85,8 @@ interface ResolvedContentSource {
 }
 
 /**
- * Anchor identity for a creator. Feed-backed creators anchor on their feed's
- * source identity; creators without a supported feed anchor on a stable legacy
- * identity derived from their content's source type.
+ * Anchor identity for a creator, taken from a real supported feed's channel
+ * identity. There is no fabricated fallback.
  */
 interface CreatorAnchor {
   readonly sourceType: SourceType;
@@ -143,9 +141,8 @@ export async function importStrapiCatalog(
   const creatorOptionsByCreatorId = groupByOldId(input.exportData.creatorOptions, (creatorOption) => creatorOption.creatorId);
   // The legacy catalog stored each content item's source identity in a content_option
   // with name="source". Index it by content id so content without a feed_content link
-  // can still be imported, and creators without a feed can still be anchored.
+  // can still be imported.
   const sourceOptionByContentId = indexSourceOptionByContentId(input.exportData.contentOptions);
-  const creatorContentsByCreatorId = groupByOldId(input.exportData.creatorContents, (content) => content.creatorId);
 
   for (const feed of input.exportData.feeds) {
     const sourceType = toSupportedSourceType(feed.type);
@@ -162,13 +159,13 @@ export async function importStrapiCatalog(
   }
 
   for (const creator of input.exportData.creators) {
-    const anchor = resolveCreatorAnchor(creator, supportedFeeds, creatorContentsByCreatorId, sourceOptionByContentId);
+    const anchor = resolveCreatorAnchor(creator, supportedFeeds);
     if (anchor === null) {
       reportedRecords.push({
         oldEntityType: "strapi-creator",
         oldEntityId: String(creator.oldId),
         severity: "error",
-        reason: "Creator has no supported feed source and no content with a supported source to anchor a global catalog identity.",
+        reason: "Creator has no supported feed and no recoverable channel identity; it cannot be anchored in the global catalog without a fabricated id.",
       });
       continue;
     }
@@ -522,35 +519,18 @@ function parseAbsoluteUrl(value: string): URL | null {
 }
 
 /**
- * Resolves a creator's anchor identity. Creators with a supported feed anchor on
- * that feed's source identity (unchanged behavior). Creators without a feed anchor
- * on the source type of their first content item that carries a supported source
- * option, using a stable legacy identity so the import stays idempotent.
+ * Resolves a creator's anchor identity from a real supported feed's channel
+ * identity. There is no longer any fabricated fallback: a creator without a
+ * supported feed carrying a real channel id is reported as an error rather
+ * than given a synthetic `legacy-creator:` id.
  */
 function resolveCreatorAnchor(
   creator: StrapiCreator,
   supportedFeeds: ReadonlyMap<number, SupportedFeed>,
-  creatorContentsByCreatorId: ReadonlyMap<number, readonly StrapiCreatorContent[]>,
-  sourceOptionByContentId: ReadonlyMap<number, StrapiContentOption>,
 ): CreatorAnchor | null {
   for (const supportedFeed of supportedFeeds.values()) {
     if (supportedFeed.oldFeed.creatorId === creator.oldId) {
       return { sourceType: supportedFeed.sourceType, sourceExternalId: supportedFeed.oldFeed.externalId };
-    }
-  }
-
-  const contents = creatorContentsByCreatorId.get(creator.oldId) ?? [];
-  for (const content of contents) {
-    const sourceOption = sourceOptionByContentId.get(content.oldId);
-    if (sourceOption === undefined) {
-      continue;
-    }
-    const identity = extractSourceIdentity(sourceOption);
-    if (identity !== null) {
-      return {
-        sourceType: identity.sourceType,
-        sourceExternalId: `legacy-creator:${creator.oldId}`,
-      };
     }
   }
   return null;

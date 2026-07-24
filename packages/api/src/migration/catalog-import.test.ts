@@ -423,7 +423,7 @@ describe("Strapi catalog import mapper", () => {
         oldEntityType: "strapi-creator",
         oldEntityId: "10",
         severity: "error",
-        reason: "Creator has no supported feed source and no content with a supported source to anchor a global catalog identity.",
+        reason: "Creator has no supported feed and no recoverable channel identity; it cannot be anchored in the global catalog without a fabricated id.",
       },
       {
         oldEntityType: "strapi-creator-content",
@@ -446,24 +446,23 @@ describe("Strapi catalog import mapper", () => {
     ]);
   });
 
-  test("imports content without a feed content link by deriving identity from the source option", async () => {
+  test("imports content without a feed content link by deriving identity from the source option, and reports a creator with no feed as an error instead of fabricating an id", async () => {
     const migrationRun = await findOrCreateMigrationRun(testDatabase.db, {
       sourceExportFingerprint: "catalog-import-source-option-fallback",
       status: "running",
     });
-    const feed = validStrapiExportFixture.feeds[0];
     const creator = validStrapiExportFixture.creators[0];
-    const content = validStrapiExportFixture.creatorContents[0];
     const sourceOption = validStrapiExportFixture.contentOptions.find((option) => option.name === "source");
     const thumbOption = validStrapiExportFixture.contentOptions.find((option) => option.name === "thumb");
-    if (feed === undefined || creator === undefined || content === undefined || sourceOption === undefined || thumbOption === undefined) {
-      throw new Error("Expected fixture creator, content, and source/thumb options for source-option fallback test.");
+    if (creator === undefined || sourceOption === undefined || thumbOption === undefined) {
+      throw new Error("Expected fixture creator and source/thumb options for source-option fallback test.");
     }
 
     // Drop the feed (so the creator has no feed) and drop feed contents (so the
-    // content has no feed_content link). The content still carries a source option
-    // with a youtube-nocookie embed URL, which must anchor both the creator and the
-    // content item.
+    // content has no feed_content link). The creator has no feed and therefore no
+    // recoverable channel identity: it must be reported as an error, never given a
+    // fabricated id. Because content items require a creator row, the content is
+    // reported as an error too rather than anchored to a fake creator.
     const exportWithoutFeed: StrapiExport = {
       ...validStrapiExportFixture,
       feeds: [],
@@ -481,38 +480,19 @@ describe("Strapi catalog import mapper", () => {
     });
 
     const contentItems = await listCatalogContentItems(testDatabase.db);
-    expect(contentItems).toHaveLength(1);
-    expect(result.counts.contentItems).toBe(1);
-    expect(result.counts.creators).toBe(1);
-    expect(result.counts.feeds).toBe(0);
-    expect(result.counts.contentSources).toBe(1);
-
-    const imported = contentItems[0];
-    if (imported === undefined) {
-      throw new Error("Expected source-option-backed content to be imported.");
-    }
-    expect(imported.sourceType).toBe("youtube");
-    expect(imported.sourceExternalId).toBe("yt-source-option-video");
-    expect(imported.canonicalUrl).toBe("https://www.youtube.com/watch?v=yt-source-option-video");
-
-    const detail = await getCatalogContentDetail(testDatabase.db, imported.id);
-    const source = detail?.sources[0];
-    if (source === undefined) {
-      throw new Error("Expected imported content to have a content source row.");
-    }
-    expect(source.sourceType).toBe("youtube");
-    expect(source.sourceExternalId).toBe("yt-source-option-video");
-    expect(source.embedUrl).toBe("https://www.youtube-nocookie.com/embed/yt-source-option-video");
-    expect(source.canonicalUrl).toBe("https://www.youtube.com/watch?v=yt-source-option-video");
-
     const creators = await listCatalogCreators(testDatabase.db, { limit: 100 });
-    expect(creators).toHaveLength(1);
-    const importedCreator = creators[0];
-    if (importedCreator === undefined) {
-      throw new Error("Expected the no-feed creator to be imported via its content source option.");
-    }
-    expect(importedCreator.sourceType).toBe("youtube");
-    expect(importedCreator.sourceExternalId).toBe("legacy-creator:10");
+    expect(contentItems).toHaveLength(0);
+    expect(creators).toHaveLength(0);
+    expect(result.counts).toMatchObject({ creators: 0, feeds: 0, contentItems: 0, contentSources: 0 });
+    expect(result.reportedRecords).toContainEqual({
+      oldEntityType: "strapi-creator",
+      oldEntityId: "10",
+      severity: "error",
+      reason: "Creator has no supported feed and no recoverable channel identity; it cannot be anchored in the global catalog without a fabricated id.",
+    });
+    expect(result.reportedRecords.some(
+      (record) => record.oldEntityType === "strapi-creator-content" && record.oldEntityId === "40" && record.severity === "error",
+    )).toBe(true);
   });
 
   test("PeerTube content without source option uses a valid canonical URL fallback", async () => {

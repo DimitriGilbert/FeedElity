@@ -326,7 +326,7 @@ export function buildUnvalidatedStrapiExportFromOldMysqlRows(
         name: row.name,
         url: row.url,
         type: normalizeSourceType(row.type),
-        externalId: row.external_id,
+        externalId: recoverFeedExternalId(row.external_id, row.url, row.type),
         refreshedAt: row.refreshed_at,
       })),
     ),
@@ -469,6 +469,92 @@ function normalizeSourceType(value: string): SourceType {
       return value;
     default:
       return "unknown";
+  }
+}
+
+/**
+ * Recovers a feed's source-external id when the legacy `external_id` column is
+ * empty. In the old Strapi catalog 274 of 352 feeds had an empty `external_id`
+ * even though their `url` held a fully-formed RSS feed URL; the channel/claim
+ * identity is embedded in that URL. This extracts it deterministically from
+ * MySQL data alone (no network), so the export carries every feed with an RSS
+ * URL rather than dropping it.
+ *
+ * Returns the original `external_id` unchanged when it is already non-empty.
+ * Returns an empty string when the identity cannot be recovered, which the
+ * export schema rejects downstream, surfacing the feed as unimportable.
+ */
+function recoverFeedExternalId(externalId: string, url: string, type: string): string {
+  if (externalId.trim().length > 0) {
+    return externalId;
+  }
+
+  const sourceType = normalizeSourceType(type);
+  if (sourceType === "youtube") {
+    const channelId = extractYouTubeChannelIdFromUrl(url);
+    if (channelId !== null) {
+      return channelId;
+    }
+  }
+  if (sourceType === "odysee") {
+    const channelClaim = extractOdyseeChannelClaimFromUrl(url);
+    if (channelClaim !== null) {
+      return channelClaim;
+    }
+  }
+  return externalId;
+}
+
+function extractYouTubeChannelIdFromUrl(rawUrl: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  if (url.hostname !== "www.youtube.com" && url.hostname !== "youtube.com" && url.hostname !== "m.youtube.com") {
+    return null;
+  }
+  if (url.pathname !== "/feeds/videos.xml") {
+    return null;
+  }
+  const channelId = url.searchParams.get("channel_id");
+  if (channelId === null) {
+    return null;
+  }
+  return isNonEmptyText(channelId) ? channelId : null;
+}
+
+function extractOdyseeChannelClaimFromUrl(rawUrl: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  if (url.hostname !== "odysee.com" && url.hostname !== "www.odysee.com") {
+    return null;
+  }
+  const rssPrefix = "/$/rss/";
+  if (!url.pathname.startsWith(rssPrefix)) {
+    return null;
+  }
+  const segment = decodePathSegment(url.pathname.slice(rssPrefix.length).split("/").filter(isNonEmptyText)[0] ?? "");
+  if (!isNonEmptyText(segment) || !segment.startsWith("@")) {
+    return null;
+  }
+  return segment;
+}
+
+function isNonEmptyText(value: string | null | undefined): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function decodePathSegment(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
   }
 }
 

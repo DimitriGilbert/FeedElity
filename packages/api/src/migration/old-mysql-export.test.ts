@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { strapiExportSchema } from "./strapi-export";
-import { buildStrapiExportFromOldMysqlRows, type OldStrapiMysqlRows } from "./old-mysql-export";
+import { buildStrapiExportFromOldMysqlRows, buildUnvalidatedStrapiExportFromOldMysqlRows, type OldStrapiMysqlRows } from "./old-mysql-export";
 
 const oldMysqlRowsFixture: OldStrapiMysqlRows = {
   users: [
@@ -173,5 +173,109 @@ describe("old Strapi MySQL row export helper", () => {
         strapiVersion: "4.25.0",
       }),
     ).toThrow("feedCreatorLinks.creator_id references missing creators oldId 999.");
+  });
+
+  test("recovers the YouTube channel id from feeds.url when external_id is empty", () => {
+    // The old Strapi catalog stored 274 YouTube feeds with an empty external_id
+    // even though feeds.url held the full RSS URL. The shaper must recover the
+    // channel id from the URL so these feeds are not dropped.
+    const rowsWithEmptyExternalId: OldStrapiMysqlRows = {
+      ...oldMysqlRowsFixture,
+      feeds: [
+        {
+          id: 20,
+          name: "youtube",
+          url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCBa659QWEk1AI4Tg--mrJ2A",
+          type: "youtube",
+          external_id: "",
+          refreshed_at: "2026-05-15T08:30:00.000Z",
+        },
+      ],
+    };
+
+    const exportData = buildStrapiExportFromOldMysqlRows(rowsWithEmptyExternalId, {
+      exportedAt: "2026-05-16T12:00:00.000Z",
+      sourceInstanceId: "fixture-old-feedlity-local",
+      strapiVersion: "4.25.0",
+    });
+
+    expect(exportData.feeds[0]?.externalId).toBe("UCBa659QWEk1AI4Tg--mrJ2A");
+    expect(exportData.feeds[0]?.url).toBe("https://www.youtube.com/feeds/videos.xml?channel_id=UCBa659QWEk1AI4Tg--mrJ2A");
+  });
+
+  test("recovers the Odysee channel claim from feeds.url when external_id is empty", () => {
+    const rowsWithEmptyExternalId: OldStrapiMysqlRows = {
+      ...oldMysqlRowsFixture,
+      feeds: [
+        {
+          id: 20,
+          name: "odysee",
+          url: "https://odysee.com/$/rss/@AlphaNerd:8",
+          type: "odysee",
+          external_id: "",
+          refreshed_at: "2026-05-15T08:30:00.000Z",
+        },
+      ],
+    };
+
+    const exportData = buildStrapiExportFromOldMysqlRows(rowsWithEmptyExternalId, {
+      exportedAt: "2026-05-16T12:00:00.000Z",
+      sourceInstanceId: "fixture-old-feedlity-local",
+      strapiVersion: "4.25.0",
+    });
+
+    expect(exportData.feeds[0]?.externalId).toBe("@AlphaNerd:8");
+  });
+
+  test("leaves external_id empty when the url carries no recoverable channel identity", () => {
+    // A feed with neither an external_id nor a recognizable RSS url cannot be
+    // recovered from MySQL alone; the shaped export leaves externalId empty,
+    // which the export schema rejects, surfacing the feed as unimportable.
+    const rowsWithUnrecoverableFeed: OldStrapiMysqlRows = {
+      ...oldMysqlRowsFixture,
+      feeds: [
+        {
+          id: 20,
+          name: "youtube",
+          url: "https://www.youtube.com/channel/unknown",
+          type: "youtube",
+          external_id: "",
+          refreshed_at: "2026-05-15T08:30:00.000Z",
+        },
+      ],
+    };
+
+    const exportData = buildUnvalidatedStrapiExportFromOldMysqlRows(rowsWithUnrecoverableFeed, {
+      exportedAt: "2026-05-16T12:00:00.000Z",
+      sourceInstanceId: "fixture-old-feedlity-local",
+      strapiVersion: "4.25.0",
+    });
+
+    expect(exportData.feeds[0]?.externalId).toBe("");
+    expect(strapiExportSchema.safeParse(exportData).success).toBe(false);
+  });
+
+  test("does not alter a non-empty external_id even when the url looks recoverable", () => {
+    const rowsWithExplicitExternalId: OldStrapiMysqlRows = {
+      ...oldMysqlRowsFixture,
+      feeds: [
+        {
+          id: 20,
+          name: "youtube",
+          url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCBa659QWEk1AI4Tg--mrJ2A",
+          type: "youtube",
+          external_id: "@TomScott:1",
+          refreshed_at: "2026-05-15T08:30:00.000Z",
+        },
+      ],
+    };
+
+    const exportData = buildStrapiExportFromOldMysqlRows(rowsWithExplicitExternalId, {
+      exportedAt: "2026-05-16T12:00:00.000Z",
+      sourceInstanceId: "fixture-old-feedlity-local",
+      strapiVersion: "4.25.0",
+    });
+
+    expect(exportData.feeds[0]?.externalId).toBe("@TomScott:1");
   });
 });
