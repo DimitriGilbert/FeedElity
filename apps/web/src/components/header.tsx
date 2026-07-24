@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/solid-router";
 import { For } from "solid-js";
+import Rss from "lucide-solid/icons/rss";
 
 import UserMenu from "./user-menu";
 
@@ -16,24 +17,22 @@ export const shellNavigationLinks: readonly ShellNavigationLink[] = [
 
 export const focusVisibleClass = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
 
-export const shellNavigationLinkClass = `group border border-border bg-background px-2.5 py-1.5 text-muted-foreground transition duration-200 hover:bg-accent hover:text-accent-foreground ${focusVisibleClass}`;
+export const shellNavigationLinkClass = `inline-flex items-center px-3 py-1.5 text-sm font-medium text-muted-foreground transition hover:bg-accent hover:text-accent-foreground ${focusVisibleClass}`;
 
 export default function Header() {
   return (
     <header class="relative z-10 border-b border-border bg-background text-foreground">
-      <div class="flex min-h-12 flex-col gap-2 px-3 py-2 sm:px-4 md:flex-row md:items-center md:justify-between md:py-0">
-        <div class="flex items-center gap-3">
-          <Link to="/" class={`group flex items-center gap-3 ${focusVisibleClass}`} aria-label="FeedElity RSS reader shell">
-            <span class="grid h-7 w-7 place-items-center border border-border bg-primary text-[0.7rem] font-semibold tracking-tight text-primary-foreground transition-colors duration-200 group-hover:bg-accent group-hover:text-accent-foreground">
-              FE
-            </span>
-            <span class="leading-none">
-              <span class="block text-sm font-semibold tracking-[0.14em] text-foreground">FeedElity</span>
-              <span class="sr-only">Video RSS reader</span>
-            </span>
-          </Link>
-        </div>
-        <nav class="flex min-w-0 gap-2 overflow-x-auto text-sm" aria-label="Primary navigation">
+      <div class="flex h-12 items-center gap-3 px-4">
+        <Link to="/" class={`group flex items-center gap-2 ${focusVisibleClass}`} aria-label="FeedElity RSS reader shell">
+          <span class="grid h-7 w-7 place-items-center rounded-md border border-border bg-card text-primary transition-colors group-hover:text-accent-foreground">
+            <Rss size={15} stroke-width={2} aria-hidden="true" />
+          </span>
+          <span class="leading-none">
+            <span class="block text-sm font-semibold tracking-tight text-foreground">FeedElity</span>
+            <span class="sr-only">Video RSS reader</span>
+          </span>
+        </Link>
+        <nav class="flex min-w-0 items-center gap-1 overflow-x-auto" aria-label="Primary navigation">
           <For each={shellNavigationLinks}>
             {(link) => (
               <Link
@@ -41,13 +40,13 @@ export default function Header() {
                 class={shellNavigationLinkClass}
                 activeProps={{ class: `bg-accent text-accent-foreground ${focusVisibleClass}` }}
               >
-                <span class="block font-medium leading-none">{link.label}</span>
+                <span class="font-medium leading-none">{link.label}</span>
                 <span class="sr-only">{link.helper}</span>
               </Link>
             )}
           </For>
         </nav>
-        <div class="flex items-center gap-2 md:justify-end">
+        <div class="ml-auto flex items-center">
           <UserMenu />
         </div>
       </div>

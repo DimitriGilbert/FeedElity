@@ -16,7 +16,7 @@ import type { BrowsableCreator, ContentStatusFlags, ReaderDensity } from "./app-
 import { SourceIconBadge } from "./source-indicator";
 
 function readerDensityPaddingClass(readerDensity: ReaderDensity): string {
-  return readerDensity === "compact" ? "px-1 py-1" : "px-1 py-1.5";
+  return readerDensity === "compact" ? "px-2 py-1" : "px-2 py-1.5";
 }
 
 function formatFeedDateTime(value: Date | null): string {
@@ -61,29 +61,32 @@ export interface CreatorSourceRowProps {
 
 export function CreatorSourceRow(props: CreatorSourceRowProps) {
   const creatorRowClass = createMemo(() =>
-    `group border-t border-border ${readerDensityPaddingClass(props.readerDensity)} transition hover:border-ring hover:bg-accent hover:text-accent-foreground ${props.isSelected ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : "text-card-foreground"}`,
+    `group relative border-b border-border ${readerDensityPaddingClass(props.readerDensity)} transition hover:bg-accent hover:text-accent-foreground ${props.isSelected ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : "text-card-foreground"}`,
   );
 
   return (
     <div class={creatorRowClass()} data-selected={props.isSelected ? "true" : "false"}>
+      <Show when={props.isSelected}>
+        <span class="absolute inset-y-1 left-0 w-0.5 rounded-full bg-ring" aria-hidden="true" />
+      </Show>
       <div class="flex items-center justify-between gap-2">
         <button
           type="button"
-          class="flex min-w-0 flex-1 items-center gap-1.5 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          class="flex min-w-0 flex-1 items-center gap-2 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
           aria-pressed={props.isSelected}
           onClick={() => props.onSelectCreator(props.creator)}
         >
           <Show when={props.creator.imageUrl}>
             {(imageUrl) => (
-              <span class="h-4 w-4 shrink-0 overflow-hidden rounded-full border border-border bg-muted">
+              <span class="h-6 w-6 shrink-0 overflow-hidden rounded-full border border-border bg-muted">
                 <img class="h-full w-full object-cover" src={imageUrl()} alt="" loading="lazy" />
               </span>
             )}
           </Show>
-          <span class="block truncate text-xs font-semibold">{props.creator.displayName}</span>
+          <span class="block truncate text-sm font-semibold">{props.creator.displayName}</span>
         </button>
         <Show when={props.isAuthenticated && props.showSubscriptionControl}>
-          <span class="opacity-0 transition-opacity delay-100 duration-100 group-hover:opacity-100">{props.subscriptionControl}</span>
+          <span class="opacity-0 transition-opacity delay-100 duration-100 group-hover:opacity-100 group-focus-within:opacity-100">{props.subscriptionControl}</span>
         </Show>
       </div>
     </div>
@@ -103,7 +106,7 @@ export interface PlaylistItemRowProps {
 
 export function PlaylistItemRow(props: PlaylistItemRowProps) {
   return (
-    <li class="border-t border-border p-2">
+    <li class="border-b border-border p-2">
       <button
         type="button"
         class="w-full text-left text-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
@@ -111,14 +114,14 @@ export function PlaylistItemRow(props: PlaylistItemRowProps) {
           await props.onSelectContent(props.item.content);
         }}
       >
-        <span class="block truncate text-[0.72rem] font-semibold">{props.item.content.title}</span>
-        <span class="mt-1 block truncate text-[0.68rem] text-muted-foreground">{props.item.content.creator.displayName}</span>
+        <span class="block truncate text-sm font-semibold">{props.item.content.title}</span>
+        <span class="mt-0.5 block truncate text-xs text-muted-foreground">{props.item.content.creator.displayName}</span>
       </button>
       <div class={`mt-2 grid ${props.showManualControls ? "grid-cols-3" : "grid-cols-1"} gap-1`} data-manual-reorder={props.showManualControls ? "true" : "false"}>
         <Show when={props.showManualControls}>
           <button
             type="button"
-            class="inline-flex items-center justify-center rounded-sm border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            class="inline-flex items-center justify-center rounded-md border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
             aria-label="Move up"
             title="Move up"
             disabled={props.busy || props.itemIndex === 0}
@@ -130,7 +133,7 @@ export function PlaylistItemRow(props: PlaylistItemRowProps) {
           </button>
           <button
             type="button"
-            class="inline-flex items-center justify-center rounded-sm border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            class="inline-flex items-center justify-center rounded-md border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
             aria-label="Move down"
             title="Move down"
             disabled={props.busy || props.itemIndex === props.itemCount - 1}
@@ -143,7 +146,7 @@ export function PlaylistItemRow(props: PlaylistItemRowProps) {
         </Show>
         <button
           type="button"
-          class="inline-flex items-center justify-center rounded-sm border border-border bg-card p-1 text-destructive transition hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+          class="inline-flex items-center justify-center rounded-md border border-border bg-card p-1 text-destructive transition hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
           aria-label="Remove from playlist"
           title="Remove from playlist"
           disabled={props.busy}
@@ -171,7 +174,7 @@ export function FeedRow(props: FeedRowProps) {
   const feedTitle = createMemo(() => props.feed.title ?? props.feed.url);
   const feedUrl = createMemo(() => (props.feed.title === null ? null : props.feed.url));
   const rowClass = createMemo(() =>
-    `border-t border-border ${readerDensityPaddingClass(props.readerDensity ?? "comfortable")} transition hover:border-ring hover:bg-accent hover:text-accent-foreground ${selected() ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : "bg-background"}`,
+    `relative border-b border-border ${readerDensityPaddingClass(props.readerDensity ?? "comfortable")} transition hover:bg-accent hover:text-accent-foreground ${selected() ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : "bg-background"}`,
   );
   const rowBodyClass = createMemo(() =>
     props.creatorImageUrl === null || props.creatorImageUrl === undefined
@@ -180,16 +183,19 @@ export function FeedRow(props: FeedRowProps) {
   );
   const content = () => (
     <span class={rowBodyClass()}>
+      <Show when={selected()}>
+        <span class="absolute inset-y-1 left-0 w-0.5 rounded-full bg-ring" aria-hidden="true" />
+      </Show>
       <Show when={props.creatorImageUrl}>
         {(imageUrl) => (
-          <span class="aspect-square overflow-hidden border border-border bg-muted" data-feed-image="creator">
+          <span class="aspect-square overflow-hidden rounded-md border border-border bg-muted" data-feed-image="creator">
             <img class="h-full w-full object-cover" src={imageUrl()} alt="" loading="lazy" />
           </span>
         )}
       </Show>
       <span class="min-w-0">
         <span class="flex items-center justify-between gap-2">
-          <span class="min-w-0 truncate text-[0.72rem] font-semibold text-foreground" data-feed-title>
+          <span class="min-w-0 truncate text-sm font-semibold text-foreground" data-feed-title>
             {feedTitle()}
           </span>
           <span data-feed-source-chip>
@@ -197,16 +203,16 @@ export function FeedRow(props: FeedRowProps) {
           </span>
         </span>
         <Show when={feedUrl()}>
-          {(url) => <span class="mt-1 block truncate text-[0.68rem] text-muted-foreground" data-feed-url>{url()}</span>}
+          {(url) => <span class="mt-0.5 block truncate text-xs text-muted-foreground" data-feed-url>{url()}</span>}
         </Show>
-        <span class="mt-1 block truncate text-[0.68rem] text-muted-foreground" data-feed-refresh-metadata>
+        <span class="mt-0.5 block truncate text-xs text-muted-foreground" data-feed-refresh-metadata>
           {formatFeedRefreshMetadata(props.feed)}
         </span>
-        <span class="mt-1 block truncate text-[0.68rem] text-muted-foreground" data-feed-next-refresh-metadata>
+        <span class="block truncate text-xs text-muted-foreground" data-feed-next-refresh-metadata>
           {formatFeedNextRefreshMetadata(props.feed)}
         </span>
         <Show when={props.onSelectFeed}>
-          <span class="mt-1 block text-[0.68rem] font-semibold text-muted-foreground" data-feed-action-label>
+          <span class="mt-0.5 block text-xs font-semibold text-muted-foreground" data-feed-action-label>
             {selected() ? "Selected feed" : "Filter feed"}
           </span>
         </Show>
@@ -239,13 +245,13 @@ export function FeedRow(props: FeedRowProps) {
 
 export interface ContentListItemRowProps {
   readonly contentItem: CatalogContentListItem;
-  readonly isAuthenticated: boolean;
-  readonly isFavorite: boolean;
-  readonly status: ContentStatusFlags;
-  readonly selected: boolean;
-  readonly favoritesView: boolean;
-  readonly readerDensity: ReaderDensity;
-  readonly targetPlaylistId: string | null;
+  readonly isAuthenticated: () => boolean;
+  readonly isFavorite: () => boolean;
+  readonly status: () => ContentStatusFlags;
+  readonly selected: () => boolean;
+  readonly favoritesView: () => boolean;
+  readonly readerDensity: () => ReaderDensity;
+  readonly targetPlaylistId: () => string | null;
   readonly formatError: (error: unknown) => string;
   readonly formatPublishedAt: (publishedAt: Date | null) => string;
   readonly formatDuration: (durationSeconds: number | null) => string;
@@ -266,13 +272,21 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
   const rowImageUrl = createMemo(() => props.contentItem.thumbnailUrl ?? props.contentItem.creator.imageUrl);
   const rowImageSource = createMemo(() => (props.contentItem.thumbnailUrl !== null ? "content" : props.contentItem.creator.imageUrl !== null ? "creator" : null));
 
-  createEffect(on(() => [props.contentItem.id, props.isFavorite], () => setFavoriteError(null)));
-  createEffect(on(() => [props.contentItem.id, props.status.opened, props.status.played], () => setStatusError(null)));
-  createEffect(on(() => [props.contentItem.id, props.targetPlaylistId], () => setPlaylistError(null)));
+  const isAuthenticated = createMemo(() => props.isAuthenticated());
+  const isFavorite = createMemo(() => props.isFavorite());
+  const status = createMemo(() => props.status());
+  const selected = createMemo(() => props.selected());
+  const favoritesView = createMemo(() => props.favoritesView());
+  const readerDensity = createMemo(() => props.readerDensity());
+  const targetPlaylistId = createMemo(() => props.targetPlaylistId());
+
+  createEffect(on(() => [props.contentItem.id, isFavorite()], () => setFavoriteError(null)));
+  createEffect(on(() => [props.contentItem.id, status().opened, status().played], () => setStatusError(null)));
+  createEffect(on(() => [props.contentItem.id, targetPlaylistId()], () => setPlaylistError(null)));
   const contentButtonClass = createMemo(() =>
     rowImageUrl() === null
       ? "w-full text-left text-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-      : "grid w-full grid-cols-[7.5rem_1fr] gap-2 text-left text-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+      : "grid w-full grid-cols-[7rem_1fr] gap-2 text-left text-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
   );
 
   const toggleFavorite = async () => {
@@ -325,16 +339,19 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
 
   return (
     <div
-      class={`group border-t border-border ${readerDensityPaddingClass(props.readerDensity)} transition hover:border-ring hover:bg-accent hover:text-accent-foreground ${props.selected ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : props.status.played ? "bg-muted" : props.status.opened ? "bg-card" : "bg-background"}`}
-      data-selected={props.selected ? "true" : "false"}
-      data-opened={props.status.opened ? "true" : "false"}
-      data-played={props.status.played ? "true" : "false"}
-      data-favorite={props.isFavorite ? "true" : "false"}
+      class={`group relative border-b border-border ${readerDensityPaddingClass(readerDensity())} transition hover:bg-accent hover:text-accent-foreground ${selected() ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : status().played ? "bg-muted" : status().opened ? "bg-card" : "bg-background"}`}
+      data-selected={selected() ? "true" : "false"}
+      data-opened={status().opened ? "true" : "false"}
+      data-played={status().played ? "true" : "false"}
+      data-favorite={isFavorite() ? "true" : "false"}
     >
+      <Show when={selected()}>
+        <span class="absolute inset-y-1 left-0 w-0.5 rounded-full bg-ring" aria-hidden="true" />
+      </Show>
       <button
         type="button"
         class={contentButtonClass()}
-        aria-pressed={props.selected}
+        aria-pressed={selected()}
         title={props.contentItem.title}
         onClick={async () => {
           await props.onSelectContent(props.contentItem);
@@ -342,7 +359,7 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
       >
         <Show when={rowImageUrl()}>
           {(imageUrl) => (
-            <span class="aspect-video overflow-hidden border border-border bg-muted" data-thumbnail-source={rowImageSource() ?? ""}>
+            <span class="aspect-video overflow-hidden rounded-md border border-border bg-muted" data-thumbnail-source={rowImageSource() ?? ""}>
               <img
                 class="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
                 src={imageUrl()}
@@ -353,89 +370,91 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
           )}
         </Show>
         <span class="min-w-0">
-          <span class="block truncate text-xs font-semibold">{props.contentItem.title}</span>
-          <span class="mt-0.5 block truncate text-[0.68rem] text-muted-foreground">
+          <span class="block truncate text-sm font-semibold">{props.contentItem.title}</span>
+          <span class="mt-0.5 block truncate text-xs text-muted-foreground">
             {props.contentItem.creator.displayName}
           </span>
-          <span class="mt-0.5 flex items-center gap-1.5 text-[0.68rem] text-muted-foreground">
+          <span class="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
             <span class="truncate">{props.formatPublishedAt(props.contentItem.publishedAt)}</span>
             <Show when={props.contentItem.durationSeconds !== null}>
-              <span class="shrink-0">{props.formatDuration(props.contentItem.durationSeconds)}</span>
+              <span class="shrink-0 tabular-nums">{props.formatDuration(props.contentItem.durationSeconds)}</span>
             </Show>
-            <Show when={props.selected}>
+            <Show when={selected()}>
               <Target size={12} class="text-selected-foreground" data-content-status="selected" aria-label="Selected" />
             </Show>
-            <Show when={props.status.opened}>
+            <Show when={status().opened}>
               <EyeOff size={12} data-content-status="opened" aria-label="Opened" />
             </Show>
-            <Show when={props.status.played}>
+            <Show when={status().played}>
               <CircleCheck size={12} data-content-status="played" aria-label="Played" />
             </Show>
-            <Show when={props.isFavorite}>
+            <Show when={isFavorite()}>
               <Heart size={12} class="text-primary" data-content-status="favorite" aria-label="Favorite" />
             </Show>
-            <SourceIconBadge sourceType={props.contentItem.sourceType} context="content" sourceCount={props.contentItem.sourceCount} />
+            <span data-content-source-chip>
+              <span data-content-source-indicator>
+                <SourceIconBadge sourceType={props.contentItem.sourceType} context="content" sourceCount={props.contentItem.sourceCount} />
+              </span>
+            </span>
           </span>
         </span>
       </button>
-      <Show when={props.isAuthenticated}>
-        <div class="grid grid-rows-[0fr] opacity-0 transition-all duration-150 delay-100 ease-in-out group-hover:grid-rows-[1fr] group-hover:opacity-100">
-          <div class="overflow-hidden">
-            <div class="flex items-center justify-end gap-1 pt-1">
-              <Show when={statusError()}>
-                {(message) => <p class="min-w-0 flex-1 truncate text-[0.68rem] text-destructive">{message()}</p>}
-              </Show>
-              <Show when={favoriteError()}>
-                {(message) => <p class="min-w-0 flex-1 truncate text-[0.68rem] text-destructive">{message()}</p>}
-              </Show>
-              <Show when={playlistError()}>
-                {(message) => <p class="min-w-0 flex-1 truncate text-[0.68rem] text-destructive">{message()}</p>}
-              </Show>
-              <button
-                type="button"
-                class="rounded-sm border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
-                aria-label="Add to playlist"
-                title="Add to playlist"
-                disabled={playlistBusy() || props.targetPlaylistId === null}
-                onClick={addToPlaylist}
-                data-content-row-add-playlist
-              >
-                <Plus size={12} />
-              </button>
-              <button
-                type="button"
-                class="rounded-sm border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
-                aria-pressed={props.status.opened}
-                aria-label={props.status.opened ? "Unmark opened" : "Mark opened"}
-                title={props.status.opened ? "Unmark opened" : "Mark opened"}
-                disabled={statusBusy() !== null}
-                onClick={markOpened}
-              >
-                {props.status.opened ? <EyeOff size={12} /> : <Eye size={12} />}
-              </button>
-              <button
-                type="button"
-                class="rounded-sm border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
-                aria-pressed={props.status.played}
-                aria-label={props.status.played ? "Unmark played" : "Mark played"}
-                title={props.status.played ? "Unmark played" : "Mark played"}
-                disabled={statusBusy() !== null}
-                onClick={markPlayed}
-              >
-                {props.status.played ? <CircleCheck size={12} /> : <CirclePlay size={12} />}
-              </button>
-              <button
-                type="button"
-                class="rounded-sm border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
-                aria-pressed={props.isFavorite}
-                aria-label={props.favoritesView || props.isFavorite ? "Remove favorite" : "Favorite"}
-                title={props.favoritesView || props.isFavorite ? "Remove favorite" : "Favorite"}
-                disabled={favoriteBusy()}
-                onClick={toggleFavorite}
-              >
-                <Heart size={12} />
-              </button>
-            </div>
+      <Show when={isAuthenticated()}>
+        <div class="mt-1 flex items-center justify-end gap-1">
+          <div class="flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+            <Show when={statusError()}>
+              {(message) => <p class="min-w-0 flex-1 truncate text-xs text-destructive">{message()}</p>}
+            </Show>
+            <Show when={favoriteError()}>
+              {(message) => <p class="min-w-0 flex-1 truncate text-xs text-destructive">{message()}</p>}
+            </Show>
+            <Show when={playlistError()}>
+              {(message) => <p class="min-w-0 flex-1 truncate text-xs text-destructive">{message()}</p>}
+            </Show>
+            <button
+              type="button"
+              class="rounded-md border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+              aria-label="Add to playlist"
+              title="Add to playlist"
+              disabled={playlistBusy() || targetPlaylistId() === null}
+              onClick={addToPlaylist}
+              data-content-row-add-playlist
+            >
+              <Plus size={12} />
+            </button>
+            <button
+              type="button"
+              class="rounded-md border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+              aria-pressed={status().opened}
+              aria-label={status().opened ? "Unmark opened" : "Mark opened"}
+              title={status().opened ? "Unmark opened" : "Mark opened"}
+              disabled={statusBusy() !== null}
+              onClick={markOpened}
+            >
+              {status().opened ? <EyeOff size={12} /> : <Eye size={12} />}
+            </button>
+            <button
+              type="button"
+              class="rounded-md border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+              aria-pressed={status().played}
+              aria-label={status().played ? "Unmark played" : "Mark played"}
+              title={status().played ? "Unmark played" : "Mark played"}
+              disabled={statusBusy() !== null}
+              onClick={markPlayed}
+            >
+              {status().played ? <CircleCheck size={12} /> : <CirclePlay size={12} />}
+            </button>
+            <button
+              type="button"
+              class="rounded-md border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+              aria-pressed={isFavorite()}
+              aria-label={favoritesView() || isFavorite() ? "Remove favorite" : "Favorite"}
+              title={favoritesView() || isFavorite() ? "Remove favorite" : "Favorite"}
+              disabled={favoriteBusy()}
+              onClick={toggleFavorite}
+            >
+              <Heart size={12} />
+            </button>
           </div>
         </div>
       </Show>

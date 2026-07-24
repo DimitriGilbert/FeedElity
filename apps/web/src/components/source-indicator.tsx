@@ -26,13 +26,13 @@ export function SourceTypeIcon(props: { readonly sourceType: SourceType }) {
   return (
     <Switch>
       <Match when={props.sourceType === "youtube"}>
-        <SquarePlay class={iconClass} aria-hidden="true" />
+        <SquarePlay class={iconClass} stroke-width={1.75} aria-hidden="true" />
       </Match>
       <Match when={props.sourceType === "odysee"}>
-        <CirclePlay class={iconClass} aria-hidden="true" />
+        <CirclePlay class={iconClass} stroke-width={1.75} aria-hidden="true" />
       </Match>
       <Match when={props.sourceType === "peertube"}>
-        <RadioTower class={iconClass} aria-hidden="true" />
+        <RadioTower class={iconClass} stroke-width={1.75} aria-hidden="true" />
       </Match>
     </Switch>
   );
@@ -42,7 +42,7 @@ export function SourceIconBadge(props: { readonly sourceType: SourceType; readon
   const label = createMemo(() => formatSourceIndicatorLabel(props.sourceType, props.context, props.sourceCount));
   return (
     <span
-      class="inline-flex shrink-0 items-center gap-1 border border-border bg-background px-1 py-0.5 text-muted-foreground"
+      class="inline-flex shrink-0 items-center gap-0.5 text-muted-foreground"
       role="img"
       aria-label={label()}
       title={label()}

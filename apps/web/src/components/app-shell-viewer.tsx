@@ -3,6 +3,7 @@ import { For, Match, Show, Switch, createMemo, createResource, createSignal } fr
 import ArrowLeft from "lucide-solid/icons/arrow-left";
 import CircleCheck from "lucide-solid/icons/circle-check";
 import CirclePlay from "lucide-solid/icons/circle-play";
+import Clapperboard from "lucide-solid/icons/clapperboard";
 import ExternalLink from "lucide-solid/icons/external-link";
 import Eye from "lucide-solid/icons/eye";
 import EyeOff from "lucide-solid/icons/eye-off";
@@ -58,10 +59,11 @@ export interface SelectedContentViewerProps {
 export function SelectedContentViewer(props: SelectedContentViewerProps) {
   const selectedContentItemId = createMemo(() => props.selectedContent()?.id ?? null);
   const [contentDetail] = createResource(selectedContentItemId, (id) => client.catalog.contentDetail({ id }));
+  const contentDetailValue = createMemo(() => contentDetail.latest);
   const [useNoCookieEmbed, setUseNoCookieEmbed] = createSignal(true);
   const playableSources = createMemo(() => {
     const noCookie = useNoCookieEmbed();
-    const sources = contentDetail()?.sources ?? emptyCatalogContentSources;
+    const sources = contentDetail.latest?.sources ?? emptyCatalogContentSources;
     return toPlayableSources(noCookie ? sources : sources.map((source) => ({
       ...source,
       embedUrl: source.sourceType === "youtube" && source.embedUrl !== null
@@ -256,22 +258,27 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
         <Show when={props.viewerMode() === "content"}>
           <Switch>
           <Match when={selectedContentItemId() === null}>
-            <div class="flex min-h-[18rem] items-center justify-center bg-muted px-6 text-center">
+            <div class="flex min-h-[18rem] flex-col items-center justify-center gap-3 rounded-lg border border-border bg-muted px-6 py-10 text-center">
+              <Clapperboard size={32} class="text-muted-foreground" stroke-width={1.5} aria-hidden="true" />
               <p class="text-sm leading-6 text-muted-foreground">Pick a video to open the viewer.</p>
             </div>
           </Match>
-          <Match when={contentDetail.loading}>
-            <div class="flex min-h-[18rem] items-center justify-center bg-muted px-6 text-center">
-              <p class="text-sm leading-6 text-muted-foreground">Loading selected video.</p>
-            </div>
-          </Match>
-          <Match when={contentDetail.error !== undefined}>
+          <Match when={contentDetail.error !== undefined && contentDetailValue() === undefined}>
             <div class="border border-border bg-card p-4">
               <p class="text-sm font-semibold text-destructive">Video unavailable</p>
               <p class="mt-2 text-sm leading-6 text-muted-foreground">{formatError(contentDetail.error)}</p>
             </div>
           </Match>
-          <Match when={contentDetail()}>
+          <Match when={contentDetail.loading && contentDetailValue() === undefined}>
+            <div class="flex flex-col gap-3">
+              <div class="aspect-video w-full animate-pulse rounded-lg border border-border bg-muted" />
+              <div class="space-y-2">
+                <div class="h-5 w-3/4 animate-pulse rounded bg-muted" />
+                <div class="h-4 w-1/2 animate-pulse rounded bg-muted" />
+              </div>
+            </div>
+          </Match>
+          <Match when={contentDetailValue()}>
             {(detail) => (
               <div class="min-w-0">
                 <PlaybackSurface
@@ -295,7 +302,7 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                     </Show>
                     <button
                       type="button"
-                      class="inline-flex items-center justify-center gap-1 rounded-sm border border-border p-1.5 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                      class="inline-flex items-center justify-center gap-1 rounded-md border border-border p-1.5 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
                       aria-pressed={selectedContentStatus().opened}
                       aria-label={selectedContentStatus().opened ? "Unmark opened" : "Mark opened"}
                       title={selectedContentStatus().opened ? "Unmark opened" : "Mark opened"}
@@ -306,7 +313,7 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                     </button>
                     <button
                       type="button"
-                      class="inline-flex items-center justify-center gap-1 rounded-sm border border-border p-1.5 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                      class="inline-flex items-center justify-center gap-1 rounded-md border border-border p-1.5 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
                       aria-pressed={selectedContentStatus().played}
                       aria-label={selectedContentStatus().played ? "Unmark played" : "Mark played"}
                       title={selectedContentStatus().played ? "Unmark played" : "Mark played"}
@@ -317,7 +324,7 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                     </button>
                     <button
                       type="button"
-                      class={`inline-flex items-center justify-center gap-1 rounded-sm border border-border p-1.5 transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60 ${selectedContentIsFavorite() ? "text-primary" : "text-card-foreground"}`}
+                      class={`inline-flex items-center justify-center gap-1 rounded-md border border-border p-1.5 transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60 ${selectedContentIsFavorite() ? "text-primary" : "text-card-foreground"}`}
                       aria-pressed={selectedContentIsFavorite()}
                       aria-label={selectedContentIsFavorite() ? "Remove favorite" : "Favorite"}
                       title={selectedContentIsFavorite() ? "Remove favorite" : "Favorite"}
@@ -338,7 +345,7 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                       </select>
                       <button
                         type="button"
-                        class="inline-flex items-center justify-center gap-1 rounded-sm border border-border p-1.5 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                        class="inline-flex items-center justify-center gap-1 rounded-md border border-border p-1.5 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
                         aria-label="Add to playlist"
                         title="Add to playlist"
                         disabled={playlistActionBusy() || effectiveTargetPlaylistId() === null}
@@ -380,7 +387,7 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                         onClick={() => setUseNoCookieEmbed((prev) => !prev)}
                       >
                         {useNoCookieEmbed() ? <Shield size={12} /> : <ShieldOff size={12} />}
-                        <span class="text-[0.68rem]">{useNoCookieEmbed() ? "Privacy" : "Standard"}</span>
+                        <span class="text-xs">{useNoCookieEmbed() ? "Privacy" : "Standard"}</span>
                       </button>
                     </Show>
                   </div>
@@ -395,7 +402,7 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                       onClick={() => setUseNoCookieEmbed((prev) => !prev)}
                     >
                       {useNoCookieEmbed() ? <Shield size={12} /> : <ShieldOff size={12} />}
-                      <span class="text-[0.68rem]">{useNoCookieEmbed() ? "Privacy" : "Standard"}</span>
+                      <span class="text-xs">{useNoCookieEmbed() ? "Privacy" : "Standard"}</span>
                     </button>
                   </div>
                 </Show>
@@ -418,7 +425,7 @@ interface PlaybackSurfaceProps {
 
 function PlaybackSurface(props: PlaybackSurfaceProps) {
   return (
-    <div class="aspect-video overflow-hidden border border-border bg-muted">
+    <div class="aspect-video overflow-hidden rounded-lg border border-border bg-muted">
       <Switch>
         <Match when={props.source?.kind === "embed" && props.source !== null}>
           <iframe
@@ -469,7 +476,7 @@ function ContentDetailBody(props: ContentDetailBodyProps) {
       <Show when={props.detail.canonicalUrl}>
         {(canonicalUrl) => (
           <a
-            class="inline-flex items-center gap-1 rounded-sm border border-border bg-card px-2 py-1 text-xs font-semibold text-card-foreground transition hover:border-ring hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            class="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-xs font-semibold text-card-foreground transition hover:border-ring hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             href={canonicalUrl()}
             aria-label="Open original"
             title="Open original"

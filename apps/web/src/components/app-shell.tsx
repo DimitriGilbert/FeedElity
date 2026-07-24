@@ -6,7 +6,7 @@ import type {
   UserSetting,
   UserSubscriptionWithCreator,
 } from "@FeedElity/api";
-import { For, Match, Show, Switch, createEffect, createMemo, createResource, createSignal, onCleanup, onMount, untrack } from "solid-js";
+import { For, Match, Show, Suspense, Switch, createEffect, createMemo, createResource, createSignal, onCleanup, onMount, untrack } from "solid-js";
 import ChevronDown from "lucide-solid/icons/chevron-down";
 import Plus from "lucide-solid/icons/plus";
 import RefreshCw from "lucide-solid/icons/refresh-cw";
@@ -31,15 +31,14 @@ import {
   defaultMiddleFraction,
   emptyAppendedPageState,
   feedListLimit,
-  findNearestSnap,
   formatError,
   formatSourceLabel,
-  leftPaneSnapFractions,
   leftPaneTabLabels,
   minLeftFraction,
   minMiddleFraction,
   minRightFraction,
-  middlePaneSnapFractions,
+  clampLeftFraction,
+  clampMiddleFraction,
   pageHasMoreForKey,
   pageItemsForKey,
   paneWidthsLocalStorageKey,
@@ -282,15 +281,15 @@ function nextOffsetForKey(state: PaginationOffsetState, key: string, firstPageLe
 
 function LoadMoreControl(props: LoadMoreControlProps) {
   return (
-    <div class="mt-2 border-t border-border px-2 py-1.5" data-load-more-control>
+    <div class="mt-1 border-t border-border px-2 py-1.5" data-load-more-control>
       <div class="flex items-center justify-between gap-2">
-        <span class="text-[0.68rem] text-muted-foreground" data-loaded-count>
+        <span class="text-xs text-muted-foreground" data-loaded-count>
           {props.shownCount} loaded
         </span>
         <Show when={props.hasMore}>
           <button
             type="button"
-            class="inline-flex items-center gap-1 rounded-sm border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            class="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-xs font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
             disabled={props.busy}
             aria-label={props.label}
             title={props.label}
@@ -303,9 +302,8 @@ function LoadMoreControl(props: LoadMoreControlProps) {
           </button>
         </Show>
       </div>
-      <p class="mt-1 text-[0.62rem] text-muted-foreground">Pages load {props.pageSize} rows at a time.</p>
       <Show when={props.errorMessage}>
-        {(message) => <p class="mt-1 text-[0.68rem] text-destructive">{message()}</p>}
+        {(message) => <p class="mt-1 text-xs text-destructive">{message()}</p>}
       </Show>
     </div>
   );
@@ -353,6 +351,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
       return input === null ? emptyCatalogFeeds : client.catalog.feeds(input);
     },
   );
+  const feedsValue = createMemo(() => feeds.latest);
   const activeRefreshStatusResourceKey = createMemo(() => {
     const runId = activeRefreshRunId();
     if (runId === null) {
@@ -404,14 +403,14 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     return matchingCreators.length > libraryCreatorLimit();
   });
 
-  const visibleFeeds = createMemo(() => appendUniqueFeeds(feeds() ?? emptyCatalogFeeds, pageItemsForKey(appendedFeedPage(), feedListResourceKey() ?? "")));
+  const visibleFeeds = createMemo(() => appendUniqueFeeds(feedsValue() ?? emptyCatalogFeeds, pageItemsForKey(appendedFeedPage(), feedListResourceKey() ?? "")));
   const feedPageHasMore = createMemo(() => {
     const key = feedListResourceKey();
     if (key === null) {
       return false;
     }
 
-    return pageHasMoreForKey(appendedFeedPage(), key, (feeds() ?? emptyCatalogFeeds).length, feedListLimit);
+    return pageHasMoreForKey(appendedFeedPage(), key, (feedsValue() ?? emptyCatalogFeeds).length, feedListLimit);
   });
 
   const loadMoreCreators = async () => {
@@ -456,7 +455,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
         return;
       }
 
-      const nextOffset = nextOffsetForKey(feedOffset(), key, (feeds() ?? emptyCatalogFeeds).length);
+      const nextOffset = nextOffsetForKey(feedOffset(), key, (feedsValue() ?? emptyCatalogFeeds).length);
       const nextFeeds = await client.catalog.feeds({ ...input, offset: nextOffset });
       if (feedListResourceKey() !== key) {
         return;
@@ -565,25 +564,55 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
       data-shell-column="creators"
     >
       <div class={sourceHeaderRegionClass} data-source-header-region>
-        <div class="flex items-center justify-between gap-2">
-          <div class="flex items-center gap-1.5">
+        <div role="tablist" class="flex" data-left-pane-tab-bar>
+          <button
+            role="tab"
+            type="button"
+            aria-selected={props.activeTab() === "library"}
+            class={`flex-1 border-b-2 px-2 py-1.5 text-xs font-semibold transition ${props.activeTab() === "library" ? "border-b-ring text-foreground" : "border-b-transparent text-muted-foreground hover:text-foreground"}`}
+            onClick={() => props.setActiveTab("library")}
+          >
+            {props.mode === "library" ? "Library" : "Catalog"}
+          </button>
+          <button
+            role="tab"
+            type="button"
+            aria-selected={props.activeTab() === "feeds"}
+            class={`flex-1 border-b-2 px-2 py-1.5 text-xs font-semibold transition ${props.activeTab() === "feeds" ? "border-b-ring text-foreground" : "border-b-transparent text-muted-foreground hover:text-foreground"}`}
+            onClick={() => props.setActiveTab("feeds")}
+          >
+            {leftPaneTabLabels.feeds}
+          </button>
+          <Show when={props.isAuthenticated()}>
             <button
+              role="tab"
               type="button"
-              class="shrink-0 border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
-              aria-label="Add source"
-              title="Add source"
-              onClick={() => props.onOpenMiddlePanePanel("add-source")}
+              aria-selected={props.activeTab() === "playlists"}
+              class={`flex-1 border-b-2 px-2 py-1.5 text-xs font-semibold transition ${props.activeTab() === "playlists" ? "border-b-ring text-foreground" : "border-b-transparent text-muted-foreground hover:text-foreground"}`}
+              onClick={() => props.setActiveTab("playlists")}
             >
-              <Plus size={14} />
+              {leftPaneTabLabels.playlists}
             </button>
-            <Show when={props.isAuthenticated()}>
-              <Show
+          </Show>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <button
+            type="button"
+            class="shrink-0 rounded-md border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            aria-label="Add source"
+            title="Add source"
+            onClick={() => props.onOpenMiddlePanePanel("add-source")}
+          >
+            <Plus size={14} />
+          </button>
+          <Show when={props.isAuthenticated()}>
+            <Show
                 when={refreshBusy()}
                 fallback={(
                   <div class="relative inline-flex">
                     <button
                       type="button"
-                      class="shrink-0 border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                      class="shrink-0 rounded-md border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
                       aria-label="Refresh due feeds"
                       title="Refresh due feeds"
                       onClick={async () => runHeaderRefresh(false)}
@@ -592,16 +621,16 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
                     </button>
                     <details class="relative">
                       <summary
-                        class="flex h-full cursor-pointer list-none items-center border border-l-0 border-border bg-background px-1 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                        class="flex h-full cursor-pointer list-none items-center rounded-r-md border border-l-0 border-border bg-background px-1 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                         aria-label="Open force refresh action"
                         title="Force refresh"
                       >
                         <ChevronDown size={12} />
                       </summary>
-                      <div class="absolute left-0 z-20 mt-1 min-w-40 border border-border bg-popover p-1 shadow-lg">
+                      <div class="absolute left-0 z-20 mt-1 min-w-40 rounded-md border border-border bg-popover p-1 shadow-lg">
                         <button
                           type="button"
-                          class="flex w-full items-center gap-1 px-2 py-1.5 text-left text-[0.68rem] font-semibold text-popover-foreground transition hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                          class="flex w-full items-center gap-1 rounded-sm px-2 py-1.5 text-left text-xs font-semibold text-popover-foreground transition hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-60"
                           aria-label="Force refresh all feeds"
                           title="Force refresh all feeds"
                           onClick={async (event) => {
@@ -616,95 +645,65 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
                   </div>
                 )}
               >
-                <span class="border border-border bg-muted px-2 py-1 text-[0.68rem] font-semibold text-muted-foreground" role="status">
+                <span class="rounded-md border border-border bg-muted px-2 py-1 text-xs font-semibold text-muted-foreground" role="status">
                   {refreshProgressText()}
                 </span>
               </Show>
-              <button
-                type="button"
-                class="shrink-0 border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
-                aria-label="Settings"
-                title="Settings"
-                onClick={() => props.onOpenSettings()}
-              >
-                <Settings size={14} />
-              </button>
-            </Show>
-          </div>
-          <span class="text-[0.68rem] text-muted-foreground" data-creator-count>
+            <button
+              type="button"
+              class="shrink-0 rounded-md border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+              aria-label="Settings"
+              title="Settings"
+              onClick={() => props.onOpenSettings()}
+            >
+              <Settings size={14} />
+            </button>
+          </Show>
+          <span class="ml-auto text-xs text-muted-foreground" data-creator-count>
             {creatorCount()} loaded
           </span>
         </div>
         <Show when={refreshError()}>
-          {(message) => <p class="mt-1 text-[0.68rem] text-destructive">{message()}</p>}
+          {(message) => <p class="mt-1 text-xs text-destructive">{message()}</p>}
         </Show>
         <Show when={refreshProviderMessage()}>
-          {(message) => <p class="mt-1 text-[0.68rem] text-destructive">{message()}</p>}
+          {(message) => <p class="mt-1 text-xs text-destructive">{message()}</p>}
         </Show>
-        <label class="sr-only" for={creatorSearchInputId}>
-          Search creators
-        </label>
-        <input
-          id={creatorSearchInputId}
-          class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
-          type="search"
-          value={search()}
-          placeholder="Search creators"
-          autocomplete="off"
-          onInput={(event) => {
-            setSearch(event.currentTarget.value);
-            setLibraryCreatorLimit(creatorListLimit);
-          }}
-        />
-        <label class="sr-only" for={creatorSourceFilterId}>
-          Filter creators by source type
-        </label>
-        <select
-          id={creatorSourceFilterId}
-          class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
-          value={sourceType() ?? allCreatorSourceFilterValue}
-          aria-label="Creator source-type filter"
-          title="Filters creator rows by catalog source type. Select a creator to inspect all feeds."
-          onChange={(event) => {
-            setSourceType(toSourceFilterValue(event.currentTarget.value));
-            setLibraryCreatorLimit(creatorListLimit);
-          }}
-        >
-          <option value={allCreatorSourceFilterValue}>All creator sources</option>
-          <For each={sourceFilterOptions}>
-            {(source) => <option value={source}>{formatSourceLabel(source)}</option>}
-          </For>
-        </select>
-        <div role="tablist" class="flex" data-left-pane-tab-bar>
-          <button
-            role="tab"
-            type="button"
-            aria-selected={props.activeTab() === "library"}
-            class={`flex-1 border-t-2 px-2 py-1.5 text-[0.68rem] font-semibold transition ${props.activeTab() === "library" ? "border-t-ring text-foreground" : "border-t-transparent text-muted-foreground hover:text-foreground"}`}
-            onClick={() => props.setActiveTab("library")}
+        <div class="flex items-center gap-1.5">
+          <label class="sr-only" for={creatorSearchInputId}>
+            Search creators
+          </label>
+          <input
+            id={creatorSearchInputId}
+            class="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+            type="search"
+            value={search()}
+            placeholder="Search creators"
+            autocomplete="off"
+            onInput={(event) => {
+              setSearch(event.currentTarget.value);
+              setLibraryCreatorLimit(creatorListLimit);
+            }}
+          />
+          <label class="sr-only" for={creatorSourceFilterId}>
+            Filter creators by source type
+          </label>
+          <select
+            id={creatorSourceFilterId}
+            class="shrink-0 rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+            value={sourceType() ?? allCreatorSourceFilterValue}
+            aria-label="Creator source-type filter"
+            title="Filters creator rows by catalog source type. Select a creator to inspect all feeds."
+            onChange={(event) => {
+              setSourceType(toSourceFilterValue(event.currentTarget.value));
+              setLibraryCreatorLimit(creatorListLimit);
+            }}
           >
-            {props.mode === "library" ? "Library" : "Catalog"}
-          </button>
-          <button
-            role="tab"
-            type="button"
-            aria-selected={props.activeTab() === "feeds"}
-            class={`flex-1 border-t-2 px-2 py-1.5 text-[0.68rem] font-semibold transition ${props.activeTab() === "feeds" ? "border-t-ring text-foreground" : "border-t-transparent text-muted-foreground hover:text-foreground"}`}
-            onClick={() => props.setActiveTab("feeds")}
-          >
-            {leftPaneTabLabels.feeds}
-          </button>
-          <Show when={props.isAuthenticated()}>
-            <button
-              role="tab"
-              type="button"
-              aria-selected={props.activeTab() === "playlists"}
-              class={`flex-1 border-t-2 px-2 py-1.5 text-[0.68rem] font-semibold transition ${props.activeTab() === "playlists" ? "border-t-ring text-foreground" : "border-t-transparent text-muted-foreground hover:text-foreground"}`}
-              onClick={() => props.setActiveTab("playlists")}
-            >
-              {leftPaneTabLabels.playlists}
-            </button>
-          </Show>
+            <option value={allCreatorSourceFilterValue}>All</option>
+            <For each={sourceFilterOptions}>
+              {(source) => <option value={source}>{formatSourceLabel(source)}</option>}
+            </For>
+          </select>
         </div>
       </div>
       <div class={sourceCatalogRegionClass} data-source-catalog-region>
@@ -713,23 +712,23 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
           <Switch>
             <Match when={props.mode === "library" && subscriptions.loading}>
               <p class="text-xs font-semibold text-foreground">Loading Library</p>
-              <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading your subscribed sources.</p>
+              <p class="mt-2 text-xs leading-5 text-muted-foreground">Loading your subscribed sources.</p>
             </Match>
             <Match when={props.mode === "catalog" && creators.loading}>
               <p class="text-xs font-semibold text-foreground">Loading sources</p>
-              <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading the public catalog.</p>
+              <p class="mt-2 text-xs leading-5 text-muted-foreground">Loading the public catalog.</p>
             </Match>
             <Match when={props.mode === "library" && subscriptions.error !== undefined}>
               <p class="text-xs font-semibold text-destructive">Library unavailable</p>
-              <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">{formatError(subscriptions.error)}</p>
+              <p class="mt-2 text-xs leading-5 text-muted-foreground">{formatError(subscriptions.error)}</p>
             </Match>
             <Match when={props.mode === "catalog" && creators.error !== undefined}>
               <p class="text-xs font-semibold text-destructive">Sources unavailable</p>
-              <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">{formatError(creators.error)}</p>
+              <p class="mt-2 text-xs leading-5 text-muted-foreground">{formatError(creators.error)}</p>
             </Match>
             <Match when={listedCreators().length === 0}>
               <p class="text-xs font-semibold text-foreground">No sources found</p>
-              <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">
+              <p class="mt-2 text-xs leading-5 text-muted-foreground">
                 {props.mode === "library"
                   ? "Subscribed creators appear in your Library after you subscribe from the Catalog."
                   : search().trim().length === 0 && sourceType() === null
@@ -780,7 +779,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
         </div>
         </Show>
         <Show when={props.activeTab() === "feeds"}>
-        <Show when={props.selectedCreator()} fallback={<div class={sourceFeedListRegionClass} aria-label="Selected source feeds"><p class="text-[0.72rem] leading-5 text-muted-foreground">Select a source to see its feeds.</p></div>}>
+        <Show when={props.selectedCreator()} fallback={<div class={sourceFeedListRegionClass} aria-label="Selected source feeds"><p class="text-xs leading-5 text-muted-foreground">Select a source to see its feeds.</p></div>}>
           {(creator) => (
             <aside class={sourceFeedListRegionClass} aria-label="Selected source feeds" data-source-feed-scroll-region>
               <div class="flex items-center justify-between gap-2">
@@ -795,13 +794,13 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
               </div>
               <Switch>
                 <Match when={feeds.loading}>
-                  <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading feeds.</p>
+                  <p class="mt-2 text-xs leading-5 text-muted-foreground">Loading feeds.</p>
                 </Match>
                 <Match when={feeds.error !== undefined}>
-                  <p class="mt-2 text-[0.72rem] leading-5 text-destructive">Feeds unavailable.</p>
+                  <p class="mt-2 text-xs leading-5 text-destructive">Feeds unavailable.</p>
                 </Match>
-                <Match when={(feeds()?.length ?? 0) === 0}>
-                  <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">No feeds are attached to this creator.</p>
+                <Match when={(feedsValue()?.length ?? 0) === 0}>
+                  <p class="mt-2 text-xs leading-5 text-muted-foreground">No feeds are attached to this creator.</p>
                 </Match>
                 <Match when={visibleFeeds()}>
                   {(selectedCreatorFeeds) => (
@@ -859,15 +858,9 @@ export interface AppShellProps {
 export default function AppShell(props: AppShellProps) {
   const mode = props.mode ?? "catalog";
   const session = authClient.useSession();
-  const appSessionResourceInput = createMemo(() => {
-    if (session().isPending) {
-      return null;
-    }
-
-    return `app-session\u001f${session().data?.user.id ?? "anonymous"}`;
-  });
+  const appSessionResourceInput = createMemo(() => session().data?.user.id ?? null);
   const [appSession] = createResource(appSessionResourceInput, () => client.session.current());
-  const isAuthenticated = createMemo(() => appSession() !== null && appSession() !== undefined);
+  const isAuthenticated = createMemo(() => appSession.latest !== null && appSession.latest !== undefined);
   const [selectedCreator, setSelectedCreator] = createSignal<BrowsableCreator | null>(null);
   const [selectedFeed, setSelectedFeed] = createSignal<CatalogFeed | null>(null);
   const [selectedContent, setSelectedContent] = createSignal<CatalogContentListItem | null>(null);
@@ -1038,33 +1031,16 @@ export default function AppShell(props: AppShellProps) {
     setMiddleFraction(clampedMiddle);
   };
 
-  const snapLeft = () => {
-    const snapped = findNearestSnap(leftFraction(), leftPaneSnapFractions);
-    const right = 1 - snapped - middleFraction();
-    if (right >= minRightFraction && middleFraction() >= minMiddleFraction) {
-      setLeftFraction(snapped);
-      persistPaneWidths(snapped, middleFraction());
-      return;
-    }
-    const maxMiddle = 1 - snapped - minRightFraction;
-    if (maxMiddle >= minMiddleFraction) {
-      setLeftFraction(snapped);
-      setMiddleFraction(maxMiddle);
-      persistPaneWidths(snapped, maxMiddle);
-      return;
-    }
-    persistPaneWidths(leftFraction(), middleFraction());
+  const commitLeftResize = () => {
+    const clamped = clampLeftFraction(leftFraction(), middleFraction());
+    setLeftFraction(clamped);
+    persistPaneWidths(clamped, middleFraction());
   };
 
-  const snapMiddle = () => {
-    const snapped = findNearestSnap(middleFraction(), middlePaneSnapFractions);
-    const right = 1 - leftFraction() - snapped;
-    if (right >= minRightFraction) {
-      setMiddleFraction(snapped);
-      persistPaneWidths(leftFraction(), snapped);
-      return;
-    }
-    persistPaneWidths(leftFraction(), middleFraction());
+  const commitMiddleResize = () => {
+    const clamped = clampMiddleFraction(middleFraction(), leftFraction());
+    setMiddleFraction(clamped);
+    persistPaneWidths(leftFraction(), clamped);
   };
 
   onMount(() => {
@@ -1097,6 +1073,7 @@ export default function AppShell(props: AppShellProps) {
   return (
     <main class={shellRootClass}>
       <div class={shellGridClass} ref={(el) => { containerEl = el; }} style={gridStyle()} data-reader-density={readerDensity()}>
+        <Suspense>
         <CreatorSourceColumn
           isAuthenticated={isAuthenticated}
           mode={mode}
@@ -1125,6 +1102,8 @@ export default function AppShell(props: AppShellProps) {
           onOpenMiddlePanePanel={setMiddlePanePanel}
           onOpenSettings={() => setViewerMode("settings")}
         />
+        </Suspense>
+        <Suspense>
         <ContentListColumn
           isAuthenticated={isAuthenticated}
           mode={mode}
@@ -1157,6 +1136,8 @@ export default function AppShell(props: AppShellProps) {
           onSelectPlaylist={setSelectedPlaylistId}
           onPlaylistItemAdded={() => setPlaylistItemsReloadKey((key) => key + 1)}
         />
+        </Suspense>
+        <Suspense>
         <SelectedContentViewer
           isAuthenticated={isAuthenticated}
           selectedContent={selectedContent}
@@ -1179,14 +1160,15 @@ export default function AppShell(props: AppShellProps) {
           onMarkContentPlayed={markContentPlayed}
           onAutoMarkContentPlayed={autoMarkContentPlayed}
         />
+        </Suspense>
         <Show when={isDesktop()}>
           <div
             class="absolute inset-y-0 z-10"
-            style={{ left: `calc(${leftFraction() * 100}% - 3px)`, width: "6px" }}
+            style={{ left: `calc(${leftFraction() * 100}% - 4px)`, width: "8px" }}
           >
             <PaneResizer
               onResize={handleLeftResize}
-              onDragEnd={snapLeft}
+              onDragEnd={commitLeftResize}
               ariaLabel="Resize source pane"
               ariaValueNow={Math.round(leftFraction() * 100)}
               ariaValueMin={Math.round(minLeftFraction * 100)}
@@ -1195,11 +1177,11 @@ export default function AppShell(props: AppShellProps) {
           </div>
           <div
             class="absolute inset-y-0 z-10"
-            style={{ left: `calc(${(leftFraction() + middleFraction()) * 100}% - 3px)`, width: "6px" }}
+            style={{ left: `calc(${(leftFraction() + middleFraction()) * 100}% - 4px)`, width: "8px" }}
           >
             <PaneResizer
               onResize={handleMiddleResize}
-              onDragEnd={snapMiddle}
+              onDragEnd={commitMiddleResize}
               ariaLabel="Resize feed pane"
               ariaValueNow={Math.round(middleFraction() * 100)}
               ariaValueMin={Math.round(minMiddleFraction * 100)}

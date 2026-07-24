@@ -109,6 +109,30 @@ async function listPlayedHistoryContentItems(): Promise<readonly CatalogContentL
   return mergeUniqueContentItemsForDisplay(historyEntries.map((entry) => entry.content));
 }
 
+async function readContentItems(mode: ContentItemsResourceMode, input: ContentListInput): Promise<readonly CatalogContentListItem[]> {
+  if (mode === "favorites") {
+    return client.overlays.favoriteContentItems();
+  }
+
+  if (mode === "history-opened") {
+    return listOpenedHistoryContentItems();
+  }
+
+  if (mode === "played") {
+    return listPlayedHistoryContentItems();
+  }
+
+  if (mode === "subscribed") {
+    return listSubscribedLibraryContentItems(input);
+  }
+
+  if (mode === "catalog") {
+    return client.catalog.contentItems(input);
+  }
+
+  return [];
+}
+
 function contentItemMatchesLocalFilters(contentItem: CatalogContentListItem, input: ContentListInput): boolean {
   if (input.creatorId !== undefined && contentItem.creatorId !== input.creatorId) {
     return false;
@@ -147,15 +171,15 @@ function nextOffsetForKey(state: PaginationOffsetState, key: string, firstPageLe
 
 function ContentLoadMoreControl(props: ContentLoadMoreControlProps) {
   return (
-    <div class="mt-2 border-t border-border px-2 py-1.5" data-load-more-control>
+    <div class="mt-1 border-t border-border px-2 py-1.5" data-load-more-control>
       <div class="flex items-center justify-between gap-2">
-        <span class="text-[0.68rem] text-muted-foreground" data-loaded-count>
+        <span class="text-xs text-muted-foreground" data-loaded-count>
           {props.shownCount} loaded
         </span>
         <Show when={props.hasMore}>
           <button
             type="button"
-            class="inline-flex items-center gap-1 rounded-sm border border-border bg-card px-2 py-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            class="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-xs font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
             disabled={props.busy}
             aria-label={props.label}
             title={props.label}
@@ -168,9 +192,8 @@ function ContentLoadMoreControl(props: ContentLoadMoreControlProps) {
           </button>
         </Show>
       </div>
-      <p class="mt-1 text-[0.62rem] text-muted-foreground">Pages load {props.pageSize} rows at a time.</p>
       <Show when={props.errorMessage}>
-        {(message) => <p class="mt-1 text-[0.68rem] text-destructive">{message()}</p>}
+        {(message) => <p class="mt-1 text-xs text-destructive">{message()}</p>}
       </Show>
     </div>
   );
@@ -261,29 +284,9 @@ export function ContentListColumn(props: ContentListColumnProps) {
   const [contentItems] = createResource(contentItemsResourceKey, () => {
     const mode = untrack(contentItemsResourceMode);
     const input = untrack(contentListInput);
-
-    if (mode === "favorites") {
-      return client.overlays.favoriteContentItems();
-    }
-
-    if (mode === "history-opened") {
-      return listOpenedHistoryContentItems();
-    }
-
-    if (mode === "played") {
-      return listPlayedHistoryContentItems();
-    }
-
-    if (mode === "subscribed") {
-      return listSubscribedLibraryContentItems(input);
-    }
-
-    if (mode === "catalog") {
-      return client.catalog.contentItems(input);
-    }
-
-    return [];
+    return readContentItems(mode, input);
   });
+  const contentItemsValue = createMemo(() => contentItems.latest);
   const favoriteItemsResourceInput = createMemo(() => {
     if (!props.isAuthenticated() || contentItemsResourceMode() === "favorites") {
       return null;
@@ -295,7 +298,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
     client.overlays.favoriteContentItems(),
   );
   const favoriteContentItemIds = createMemo(() => {
-    const favoriteSourceItems = contentItemsResourceMode() === "favorites" ? contentItems() : favoriteItems();
+    const favoriteSourceItems = contentItemsResourceMode() === "favorites" ? contentItemsValue() : favoriteItems();
 
     return new Set((favoriteSourceItems ?? emptyCatalogContentItems).map((contentItem) => contentItem.id));
   });
@@ -310,23 +313,25 @@ export function ContentListColumn(props: ContentListColumnProps) {
     return loadedPlaylists[0]?.id ?? null;
   });
   const loadedContentItems = createMemo(() =>
-    appendUniqueContentItems(contentItems() ?? emptyCatalogContentItems, pageItemsForKey(appendedContentPage(), contentItemsResourceKey())),
+    appendUniqueContentItems(contentItemsValue() ?? emptyCatalogContentItems, pageItemsForKey(appendedContentPage(), contentItemsResourceKey())),
   );
   const contentPageHasMore = createMemo(() =>
     showsCatalogFilters(viewMode())
-      && pageHasMoreForKey(appendedContentPage(), contentItemsResourceKey(), (contentItems() ?? emptyCatalogContentItems).length, contentListLimit),
+      && pageHasMoreForKey(appendedContentPage(), contentItemsResourceKey(), (contentItemsValue() ?? emptyCatalogContentItems).length, contentListLimit),
   );
   const displayedContentItems = createMemo(() => {
     const currentContentItems = loadedContentItems();
     const input = contentListInput();
-    const statuses = props.contentStatuses();
     const locallyFilteredItems = showsCatalogFilters(viewMode())
       ? currentContentItems
       : currentContentItems.filter((contentItem) => contentItemMatchesLocalFilters(contentItem, input));
 
-    const visibleItems = !props.isAuthenticated() || !hidePlayed()
-      ? locallyFilteredItems
-      : locallyFilteredItems.filter((contentItem) => !toContentStatusFlags(statuses, contentItem.id).played);
+    const visibleItems = props.isAuthenticated() && hidePlayed()
+      ? (() => {
+          const statuses = props.contentStatuses();
+          return locallyFilteredItems.filter((contentItem) => !toContentStatusFlags(statuses, contentItem.id).played);
+        })()
+      : locallyFilteredItems;
 
     return viewMode() === "history-opened" || viewMode() === "played"
       ? visibleItems.slice(0, contentListLimit)
@@ -390,7 +395,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
     }
 
     const key = contentItemsResourceKey();
-    const nextOffset = nextOffsetForKey(contentOffset(), key, (contentItems() ?? emptyCatalogContentItems).length);
+    const nextOffset = nextOffsetForKey(contentOffset(), key, (contentItemsValue() ?? emptyCatalogContentItems).length);
     const input = { ...contentListInput(), offset: nextOffset };
     setContentPageBusy(true);
     setContentPageError(null);
@@ -429,7 +434,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
           </label>
           <input
             id={contentSearchInputId}
-            class="min-w-0 flex-1 border border-input bg-background px-2 py-1 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+            class="min-w-0 flex-1 rounded-md rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
             type="search"
             value={search()}
             placeholder="Search videos"
@@ -437,7 +442,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
             onInput={(event) => setSearch(event.currentTarget.value)}
           />
           <Show when={props.isAuthenticated()}>
-            <label class="flex items-center gap-1 text-[0.68rem] text-muted-foreground" for={contentHidePlayedInputId}>
+            <label class="flex items-center gap-1 text-xs text-muted-foreground" for={contentHidePlayedInputId}>
               <input
                 id={contentHidePlayedInputId}
                 type="checkbox"
@@ -447,12 +452,12 @@ export function ContentListColumn(props: ContentListColumnProps) {
               <span>Hide played</span>
             </label>
           </Show>
-          <span class="shrink-0 text-[0.68rem] text-muted-foreground" data-content-loaded-count>
+          <span class="shrink-0 text-xs text-muted-foreground" data-content-loaded-count>
             {contentCount()}
           </span>
           <button
             type="button"
-            class="shrink-0 border border-border bg-background p-1 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            class="shrink-0 rounded-md border border-border bg-background p-1 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             aria-label={controlsExpanded() ? "Collapse filters" : "Expand filters"}
             aria-expanded={controlsExpanded() ? "true" : "false"}
             onClick={() => setControlsExpanded((prev) => !prev)}
@@ -468,7 +473,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
               <button
                 id={props.mode === "library" ? contentViewModeSubscribedId : contentViewModeAllId}
                 type="button"
-                class="inline-flex flex-col items-center gap-0.5 border border-border bg-background px-2 py-1.5 text-[0.62rem] font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                class="inline-flex flex-col items-center gap-0.5 rounded-md border border-border bg-background px-2 py-1.5 text-xs font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                 aria-pressed={viewMode() === (props.mode === "library" ? "subscribed" : "catalog")}
                 aria-label="All"
                 title="All"
@@ -480,7 +485,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
               <button
                 id={contentViewModeFavoritesId}
                 type="button"
-                class="inline-flex flex-col items-center gap-0.5 border border-border bg-background px-2 py-1.5 text-[0.62rem] font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                class="inline-flex flex-col items-center gap-0.5 rounded-md border border-border bg-background px-2 py-1.5 text-xs font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                 aria-pressed={viewMode() === "favorites"}
                 aria-label="Favorites"
                 title="Favorites"
@@ -492,7 +497,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
               <button
                 id={contentViewModeHistoryId}
                 type="button"
-                class="inline-flex flex-col items-center gap-0.5 border border-border bg-background px-2 py-1.5 text-[0.62rem] font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                class="inline-flex flex-col items-center gap-0.5 rounded-md border border-border bg-background px-2 py-1.5 text-xs font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                 aria-pressed={viewMode() === "history-opened"}
                 aria-label="History/Open"
                 title="History/Open"
@@ -504,7 +509,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
               <button
                 id={contentViewModePlayedId}
                 type="button"
-                class="inline-flex flex-col items-center gap-0.5 border border-border bg-background px-2 py-1.5 text-[0.62rem] font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                class="inline-flex flex-col items-center gap-0.5 rounded-md border border-border bg-background px-2 py-1.5 text-xs font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                 aria-pressed={viewMode() === "played"}
                 aria-label="Played"
                 title="Played"
@@ -522,7 +527,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
               </label>
               <select
                 id={contentSourceFilterId}
-                class="border border-input bg-background px-2 py-1 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+                class="rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
                 value={sourceType() ?? allContentSourceFilterValue}
                 onChange={(event) => setSourceType(toSourceFilterValue(event.currentTarget.value))}
               >
@@ -534,7 +539,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
             </div>
           </Show>
           <Show when={!showsCatalogFilters(viewMode())}>
-            <p class="mt-2 text-[0.68rem] leading-5 text-muted-foreground">
+            <p class="mt-2 text-xs leading-5 text-muted-foreground">
               Filters applied locally to loaded videos.
             </p>
           </Show>
@@ -564,15 +569,15 @@ export function ContentListColumn(props: ContentListColumnProps) {
         <Switch>
           <Match when={contentItems.loading}>
             <p class="text-xs font-semibold text-card-foreground">Loading videos</p>
-            <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading {visibleContentCollectionLabel()} videos.</p>
+            <p class="mt-2 text-xs leading-5 text-muted-foreground">Loading {visibleContentCollectionLabel()} videos.</p>
           </Match>
           <Match when={contentItems.error !== undefined}>
             <p class="text-xs font-semibold text-destructive">Videos unavailable</p>
-            <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">{formatError(contentItems.error)}</p>
+            <p class="mt-2 text-xs leading-5 text-muted-foreground">{formatError(contentItems.error)}</p>
           </Match>
-          <Match when={contentItems() !== undefined && displayedContentItems().length === 0}>
+          <Match when={contentItemsValue() !== undefined && displayedContentItems().length === 0}>
             <p class="text-xs font-semibold text-card-foreground">No videos found</p>
-            <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">
+            <p class="mt-2 text-xs leading-5 text-muted-foreground">
               {viewMode() === "favorites"
                 ? "Favorite videos from the viewer or feed list to collect them here."
                 : viewMode() === "history-opened"
@@ -593,13 +598,13 @@ export function ContentListColumn(props: ContentListColumnProps) {
                     <li>
                       <ContentListItemRow
                         contentItem={contentItem}
-                        isAuthenticated={props.isAuthenticated()}
-                        isFavorite={favoriteContentItemIds().has(contentItem.id)}
-                        status={toContentStatusFlags(props.contentStatuses(), contentItem.id)}
-                        selected={props.selectedContentItemId() === contentItem.id}
-                        favoritesView={viewMode() === "favorites"}
-                        readerDensity={props.readerDensity()}
-                        targetPlaylistId={listTargetPlaylistId()}
+                        isAuthenticated={props.isAuthenticated}
+                        isFavorite={() => favoriteContentItemIds().has(contentItem.id)}
+                        status={() => toContentStatusFlags(props.contentStatuses(), contentItem.id)}
+                        selected={() => props.selectedContentItemId() === contentItem.id}
+                        favoritesView={() => viewMode() === "favorites"}
+                        readerDensity={props.readerDensity}
+                        targetPlaylistId={listTargetPlaylistId}
                         formatError={formatError}
                         formatPublishedAt={formatContentPublishedAt}
                         formatDuration={formatContentDuration}

@@ -48,7 +48,7 @@ export default function UserMenu() {
         <Link
           to="/login"
           search={{ redirect: undefined }}
-          class={`inline-flex min-h-8 items-center border border-border bg-primary px-3 text-sm font-semibold text-primary-foreground transition duration-200 hover:bg-accent hover:text-accent-foreground ${focusVisibleClass}`}
+          class={`inline-flex min-h-8 items-center rounded-md border border-border bg-primary px-3 text-sm font-semibold text-primary-foreground transition hover:bg-accent hover:text-accent-foreground ${focusVisibleClass}`}
         >
           Sign in
         </Link>
@@ -57,18 +57,18 @@ export default function UserMenu() {
       <Show when={!session().isPending && session().data}>
         <button
           type="button"
-          class={`inline-flex min-h-8 items-center border border-border bg-primary px-3 text-sm font-medium text-primary-foreground transition duration-200 hover:bg-accent hover:text-accent-foreground ${focusVisibleClass}`}
+          class={`inline-flex min-h-8 items-center rounded-md border border-border bg-card px-3 text-sm font-medium text-foreground transition hover:bg-accent hover:text-accent-foreground ${focusVisibleClass}`}
           onClick={() => setIsMenuOpen(!isMenuOpen())}
         >
           {session().data?.user.name}
         </button>
 
         <Show when={isMenuOpen()}>
-          <div class="absolute right-0 mt-2 w-64 border border-border bg-popover p-2 text-popover-foreground">
-            <div class="bg-muted px-3 py-3 text-sm text-muted-foreground">{session().data?.user.email}</div>
+          <div class="absolute right-0 mt-2 w-64 rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-lg">
+            <div class="rounded-sm bg-muted px-3 py-3 text-sm text-muted-foreground">{session().data?.user.email}</div>
             <button
               type="button"
-              class={`mt-2 w-full border border-border px-4 py-2 text-center text-sm text-foreground transition duration-200 hover:text-destructive ${focusVisibleClass}`}
+              class={`mt-2 w-full rounded-md border border-border px-4 py-2 text-center text-sm text-foreground transition hover:bg-accent hover:text-destructive ${focusVisibleClass}`}
               onClick={() => {
                 setIsMenuOpen(false);
                 authClient.signOut({

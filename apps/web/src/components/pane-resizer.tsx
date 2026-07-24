@@ -102,13 +102,13 @@ export function PaneResizer(props: PaneResizerProps) {
       aria-valuemin={props.ariaValueMin}
       aria-valuemax={props.ariaValueMax}
       tabindex="0"
-      class="group h-full w-[6px] cursor-col-resize touch-none select-none"
+      class="group flex h-full w-[8px] cursor-col-resize touch-none select-none items-center justify-center"
       onMouseDown={onMouseDown}
       onTouchStart={onTouchStart}
       onKeyDown={onKeyDown}
     >
       <div
-        class={`h-full w-[2px] mx-auto transition-colors ${isDragging() ? "bg-ring" : "bg-border group-hover:bg-ring"}`}
+        class={`h-full w-px transition-colors ${isDragging() ? "bg-ring" : "bg-border group-hover:bg-ring group-focus-visible:bg-ring"}`}
       />
     </div>
   );

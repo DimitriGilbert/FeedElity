@@ -26,20 +26,19 @@ import {
   defaultMiddleFraction,
   desktopShellGridClass,
   feedListLimit,
-  findNearestSnap,
   firstPageOffset,
   formatRefreshReportSummary,
   formatRefreshRunSummary,
   formatSettingValue,
   getShellColumnCount,
   hasInternalAppHeader,
-  leftPaneSnapFractions,
   leftPaneTabLabels,
-  middlePaneSnapFractions,
   minLeftFraction,
   minMiddleFraction,
   minRightFraction,
   paneWidthsLocalStorageKey,
+  clampLeftFraction,
+  clampMiddleFraction,
   playlistDescriptionInputId,
   playlistNameInputId,
   playlistSortInputId,
@@ -218,7 +217,7 @@ test("anonymous shell state gates protected overlays behind app session state", 
   const source = await readAppShellSource();
 
   expect(source).toContain("const [appSession] = createResource(appSessionResourceInput, () => client.session.current())");
-  expect(source).toContain("appSession() !== null && appSession() !== undefined");
+  expect(source).toContain("appSession.latest !== null && appSession.latest !== undefined");
   expect(source).toContain('props.isAuthenticated() && props.mode === "library"');
 });
 
@@ -397,7 +396,7 @@ test("content pane is wired to anonymous catalog content items", async () => {
   expect(source).toContain("aria-label={visibleFiltersLabel()}");
   expect(source).toContain("onInput={(event) => setSearch(event.currentTarget.value)}");
   expect(source).toContain("onChange={(event) => setSourceType(toSourceFilterValue(event.currentTarget.value))}");
-  expect(source).toContain("selected={props.selectedContentItemId() === contentItem.id}");
+  expect(source).toContain("selected={() => props.selectedContentItemId() === contentItem.id}");
   expect(source).toContain("data-selected-content-item-id={selectedContentItemId() ?? \"\"}");
 });
 
@@ -734,7 +733,7 @@ test("playlist controls are protected behind authenticated session state", async
   const source = await readAppShellSource();
 
   expect(source).toContain("const session = authClient.useSession()");
-  expect(source).toContain("appSession() !== null && appSession() !== undefined");
+  expect(source).toContain("appSession.latest !== null && appSession.latest !== undefined");
   expect(source).toContain("<Show when={props.isAuthenticated()}>");
   expect(source).not.toContain("Sign in to create playlists");
   expect(source).not.toContain("Login to save playlists");
@@ -871,7 +870,7 @@ test("reader density setting is applied to real row spacing", async () => {
   expect(source).toContain("function readerDensityPaddingClass(readerDensity: ReaderDensity): string");
   expect(source).toContain("readerDensityPaddingClass(props.readerDensity)");
   expect(source).toContain("readerDensityPaddingClass(props.readerDensity ?? \"comfortable\")");
-  expect(source).toContain("readerDensity={props.readerDensity()}");
+  expect(source).toContain("readerDensity={props.readerDensity}");
 });
 
 test("raw settings editor is retained only as collapsed advanced settings", async () => {
@@ -993,7 +992,7 @@ test("anonymous users do not see favorite controls or protected favorite calls",
   expect(source).toContain("if (props.isAuthenticated() && viewMode() === \"favorites\")");
   expect(source).toContain("if (!props.isAuthenticated()) {\n      return null;\n    }");
   expect(source).not.toContain("if (!props.isAuthenticated() && viewMode() === \"favorites\")");
-  expect(source).toContain("<Show when={props.isAuthenticated}>\n        <div class=\"mt-1 flex items-center justify-end gap-1\">");
+  expect(source).toContain("<Show when={isAuthenticated()}>\n        <div class=\"mt-1 flex items-center justify-end gap-1\">");
   expect(source).not.toContain("Sign in to favorite");
   expect(source).not.toContain("Login to favorite");
 });
@@ -1061,9 +1060,9 @@ test("load-more controls page creators feeds and content without timers or obser
   expect(source).toContain("function nextOffsetForKey(state: PaginationOffsetState, key: string, firstPageLength: number): number");
   expect(source).toContain("const nextOffset = nextOffsetForKey(catalogCreatorOffset(), key, (creators() ?? emptyBrowsableCreators).length);");
   expect(source).toContain("const nextCreators = await client.catalog.creators({ ...creatorListInput(), offset: nextOffset });");
-  expect(source).toContain("const nextOffset = nextOffsetForKey(feedOffset(), key, (feeds() ?? emptyCatalogFeeds).length);");
+  expect(source).toContain("const nextOffset = nextOffsetForKey(feedOffset(), key, (feedsValue() ?? emptyCatalogFeeds).length);");
   expect(source).toContain("const nextFeeds = await client.catalog.feeds({ ...input, offset: nextOffset });");
-  expect(source).toContain("const nextOffset = nextOffsetForKey(contentOffset(), key, (contentItems() ?? emptyCatalogContentItems).length);");
+  expect(source).toContain("const nextOffset = nextOffsetForKey(contentOffset(), key, (contentItemsValue() ?? emptyCatalogContentItems).length);");
   expect(source).toContain("const input = { ...contentListInput(), offset: nextOffset };");
   expect(source).toContain("setAppendedCatalogCreatorPage((currentPage) => ({");
   expect(source).toContain("setAppendedFeedPage((currentPage) => ({");
@@ -1095,7 +1094,7 @@ test("app shell uses stable module-level empty arrays for fallback accessors", a
   expect(source).toContain("settings={() => settings() ?? emptyUserSettings}");
   expect(source).toContain("contentStatuses={() => contentStatuses() ?? emptyUserContentStatuses}");
   expect(source).toContain("playlists() ?? emptyPlaylists");
-  expect(source).toContain("contentDetail()?.sources ?? emptyCatalogContentSources");
+  expect(source).toContain("contentDetail.latest?.sources ?? emptyCatalogContentSources");
   expect(source).not.toContain("settings() ?? []");
   expect(source).not.toContain("contentStatuses() ?? []");
   expect(source).not.toContain("playlists() ?? []");
@@ -1146,16 +1145,16 @@ test("status-only row actions do not manually refetch catalog content", async ()
 test("content rows expose opened and played state with semantic attributes", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("data-opened={props.status.opened ? \"true\" : \"false\"}");
-  expect(source).toContain("data-played={props.status.played ? \"true\" : \"false\"}");
+  expect(source).toContain("data-opened={status().opened ? \"true\" : \"false\"}");
+  expect(source).toContain("data-played={status().played ? \"true\" : \"false\"}");
   expect(source).toContain('data-content-status="opened"');
   expect(source).toContain('data-content-status="played"');
   expect(source).toContain('data-content-status="selected"');
   expect(source).toContain('data-content-status="favorite"');
-  expect(source).toContain("data-favorite={props.isFavorite ? \"true\" : \"false\"}");
-  expect(source).toContain("props.status.played ? \"bg-muted\" : props.status.opened ? \"bg-card\" : \"bg-background\"");
-  expect(source).toContain("{props.status.opened ? \"Unmark opened\" : \"Mark opened\"}");
-  expect(source).toContain("{props.status.played ? \"Unmark played\" : \"Mark played\"}");
+  expect(source).toContain("data-favorite={isFavorite() ? \"true\" : \"false\"}");
+  expect(source).toContain("status().played ? \"bg-muted\" : status().opened ? \"bg-card\" : \"bg-background\"");
+  expect(source).toContain("{status().opened ? \"Unmark opened\" : \"Mark opened\"}");
+  expect(source).toContain("{status().played ? \"Unmark played\" : \"Mark played\"}");
 });
 
 test("content rows expose concise icon source indicators and avoid fake thumbnails", async () => {
@@ -1415,23 +1414,41 @@ test("ViewerMode type covers content and settings", () => {
   expect(modes).toHaveLength(2);
 });
 
-test("snap fractions and toDesktopColumnTemplate produce valid grid templates", () => {
-  expect(leftPaneSnapFractions).toEqual([0.04, 0.08, 0.16]);
-  expect(middlePaneSnapFractions).toEqual([0.16, 0.24, 0.32]);
-  expect(defaultLeftFraction).toBe(0.08);
-  expect(defaultMiddleFraction).toBe(0.24);
-  expect(minLeftFraction).toBe(0.04);
-  expect(minMiddleFraction).toBe(0.16);
-  expect(minRightFraction).toBe(0.40);
+test("free-drag clamp bounds and toDesktopColumnTemplate produce valid grid templates", () => {
+  expect(defaultLeftFraction).toBe(0.16);
+  expect(defaultMiddleFraction).toBe(0.30);
+  expect(minLeftFraction).toBe(0.10);
+  expect(minMiddleFraction).toBe(0.18);
+  expect(minRightFraction).toBe(0.36);
 
-  expect(findNearestSnap(0.05, leftPaneSnapFractions)).toBe(0.04);
-  expect(findNearestSnap(0.07, leftPaneSnapFractions)).toBe(0.08);
-  expect(findNearestSnap(0.15, leftPaneSnapFractions)).toBe(0.16);
-  expect(findNearestSnap(0.23, middlePaneSnapFractions)).toBe(0.24);
-  expect(findNearestSnap(0.25, middlePaneSnapFractions)).toBe(0.24);
+  // clampLeftFraction floors at minLeftFraction and ceilings at 1 - middle - minRightFraction
+  expect(clampLeftFraction(0.05, 0.30)).toBe(minLeftFraction);
+  expect(clampLeftFraction(0.60, 0.30)).toBe(1 - 0.30 - minRightFraction);
+  expect(clampLeftFraction(0.16, 0.30)).toBe(0.16);
+
+  // clampMiddleFraction floors at minMiddleFraction and ceilings at 1 - left - minRightFraction
+  expect(clampMiddleFraction(0.10, 0.16)).toBe(minMiddleFraction);
+  expect(clampMiddleFraction(0.60, 0.16)).toBe(1 - 0.16 - minRightFraction);
+  expect(clampMiddleFraction(0.30, 0.16)).toBe(0.30);
 
   expect(toDesktopColumnTemplate(1, 3, 8)).toBe("1fr 3fr 8fr");
   expect(toDesktopColumnTemplate(0.08, 0.24, 0.68)).toBe("0.08fr 0.24fr 0.68fr");
+});
+
+test("pane resize is pure free-drag with no snap points and persists on drag end", async () => {
+  const source = await readAppShellSource();
+
+  expect(source).not.toContain("findNearestSnap");
+  expect(source).not.toContain("leftPaneSnapFractions");
+  expect(source).not.toContain("middlePaneSnapFractions");
+  expect(source).toContain("const commitLeftResize = () => {");
+  expect(source).toContain("const commitMiddleResize = () => {");
+  expect(source).toContain("clampLeftFraction(leftFraction(), middleFraction())");
+  expect(source).toContain("clampMiddleFraction(middleFraction(), leftFraction())");
+  expect(source).toContain("onDragEnd={commitLeftResize}");
+  expect(source).toContain("onDragEnd={commitMiddleResize}");
+  expect(source).toContain("persistPaneWidths(clamped, middleFraction())");
+  expect(source).toContain("persistPaneWidths(leftFraction(), clamped)");
 });
 
 test("collapsible content controls use aria-expanded and auto-collapse on middle pane panel", async () => {

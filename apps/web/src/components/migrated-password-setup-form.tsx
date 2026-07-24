@@ -54,7 +54,7 @@ export default function MigratedPasswordSetupForm(props: MigratedPasswordSetupFo
   }));
 
   return (
-    <div class="mx-auto mt-10 w-full max-w-md p-6 text-foreground">
+    <div class="mx-auto mt-8 w-full max-w-md p-6 text-foreground">
       <h1 class="mb-3 text-center text-2xl font-semibold tracking-tight">Set your password</h1>
       <p class="mb-6 text-center text-sm leading-6 text-muted-foreground">
         Use this for accounts imported from the old FeedElity export. Enter the same email address and choose a new password.
@@ -80,7 +80,7 @@ export default function MigratedPasswordSetupForm(props: MigratedPasswordSetupFo
                   value={field().state.value}
                   onBlur={field().handleBlur}
                   onInput={(e) => field().handleChange(e.currentTarget.value)}
-                  class="w-full border border-input bg-background p-2 text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                  class="w-full rounded-md border border-input bg-background p-2.5 text-sm text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
                 />
                 <For each={field().state.meta.errors}>
                   {(error) => <p class="text-sm text-destructive">{error?.message}</p>}
@@ -101,7 +101,7 @@ export default function MigratedPasswordSetupForm(props: MigratedPasswordSetupFo
                   value={field().state.value}
                   onBlur={field().handleBlur}
                   onInput={(e) => field().handleChange(e.currentTarget.value)}
-                  class="w-full border border-input bg-background p-2 text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                  class="w-full rounded-md border border-input bg-background p-2.5 text-sm text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
                 />
                 <p class="text-xs text-muted-foreground">Optional. Leave blank to keep the imported name.</p>
                 <For each={field().state.meta.errors}>
@@ -124,7 +124,7 @@ export default function MigratedPasswordSetupForm(props: MigratedPasswordSetupFo
                   value={field().state.value}
                   onBlur={field().handleBlur}
                   onInput={(e) => field().handleChange(e.currentTarget.value)}
-                  class="w-full border border-input bg-background p-2 text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                  class="w-full rounded-md border border-input bg-background p-2.5 text-sm text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
                 />
                 <For each={field().state.meta.errors}>
                   {(error) => <p class="text-sm text-destructive">{error?.message}</p>}
@@ -138,7 +138,7 @@ export default function MigratedPasswordSetupForm(props: MigratedPasswordSetupFo
           {(state) => (
             <button
               type="submit"
-              class="w-full border border-border bg-primary p-2 font-semibold text-primary-foreground hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
+              class="w-full rounded-md border border-border bg-primary p-2.5 text-sm font-semibold text-primary-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-50"
               disabled={!state().canSubmit || state().isSubmitting}
             >
               {state().isSubmitting ? "Setting password..." : "Set Password and Sign In"}

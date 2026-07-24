@@ -156,35 +156,26 @@ export const shellRootClass = "h-full w-dvw overflow-x-hidden bg-background text
 
 export const shellGridClass = "flex min-h-full w-full flex-col relative lg:grid lg:h-full lg:min-h-0 lg:overflow-hidden";
 
-export const leftPaneSnapFractions: readonly [number, number, number] = [0.04, 0.08, 0.16];
+export const defaultLeftFraction = 0.16;
 
-export const middlePaneSnapFractions: readonly [number, number, number] = [0.16, 0.24, 0.32];
+export const defaultMiddleFraction = 0.30;
 
-export const defaultLeftFraction = 0.08;
+export const minLeftFraction = 0.10;
 
-export const defaultMiddleFraction = 0.24;
+export const minMiddleFraction = 0.18;
 
-export const minLeftFraction = 0.04;
-
-export const minMiddleFraction = 0.16;
-
-export const minRightFraction = 0.40;
+export const minRightFraction = 0.36;
 
 export const paneWidthsLocalStorageKey = "feedelity.pane-widths";
 
 export type PersistedPaneWidths = { left: number; middle: number };
 
-export function findNearestSnap(value: number, snaps: readonly number[]): number {
-  let nearest = snaps[0];
-  let minDiff = Math.abs(value - snaps[0]);
-  for (let i = 1; i < snaps.length; i++) {
-    const diff = Math.abs(value - snaps[i]);
-    if (diff < minDiff) {
-      minDiff = diff;
-      nearest = snaps[i];
-    }
-  }
-  return nearest;
+export function clampLeftFraction(left: number, middle: number): number {
+  return Math.max(minLeftFraction, Math.min(left, 1 - middle - minRightFraction));
+}
+
+export function clampMiddleFraction(middle: number, left: number): number {
+  return Math.max(minMiddleFraction, Math.min(middle, 1 - left - minRightFraction));
 }
 
 export function toDesktopColumnTemplate(left: number, middle: number, right: number): string {
