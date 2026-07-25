@@ -5,8 +5,8 @@ export interface RefreshSourcePolicy {
   readonly minCadenceSeconds: number;
 }
 
-const minDelayBetweenFetchesMs = 3_000;
-const maxDelayBetweenFetchesMs = 20_000;
+const minDelayBetweenFetchesMs = 1_000;
+const maxDelayBetweenFetchesMs = 4_000;
 const minJitterSeconds = 60;
 const maxJitterSeconds = 15 * 60;
 

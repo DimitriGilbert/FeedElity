@@ -93,6 +93,24 @@ function appendUniqueContentItems(
   return [...contentItemById.values()];
 }
 
+/**
+ * Merge a freshly-fetched item page with the previously-rendered items,
+ * REUSING the previous object reference for any id that already existed.
+ *
+ * Solid `<For>` keys by reference: if a refresh returns brand-new objects for
+ * unchanged items, `<For>` treats every item as new and recreates the whole
+ * list (reloading every thumbnail `<img>`, relayout, repaint) — a sustained
+ * renderer-CPU peg during a force-refresh that live-reloads repeatedly.
+ * Preserving references for unchanged ids lets `<For>` reuse the existing DOM
+ * nodes, so a refresh only adds/removes the rows that actually changed.
+ */
+function mergeStableItemReferences(
+  nextItems: readonly CatalogContentListItem[],
+  previousById: ReadonlyMap<string, CatalogContentListItem>,
+): readonly CatalogContentListItem[] {
+  return nextItems.map((item) => previousById.get(item.id) ?? item);
+}
+
 async function listSubscribedLibraryContentItems(input: ContentListInput): Promise<readonly CatalogContentListItem[]> {
   return client.overlays.subscribedContentItems(input);
 }
@@ -212,6 +230,7 @@ export interface ContentListColumnProps {
   readonly favoritesReloadKey: () => number;
   readonly contentStatuses: () => readonly UserContentStatus[];
   readonly statusReloadKey: () => number;
+  readonly listLiveReloadKey: () => number;
   readonly middlePanePanel: () => MiddlePanePanel | null;
   readonly onCloseMiddlePanePanel: () => void;
   readonly onAddSource: (value: AddSourceValue) => Promise<void>;
@@ -279,7 +298,11 @@ export function ContentListColumn(props: ContentListColumnProps) {
       : mode === "history-opened" || mode === "played"
       ? props.statusReloadKey()
       : props.catalogReloadKey();
-    return toContentItemsResourceKey(mode, contentListInput(), reloadKey);
+    // listLiveReloadKey ticks per-feed during a refresh so the list refetches on
+    // the fly as content is ingested. It is intentionally a separate signal from
+    // the per-view reload keys: bumping those would tear down the video viewer
+    // (which keys on favoritesReloadKey) and the source pane. This one moves only.
+    return toContentItemsResourceKey(mode, contentListInput(), reloadKey + props.listLiveReloadKey());
   });
   const [contentItems] = createResource(contentItemsResourceKey, () => {
     const mode = untrack(contentItemsResourceMode);
@@ -312,9 +335,19 @@ export function ContentListColumn(props: ContentListColumnProps) {
 
     return loadedPlaylists[0]?.id ?? null;
   });
-  const loadedContentItems = createMemo(() =>
-    appendUniqueContentItems(contentItemsValue() ?? emptyCatalogContentItems, pageItemsForKey(appendedContentPage(), contentItemsResourceKey())),
-  );
+  // Stable-reference cache: maps content-item id -> the object reference we last
+  // rendered for it. Preserved across resource refetches so <For> reuses DOM for
+  // unchanged rows instead of recreating them (which reloads every thumbnail and
+  // pegs the renderer). See mergeStableItemReferences.
+  let stableItemById = new Map<string, CatalogContentListItem>();
+  const loadedContentItems = createMemo(() => {
+    const merged = appendUniqueContentItems(
+      mergeStableItemReferences(contentItemsValue() ?? emptyCatalogContentItems, stableItemById),
+      pageItemsForKey(appendedContentPage(), contentItemsResourceKey()),
+    );
+    stableItemById = new Map(merged.map((item) => [item.id, item]));
+    return merged;
+  });
   const contentPageHasMore = createMemo(() =>
     showsCatalogFilters(viewMode())
       && pageHasMoreForKey(appendedContentPage(), contentItemsResourceKey(), (contentItemsValue() ?? emptyCatalogContentItems).length, contentListLimit),
@@ -567,7 +600,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
       </Show>
       <div class={contentScrollRegionClass} data-content-scroll-region>
         <Switch>
-          <Match when={contentItems.loading}>
+          <Match when={contentItems.loading && contentItemsValue() === undefined}>
             <p class="text-xs font-semibold text-card-foreground">Loading videos</p>
             <p class="mt-2 text-xs leading-5 text-muted-foreground">Loading {visibleContentCollectionLabel()} videos.</p>
           </Match>

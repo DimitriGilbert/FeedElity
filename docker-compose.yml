@@ -1,44 +1,72 @@
-services:
-  db:
-    image: ghcr.io/tursodatabase/libsql-server:latest
-    profiles: ["local-db"]
-    volumes:
-      - libsql-data:/var/lib/sqld
-    ports:
-      - "8080:8080"
-      - "5000:5000"
-    environment:
-      SQLD_NODE: primary
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
+# FeedElity docker-compose stack.
+#
+# Brings up the Hono/oRPC server (with a seeded, persistent SQLite database) and
+# the Solid SPA served by nginx. Ports start at 31000.
+#
+#   web     -> 31000   nginx serves the SPA and reverse-proxies /rpc, /api, /api-reference to the server
+#   server  -> 31001   Hono + oRPC + better-auth backed by a persistent libSQL file
+#
+# First start seeds the live database from your local dev snapshot (./local.db);
+# subsequent starts reuse the existing database so data survives restarts.
+#
+# Configure host/secret in ./.env (see docker/.env.example), then:
+#   docker compose up -d --build
+name: feedelity
 
+services:
   server:
     build:
       context: .
       dockerfile: Dockerfile
       target: server
-    env_file: .env
-    expose:
-      - "3002"
-    depends_on:
-      db:
-        condition: service_healthy
-        required: false
+    image: feedelity-server:latest
     restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      RUNTIME_MODE: local
+      PORT: "31001"
+      DATABASE_DIR: /data
+      SEED_DB_PATH: /seed/local.db
+      DATABASE_URL: file:/data/local.db
+      BETTER_AUTH_SECRET: ${FEEDELITY_AUTH_SECRET}
+      BETTER_AUTH_URL: ${FEEDELITY_PUBLIC_URL}
+      CORS_ORIGIN: ${FEEDELITY_CORS_ORIGIN}
+    # Bind-mount the read-only dev snapshot so the entrypoint can seed on first
+    # start. The live database lives in the named volume below and is never
+    # overwritten after seeding.
+    volumes:
+      - ./local.db:/seed/local.db:ro
+      - feedelity-data:/data
+    ports:
+      - "31001:31001"
+    healthcheck:
+      test: ["CMD-SHELL", "bun run server-healthcheck.mjs || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - feedelity
 
   web:
     build:
       context: .
       dockerfile: Dockerfile
       target: web
-    ports:
-      - "${WEB_PORT:-80}:80"
-    depends_on:
-      - server
+    image: feedelity-web:latest
     restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    ports:
+      - "31000:80"
+    networks:
+      - feedelity
+
+networks:
+  feedelity:
+    driver: bridge
 
 volumes:
-  libsql-data:
+  feedelity-data:
+    driver: local

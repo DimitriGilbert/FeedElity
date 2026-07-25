@@ -17,7 +17,8 @@
       "@orpc/zod": "^1.13.14",
       "better-auth": "1.6.9",
       "@orpc/client": "^1.13.14",
-      "drizzle-orm": "^0.45.1"
+      "drizzle-orm": "^0.45.1",
+      "fast-xml-parser": "^4.5.3"
     }
   },
   "type": "module",

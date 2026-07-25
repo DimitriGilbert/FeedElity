@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { CatalogContentSource, RefreshRun, RefreshRunReport, UserSetting } from "@FeedElity/api";
+import type { CatalogContentSource, CatalogFeed, RefreshFeedResult, RefreshRun, RefreshRunReport, UserSetting } from "@FeedElity/api";
 import type { LeftPaneTab, MiddlePanePanel, ViewerMode } from "./app-shell.contract";
 
 import {
@@ -30,8 +30,10 @@ import {
   formatRefreshReportSummary,
   formatRefreshRunSummary,
   formatSettingValue,
+  parseRefreshErrorSummaries,
   getShellColumnCount,
   hasInternalAppHeader,
+  joinFeedResultsWithFeeds,
   leftPaneTabLabels,
   minLeftFraction,
   minMiddleFraction,
@@ -99,7 +101,7 @@ async function readChangedUiSource() {
 
 async function readAppShellSource() {
   const sources = await Promise.all(
-    ["./app-shell.tsx", "./app-shell-rows.tsx", "./app-shell-source-sections.tsx", "./app-shell-content-column.tsx", "./app-shell-viewer.tsx"].map(async (filePath) => Bun.file(new URL(filePath, import.meta.url)).text()),
+    ["./app-shell.tsx", "./app-shell-rows.tsx", "./app-shell-source-sections.tsx", "./app-shell-content-column.tsx", "./app-shell-viewer.tsx", "./refresh-status-dialog.tsx"].map(async (filePath) => Bun.file(new URL(filePath, import.meta.url)).text()),
   );
 
   return sources.join("\n");
@@ -192,15 +194,16 @@ test("phase 1 layout repair keeps no fourth pane dialogs or fake source actions"
     "data-shell-column=\"playlists\"",
     "data-shell-column=\"actions\"",
     "data-shell-column=\"sources-actions\"",
-    "<dialog",
-    "role=\"dialog\"",
     "Add subscription",
     "Batch add",
     "topics",
     "external-content",
   ];
 
+  // The shell stays exactly three panes; a refresh-status modal is allowed
+  // because it is not a pane and carries no data-shell-column.
   expect(paneMatches).toHaveLength(3);
+  expect((source.match(/<dialog/g) ?? []).length).toBe(1);
   for (const snippet of forbiddenControls) {
     expect(source).not.toContain(snippet);
   }
@@ -350,8 +353,7 @@ test("header refresh exposes normal click and force dropdown actions", async () 
   expect(source).toContain("const runHeaderRefresh = async (force: boolean) => {");
   expect(source).toContain("client.refresh.startAll({ force })");
   expect(source).toContain("client.refresh.status({ runId, limit: 1, feedResultsLimit: 10 })");
-  expect(source).toContain("props.onCatalogChanged();");
-  expect(source).toContain("props.onCatalogChanged();");
+  expect(source).toContain("props.onContentListLiveReload();");
   expect(source).toContain("aria-label=\"Refresh due feeds\"");
   expect(source).toContain("onClick={async () => runHeaderRefresh(false)}");
   expect(source).toContain("aria-label=\"Open force refresh action\"");
@@ -360,6 +362,35 @@ test("header refresh exposes normal click and force dropdown actions", async () 
   expect(source).toContain("<Show\n                when={refreshBusy()}");
   expect(source).toContain("{refreshProgressText()}");
   expect(source).toContain("return `${completedFeeds}/${run.feedsRequestedCount}`;");
+});
+
+test("scoped single-creator refresh is wired to the synchronous runCreator procedure", async () => {
+  const source = await readAppShellSource();
+
+  // Force-only single-creator refresh, no normal/force dropdown.
+  expect(source).toContain("const runCreatorRefresh = async (creatorId: string) => {");
+  expect(source).toContain("const result = await client.refresh.runCreator({ creatorId, force: true });");
+  expect(source).toContain("const joined = joinFeedResultsWithFeeds(result.feedResults, result.selectedFeeds);");
+  // Scoped failures feed the SAME snapshot/dialog surface as the global refresh.
+  expect(source).toContain("setLastCompletedStatus({ run: result.run, results: joined });");
+  // The scoped path must NOT bump catalogReloadKey (tears down the creator list,
+  // content list, and viewer). It bumps only the surgical feed-list reload key so
+  // the selected creator's feed-row metadata refreshes in place.
+  expect(source).toContain("setFeedListReloadKey((key) => key + 1);");
+  expect(source).not.toContain("props.onRefreshCompleted();");
+  // Guards: auth + no in-flight scoped or global refresh.
+  expect(source).toContain("if (refreshBusy() !== null || scopedRefreshBusy() !== null) {");
+  expect(source).toContain("setScopedRefreshBusy(creatorId);");
+});
+
+test("scoped refresh exposes a force-refresh button on the selected-creator feeds header", async () => {
+  const source = await readAppShellSource();
+
+  expect(source).toContain("data-refresh-creator={creator().id}");
+  expect(source).toContain('aria-label={`Force refresh ${creator().displayName}`}');
+  expect(source).toContain('title="Force refresh this source"');
+  expect(source).toContain("disabled={scopedRefreshBusy() !== null || refreshBusy() !== null}");
+  expect(source).toContain("await runCreatorRefresh(creator().id)");
 });
 
 test("feed rows expose selected state icon source metadata and real creator images only", async () => {
@@ -444,9 +475,13 @@ test("refresh UI is wired to real API procedures without background polling", as
   expect(source).not.toContain("props.results.slice");
   expect(source).toContain("client.refresh.startAll({ force })");
   expect(source).toContain("client.refresh.status({ runId, limit: 1, feedResultsLimit: 10 })");
-  expect(source).toContain("props.onCatalogChanged();");
-  expect(source).toContain("refreshFeedResultErrorMessage");
-  expect(source).toContain("refreshProviderMessage");
+  expect(source).toContain("props.onContentListLiveReload();");
+  // Failures surface through the dedicated status dialog, not a collapsed
+  // single-message memo.
+  expect(source).toContain("RefreshStatusDialog");
+  expect(source).toContain("data-refresh-status-trigger");
+  expect(source).toContain("setRefreshStatusOpen(true)");
+  expect(source).toContain("parseRefreshErrorSummaries");
   expect(source).toContain("Refresh due feeds");
   expect(source).toContain("Force refresh all feeds");
   expect(source).not.toContain("globalThis.confirm");
@@ -507,19 +542,120 @@ test("refresh results expose feed labels errors and skipped reasons", async () =
   };
 
   expect(formatRefreshReportSummary(report)).toBe("partial: 0/1 feeds refreshed, 1 skipped, 0 new items");
-  expect(source).not.toContain("<RefreshReportFeedList");
-  expect(source).not.toContain("formatRefreshSkipReason(feed.skipReason)");
-  expect(source).not.toContain("parseRefreshFeedResultError(result.errorSummaryJson)");
+  // Feed-level failure labels are surfaced per-feed inside the status dialog.
+  expect(source).toContain("<RefreshStatusDialog");
+  expect(source).toContain("data-refresh-status-feed-title");
+  expect(source).toContain("data-refresh-status-feed-error");
+  expect(source).toContain("formatRefreshErrorCodeLabel");
+  expect(source).toContain("parseRefreshErrorSummaries");
+  expect(source).toContain("SourceIconBadge");
 });
 
-test("refresh completion invalidates source pane resources and catalog content", async () => {
+test("parseRefreshErrorSummaries reads all feed failures and tolerates bad input", () => {
+  const valid = JSON.stringify([
+    { feedId: "feed-1", code: "provider-refresh-paused", message: "YouTube is refusing refresh requests." },
+    { feedId: "feed-2", code: "adapter-failed", message: "Remote feed unavailable." },
+  ]);
+
+  expect(parseRefreshErrorSummaries(valid)).toEqual([
+    { feedId: "feed-1", code: "provider-refresh-paused", message: "YouTube is refusing refresh requests." },
+    { feedId: "feed-2", code: "adapter-failed", message: "Remote feed unavailable." },
+  ]);
+
+  // The catalog persists a SINGLE error-summary object per failed feed (not an
+  // array). The parser must accept that shape — this is the real prod form.
+  const single = JSON.stringify({ feedId: "feed-1", code: "remote-fetch-failed", message: "YouTube feed fetch failed with status 404." });
+  expect(parseRefreshErrorSummaries(single)).toEqual([
+    { feedId: "feed-1", code: "remote-fetch-failed", message: "YouTube feed fetch failed with status 404." },
+  ]);
+
+  // Null (no error summary) yields nothing.
+  expect(parseRefreshErrorSummaries(null)).toEqual([]);
+
+  // Malformed JSON never throws.
+  expect(parseRefreshErrorSummaries("not json")).toEqual([]);
+
+  // An object missing required string fields yields nothing.
+  expect(parseRefreshErrorSummaries("{}")).toEqual([]);
+
+  // Entries missing required string fields are dropped, valid ones kept.
+  const partial = JSON.stringify([
+    { feedId: "feed-1", code: "adapter-failed", message: "Remote feed unavailable." },
+    { feedId: "feed-2", code: "missing-message" },
+    "garbage",
+    null,
+  ]);
+  expect(parseRefreshErrorSummaries(partial)).toEqual([
+    { feedId: "feed-1", code: "adapter-failed", message: "Remote feed unavailable." },
+  ]);
+});
+
+const baseFeedResult: RefreshFeedResult = {
+  id: "result-1",
+  refreshRunId: "run-1",
+  feedId: "feed-1",
+  status: "failed",
+  itemsDiscoveredCount: 0,
+  itemsCreatedCount: 0,
+  itemsUpdatedCount: 0,
+  startedAt: new Date("2026-01-01T00:00:00.000Z"),
+  completedAt: new Date("2026-01-01T00:01:00.000Z"),
+  errorSummaryJson: null,
+};
+
+const baseFeed: CatalogFeed = {
+  id: "feed-1",
+  creatorId: "creator-1",
+  sourceType: "youtube",
+  sourceExternalId: "yt-channel-1",
+  url: "https://feeds.example.test/creator.xml",
+  title: "Creator Uploads",
+  description: null,
+  refreshCadenceSeconds: null,
+  lastNormalRefreshAt: null,
+  nextRefreshAfter: null,
+  adapterMetadataJson: null,
+};
+
+test("joinFeedResultsWithFeeds pairs results with their selected feed and drops orphans", () => {
+  const orphanResult: RefreshFeedResult = { ...baseFeedResult, id: "result-2", feedId: "feed-missing" };
+  const otherFeed: CatalogFeed = { ...baseFeed, id: "feed-2", title: "Second feed" };
+
+  // Happy path: each result is paired with its matching feed, order preserved.
+  expect(joinFeedResultsWithFeeds([baseFeedResult], [baseFeed])).toEqual([
+    { ...baseFeedResult, feed: baseFeed },
+  ]);
+
+  // A result whose feedId is not in selectedFeeds (feed removed mid-run) is
+  // dropped rather than rendered without a label.
+  expect(joinFeedResultsWithFeeds([baseFeedResult, orphanResult], [baseFeed, otherFeed])).toEqual([
+    { ...baseFeedResult, feed: baseFeed },
+  ]);
+
+  // No selected feeds at all yields nothing — never an unlabelled entry.
+  expect(joinFeedResultsWithFeeds([baseFeedResult], [])).toEqual([]);
+  expect(joinFeedResultsWithFeeds([], [baseFeed])).toEqual([]);
+});
+
+test("refresh heartbeat refetches the content list only when new items are ingested", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("props.onCatalogChanged();");
+  // The heartbeat tracks ingested items, not completed feeds. The content list
+  // refetches ONLY when itemsDiscoveredCount strictly increases, so feeds that
+  // complete with zero new items do not trigger a re-render — a force-refresh-all
+  // must not peg the CPU re-rendering on every 2.5s poll for the whole run.
+  expect(source).toContain("const discoveredItems = run.itemsDiscoveredCount;");
+  expect(source).toContain("if (discoveredItems > refreshItemsSeen()) {");
+  expect(source).toContain("setRefreshItemsSeen(discoveredItems);");
+  expect(source).toContain("props.onContentListLiveReload();");
+  // The old per-feed-completion heartbeat is gone.
+  expect(source).not.toContain("refreshCompletedFeedsSeen");
+  // List-only reload signal, never the catalog key (which would nuke the viewer).
+  expect(source).toContain("setListLiveReloadKey((key) => key + 1)");
+  expect(source).toContain("reloadKey + props.listLiveReloadKey()");
+
+  // A catalog refresh ends by bumping only the catalog key (source pane).
   expect(source).toContain("setCatalogReloadKey((key) => key + 1);");
-  expect(source).toContain("return \"catalog\";");
-  expect(source).toContain("return \"subscribed\";");
-  expect(source).toContain("toContentItemsResourceKey(mode, contentListInput(), reloadKey)");
 });
 
 test("refresh run summary labels all supported refresh scopes", () => {
@@ -764,8 +900,9 @@ test("playlist management is compact and collapsible inside existing panes", asy
   expect(source).toContain("source-playlist-selector");
   expect(source).not.toContain("open data-playlist-management-panel");
   expect(source).not.toContain('data-shell-column="playlists"');
-  expect(source).not.toContain("<dialog");
-  expect(source).not.toContain("role=\"dialog\"");
+  // Playlists render inside a pane, not a dialog; the only <dialog> in the shell
+  // is the refresh-status modal, which is unrelated to playlists.
+  expect((source.match(/<dialog/g) ?? []).length).toBe(1);
 });
 
 test("add-to-playlist is discoverable from content rows and viewer with real API calls", async () => {
@@ -821,8 +958,9 @@ test("playlist UI remains inside the approved three-pane shell", async () => {
   expect(source).toContain("<PlaylistColumnSection");
   expect(source).not.toContain("data-shell-column=\"playlists\"");
   expect(source).not.toContain("grid-cols-[1fr_3fr_8fr_");
-  expect(source).not.toContain("<dialog");
-  expect(source).not.toContain("role=\"dialog\"");
+  // The only permitted <dialog> is the refresh-status modal; no playlist pane
+  // is rendered as a dialog.
+  expect((source.match(/<dialog/g) ?? []).length).toBe(1);
 });
 
 test("settings UI uses real protected API procedures for list save and delete", async () => {
@@ -896,8 +1034,9 @@ test("settings UI is authenticated-only and renders in the viewer settings takeo
   expect(source).not.toContain("grid-cols-[1fr_3fr_8fr_");
   expect(source).not.toContain("Sign in to manage settings");
   expect(source).not.toContain("Login to manage settings");
-  expect(source).not.toContain("<dialog");
-  expect(source).not.toContain("role=\"dialog\"");
+  // Settings render in the viewer takeover, not a dialog; the only <dialog> in
+  // the shell is the refresh-status modal.
+  expect((source.match(/<dialog/g) ?? []).length).toBe(1);
 });
 
 test("settings UI has no fake defaults and displays only stored API values", async () => {
@@ -992,7 +1131,14 @@ test("anonymous users do not see favorite controls or protected favorite calls",
   expect(source).toContain("if (props.isAuthenticated() && viewMode() === \"favorites\")");
   expect(source).toContain("if (!props.isAuthenticated()) {\n      return null;\n    }");
   expect(source).not.toContain("if (!props.isAuthenticated() && viewMode() === \"favorites\")");
-  expect(source).toContain("<Show when={isAuthenticated()}>\n        <div class=\"mt-1 flex items-center justify-end gap-1\">");
+  // The authenticated action cluster is a floating overlay: absolute, no layout
+  // gap, pointer-disabled until hover/focus. It must NOT be the old normal-flow
+  // `mt-1 flex items-center justify-end gap-1` block that reserved a blank line
+  // on every row even when the buttons were invisible.
+  expect(source).toContain("data-content-row-actions");
+  expect(source).toContain("pointer-events-none absolute bottom-1 right-1");
+  expect(source).toContain("group-hover:pointer-events-auto group-hover:opacity-100");
+  expect(source).not.toContain("mt-1 flex items-center justify-end gap-1");
   expect(source).not.toContain("Sign in to favorite");
   expect(source).not.toContain("Login to favorite");
 });
@@ -1232,10 +1378,28 @@ test("subscription UI is authenticated and wired to real protected procedures", 
   expect(source).toContain('if (props.mode === "library" && action === "unsubscribe" && props.selectedCreatorId() === creatorId)');
   expect(source).toContain("props.onClearCreator()");
   expect(source).toContain("<SubscriptionActionButton");
-  expect(source).toContain("<Show when={props.isAuthenticated && props.showSubscriptionControl}>");
-  expect(source).toContain("<Show when={props.isAuthenticated()}>\n                  <SubscriptionActionButton");
+  // The hover-revealed action cluster gates on authentication; the subscription
+  // control inside it additionally gates on showSubscriptionControl (catalog only).
+  expect(source).toContain("<Show when={props.isAuthenticated}>");
+  expect(source).toContain("<Show when={props.showSubscriptionControl}>");
   expect(source).toContain("{props.isSubscribed ? \"Unsubscribe\" : \"Subscribe\"}");
   expect(source).not.toContain("Add subscription");
+});
+
+test("creator rows expose a hover-revealed floating force-refresh button without a layout gap", async () => {
+  const source = await readAppShellSource();
+
+  // The per-row refresh button lives in the same floating cluster as the
+  // subscription control: pointer-events-none until hover/focus, so it adds no
+  // layout gap and invisible buttons can't steal clicks.
+  expect(source).toContain("onForceRefreshCreator: (creatorId: string) => Promise<void>;");
+  expect(source).toContain("readonly refreshBusy: boolean;");
+  expect(source).toContain("data-refresh-creator={props.creator.id}");
+  expect(source).toContain('aria-label={`Force refresh ${props.creator.displayName}`}');
+  expect(source).toContain("void props.onForceRefreshCreator(props.creator.id)");
+  expect(source).toContain("disabled={props.refreshBusy}");
+  // Hover/focus reveal is pointer-gated, mirroring the content-row action cluster.
+  expect(source).toContain("group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100");
 });
 
 test("creator pane keeps header refresh action beside subscription actions", async () => {

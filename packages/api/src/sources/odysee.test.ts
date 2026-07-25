@@ -8,7 +8,7 @@ const odyseeRssFixture = `<?xml version="1.0" encoding="UTF-8"?>
   <channel>
     <title>Fixture Odysee Channel</title>
     <link>https://odysee.com/@fixture:abc123</link>
-    <description><![CDATA[Creator description with &amp; entity.]]></description>
+    <description><![CDATA[Creator description with & entity.]]></description>
     <image>
       <url>https://thumbs.odycdn.com/channel.png</url>
     </image>

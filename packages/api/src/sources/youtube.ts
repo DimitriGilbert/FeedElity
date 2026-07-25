@@ -13,6 +13,7 @@ import type {
   SourceDetectionResult,
   SourceDetectionSuccess,
 } from "./types";
+import { parseXmlPayload, xmlAttribute, xmlChild, xmlChildren, xmlText, type XmlElement } from "./xml";
 
 const YOUTUBE_SOURCE_TYPE = "youtube" satisfies SourceType;
 const YOUTUBE_WATCH_BASE_URL = "https://www.youtube.com/watch";
@@ -36,16 +37,20 @@ export const youtubeAdapter: SourceAdapter<"youtube"> = {
 
   async fetchCatalog(input) {
     try {
-      const response: unknown = await fetch(input.canonicalUrl);
+      // Normalize legacy channel ids (no "UC" prefix) so the feed URL targets a
+      // valid modern channel — YouTube's RSS endpoint 404s on the raw legacy id.
+      const channelId = normalizeYouTubeChannelId(input.sourceExternalId);
+      const feedUrl = channelId === input.sourceExternalId ? input.canonicalUrl : canonicalFeedUrl(channelId);
+      const response: unknown = await fetch(feedUrl);
       if (!isFetchTextResponse(response)) {
-        return failure("remote-fetch-failed", "YouTube feed fetch returned an unreadable response.", input.canonicalUrl);
+        return failure("remote-fetch-failed", "YouTube feed fetch returned an unreadable response.", feedUrl);
       }
       if (!response.ok) {
-        return failure("remote-fetch-failed", `YouTube feed fetch failed with status ${response.status}.`, input.canonicalUrl, undefined, response.status);
+        return failure("remote-fetch-failed", `YouTube feed fetch failed with status ${response.status}.`, feedUrl, undefined, response.status);
       }
 
       const payload = await response.text();
-      return this.normalizeCatalogPayload(input, payload);
+      return this.normalizeCatalogPayload({ ...input, sourceExternalId: channelId, canonicalUrl: feedUrl }, payload);
     } catch (error: unknown) {
       return failure("remote-fetch-failed", "YouTube feed fetch failed.", input.canonicalUrl, error);
     }
@@ -109,12 +114,14 @@ function resolveYouTubeInput(
   const url = urlResult.value;
   const feedChannelId = url.pathname === "/feeds/videos.xml" ? url.searchParams.get("channel_id") : null;
   if (input.inputKind === "feed-url" && isNonEmptyText(feedChannelId)) {
-    return resolved(feedChannelId, canonicalFeedUrl(feedChannelId));
+    const normalized = normalizeYouTubeChannelId(feedChannelId);
+    return resolved(normalized, canonicalFeedUrl(normalized));
   }
 
   const channelId = channelIdFromPath(url.pathname);
   if (input.inputKind === "creator-url" && channelId !== null) {
-    return resolved(channelId, canonicalFeedUrl(channelId));
+    const normalized = normalizeYouTubeChannelId(channelId);
+    return resolved(normalized, canonicalFeedUrl(normalized));
   }
 
   if (input.inputKind === "content-url") {
@@ -136,22 +143,31 @@ function normalizeYouTubeRssPayload(
   input: ResolvedSourceInput & { readonly sourceType: "youtube" },
   payload: string,
 ): SourceAdapterResult<NormalizedCatalogPayload> {
-  const xmlStart = payload.indexOf("<");
-  if (xmlStart === -1) {
-    return failure("remote-payload-invalid", "YouTube RSS payload does not contain XML.", input.canonicalUrl);
+  const parsed = parseXmlPayload(payload);
+  if (!parsed.ok) {
+    return failure("remote-payload-invalid", "YouTube RSS payload is not valid XML.", input.canonicalUrl, parsed.error);
   }
 
-  const xml = payload.slice(xmlStart).replace("\uFEFF", "");
-  const channelId = readElementText(xml, "yt:channelId") ?? input.sourceExternalId;
+  const feed = parsed.document.feed;
+  if (feed === undefined) {
+    return failure("remote-payload-invalid", "YouTube RSS payload is missing a feed element.", input.canonicalUrl);
+  }
+
+  // The creator/feed identity is the canonical channel id we resolved before
+  // fetching (input.sourceExternalId). We deliberately do NOT trust the
+  // feed-served <yt:channelId> for identity: YouTube occasionally serves a
+  // malformed/truncated value there, and trusting it spawned duplicate creator
+  // rows with content orphaned from the real subscription.
+  const channelId = input.sourceExternalId;
   if (!isNonEmptyText(channelId)) {
-    return failure("normalization-failed", "YouTube RSS payload is missing yt:channelId.", input.canonicalUrl);
+    return failure("normalization-failed", "YouTube RSS payload is missing a resolved channel id.", input.canonicalUrl);
   }
 
-  const feedTitle = readElementText(xml, "title") ?? "YouTube channel";
-  const authorBlock = readElementBlock(xml, "author");
-  const authorName = authorBlock === null ? null : readElementText(authorBlock, "name");
+  const feedTitle = xmlText(feed, "title") ?? "YouTube channel";
+  const authorBlock = xmlChild(feed, "author");
+  const authorName = xmlText(authorBlock ?? undefined, "name");
   const creatorName = authorName ?? feedTitle;
-  const entries = readElementBlocks(xml, "entry");
+  const entries = xmlChildren(feed, "entry");
 
   const items: NormalizedCatalogContentItem[] = [];
   for (const entry of entries) {
@@ -185,23 +201,25 @@ function normalizeYouTubeRssPayload(
   };
 }
 
-function normalizeEntry(entry: string, fallbackChannelId: string): NormalizedCatalogContentItem | null {
-  const videoId = readElementText(entry, "yt:videoId");
+function normalizeEntry(entry: XmlElement, fallbackChannelId: string): NormalizedCatalogContentItem | null {
+  const videoId = xmlText(entry, "yt:videoId");
   if (!isNonEmptyText(videoId)) {
     return null;
   }
 
-  const entryChannelId = readElementText(entry, "yt:channelId") ?? fallbackChannelId;
-  const mediaGroup = readElementBlock(entry, "media:group");
-  const title = (mediaGroup === null ? null : readElementText(mediaGroup, "media:title")) ?? readElementText(entry, "title");
+  // Per-entry feed link falls back to the canonical channel id when the served
+  // value is missing or malformed, so items always link to the real feed row.
+  const entryChannelId = sanitizeChannelId(xmlText(entry, "yt:channelId"), fallbackChannelId);
+  const mediaGroup = xmlChild(entry, "media:group");
+  const title = (mediaGroup === null ? null : xmlText(mediaGroup, "media:title")) ?? xmlText(entry, "title");
   if (!isNonEmptyText(title)) {
     return null;
   }
 
-  const description = mediaGroup === null ? null : readElementText(mediaGroup, "media:description");
-  const thumbnailUrl = mediaGroup === null ? null : readAttribute(mediaGroup, "media:thumbnail", "url");
-  const publishedAt = parseDate(readElementText(entry, "published"));
-  const entryId = readElementText(entry, "id") ?? videoId;
+  const description = mediaGroup === null ? null : xmlText(mediaGroup, "media:description");
+  const thumbnailUrl = mediaGroup === null ? null : xmlAttribute(mediaGroup, "media:thumbnail", "url");
+  const publishedAt = parseDate(xmlText(entry, "published"));
+  const entryId = xmlText(entry, "id") ?? videoId;
   const canonicalUrl = canonicalVideoUrl(videoId);
 
   return {
@@ -232,6 +250,15 @@ function normalizeEntry(entry: string, fallbackChannelId: string): NormalizedCat
       },
     ],
   };
+}
+
+// A YouTube channel id always starts with "UC". Treat anything else served by
+// the feed (truncated/garbled) as unusable and fall back to the canonical id.
+function sanitizeChannelId(value: string | null, fallbackChannelId: string): string {
+  if (value !== null && value.startsWith("UC")) {
+    return value;
+  }
+  return fallbackChannelId;
 }
 
 function detected(
@@ -297,6 +324,21 @@ function canonicalFeedUrl(channelId: string): string {
   return `${YOUTUBE_FEED_BASE_URL}?channel_id=${encodeURIComponent(channelId)}`;
 }
 
+/**
+ * Normalize a YouTube channel id to its modern "UC"-prefixed form. Modern
+ * channel ids start with "UC"; older imports carried the raw 22-char legacy id,
+ * which YouTube's RSS endpoint rejects with a 404. Any 22-char id without a
+ * recognized playlist-prefix (UC/UU/FL/LL/PL/RD etc.) is treated as a legacy
+ * channel id and prefixed. Returns the input unchanged when already canonical or
+ * when the shape is not a recognisable legacy channel id.
+ */
+function normalizeYouTubeChannelId(channelId: string): string {
+  if (channelId.startsWith("UC") || channelId.length !== 22) {
+    return channelId;
+  }
+  return `UC${channelId}`;
+}
+
 function canonicalChannelUrl(channelId: string): string {
   return `https://www.youtube.com/channel/${encodeURIComponent(channelId)}`;
 }
@@ -355,50 +397,6 @@ function videoIdFromUrl(url: URL): string | null {
 function isUnresolvableCreatorPath(pathname: string): boolean {
   const firstSegment = pathname.split("/").filter(Boolean)[0];
   return firstSegment === "c" || firstSegment === "user" || firstSegment?.startsWith("@") === true;
-}
-
-function readElementText(xml: string, tagName: string): string | null {
-  const block = readElementBlock(xml, tagName);
-  if (block === null) {
-    return null;
-  }
-  return decodeXmlText(stripCdata(block).replace(/<[^>]+>/g, "").trim());
-}
-
-function readElementBlock(xml: string, tagName: string): string | null {
-  const blocks = readElementBlocks(xml, tagName);
-  return blocks[0] ?? null;
-}
-
-function readElementBlocks(xml: string, tagName: string): readonly string[] {
-  const escapedTagName = escapeRegExp(tagName);
-  const pattern = new RegExp(`<${escapedTagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${escapedTagName}>`, "gi");
-  return [...xml.matchAll(pattern)].map((match) => match[1]).filter(isNonEmptyText);
-}
-
-function readAttribute(xml: string, tagName: string, attributeName: string): string | null {
-  const escapedTagName = escapeRegExp(tagName);
-  const escapedAttributeName = escapeRegExp(attributeName);
-  const pattern = new RegExp(`<${escapedTagName}\\b[^>]*\\s${escapedAttributeName}=(['"])(.*?)\\1`, "i");
-  const value = pattern.exec(xml)?.[2];
-  return isNonEmptyText(value) ? decodeXmlText(value) : null;
-}
-
-function stripCdata(value: string): string {
-  return value.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1");
-}
-
-function decodeXmlText(value: string): string {
-  return value
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function parseDate(value: string | null): Date | null {

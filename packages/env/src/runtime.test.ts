@@ -1,6 +1,57 @@
 import { describe, expect, test } from "bun:test";
 
 import { appendRuntimePath, parseDesktopLocalPortConfig, parseDesktopRemoteServerConfig, parseWebRuntimeConfig } from "./runtime";
+import { resolveWebServerUrl } from "./web";
+
+interface StubLocation {
+  readonly origin: string;
+  readonly search: string;
+}
+
+interface GlobalWithStubLocation {
+  location?: StubLocation;
+}
+
+// globalThis.location is typed as the DOM Location, which is not assignable from a
+// stub. Cast through a writable view of the global so tests can swap the origin.
+function stubLocation(location: StubLocation | undefined): StubLocation | undefined {
+  const globalWithLocation = globalThis as unknown as GlobalWithStubLocation;
+  const previous = globalWithLocation.location;
+  globalWithLocation.location = location;
+  return previous;
+}
+
+describe("web server URL resolution", () => {
+  test("falls back to the page origin when VITE_SERVER_URL is absent", () => {
+    const original = stubLocation({ origin: "https://app.feedelity.example", search: "" });
+
+    try {
+      expect(resolveWebServerUrl({})).toBe("https://app.feedelity.example");
+    } finally {
+      stubLocation(original);
+    }
+  });
+
+  test("prefers an explicit VITE_SERVER_URL over the page origin", () => {
+    const original = stubLocation({ origin: "https://app.feedelity.example", search: "" });
+
+    try {
+      expect(resolveWebServerUrl({ VITE_SERVER_URL: "http://localhost:3002" })).toBe("http://localhost:3002");
+    } finally {
+      stubLocation(original);
+    }
+  });
+
+  test("returns undefined when neither VITE_SERVER_URL nor a page origin is available", () => {
+    const original = stubLocation(undefined);
+
+    try {
+      expect(resolveWebServerUrl({})).toBeUndefined();
+    } finally {
+      stubLocation(original);
+    }
+  });
+});
 
 describe("web runtime config", () => {
   test("defaults browser-local mode and normalizes the server URL", () => {

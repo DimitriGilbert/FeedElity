@@ -14,6 +14,7 @@ import type {
   SourceDetectionResult,
   SourceDetectionSuccess,
 } from "./types";
+import { parseXmlPayload, xmlAttribute, xmlChild, xmlChildren, xmlText, type XmlElement } from "./xml";
 
 const ODYSEE_SOURCE_TYPE = "odysee" satisfies SourceType;
 const ODYSEE_ORIGIN = "https://odysee.com";
@@ -119,30 +120,34 @@ function normalizeOdyseeRssPayload(
   input: ResolvedSourceInput & { readonly sourceType: "odysee" },
   payload: string,
 ): SourceAdapterResult<NormalizedCatalogPayload> {
-  const xmlStart = payload.indexOf("<");
-  if (xmlStart === -1) {
-    return failure("remote-payload-invalid", "Odysee RSS payload does not contain XML.", input.canonicalUrl);
+  const parsed = parseXmlPayload(payload);
+  if (!parsed.ok) {
+    return failure("remote-payload-invalid", "Odysee RSS payload is not valid XML.", input.canonicalUrl, parsed.error);
   }
 
-  const xml = payload.slice(xmlStart).replace("\uFEFF", "");
-  const channel = readElementBlock(xml, "channel");
+  const channel = xmlChild(parsed.document.rss, "channel");
   if (channel === null) {
     return failure("remote-payload-invalid", "Odysee RSS payload is missing a channel element.", input.canonicalUrl);
   }
 
-  const feedTitle = readElementText(channel, "title") ?? "Odysee channel";
-  const description = readElementText(channel, "description");
-  const channelLink = readElementText(channel, "link");
-  const channelClaim = claimSegmentFromUrl(channelLink) ?? input.sourceExternalId;
+  const feedTitle = xmlText(channel, "title") ?? "Odysee channel";
+  const description = xmlText(channel, "description");
+  // Identity is the canonical creator claim resolved before fetching
+  // (input.sourceExternalId). Only fall back to the served <link> when the
+  // canonical claim is absent, so a malformed/garbled link cannot spawn a
+  // duplicate creator row \u2014 same hardening as the YouTube adapter.
+  const channelClaim = isNonEmptyText(input.sourceExternalId)
+    ? input.sourceExternalId
+    : claimSegmentFromUrl(xmlText(channel, "link"));
   if (!isNonEmptyText(channelClaim)) {
     return failure("normalization-failed", "Odysee RSS payload is missing a creator claim.", input.canonicalUrl);
   }
 
-  const ownerBlock = readElementBlock(channel, "itunes:owner");
-  const ownerName = ownerBlock === null ? null : readElementText(ownerBlock, "itunes:name");
-  const imageBlock = readElementBlock(channel, "image");
-  const channelImageUrl = (imageBlock === null ? null : readElementText(imageBlock, "url")) ?? readAttribute(channel, "itunes:image", "href");
-  const itemBlocks = readElementBlocks(channel, "item");
+  const ownerBlock = xmlChild(channel, "itunes:owner");
+  const ownerName = xmlText(ownerBlock ?? undefined, "itunes:name");
+  const imageBlock = xmlChild(channel, "image");
+  const channelImageUrl = xmlText(imageBlock ?? undefined, "url") ?? xmlAttribute(channel, "itunes:image", "href");
+  const itemBlocks = xmlChildren(channel, "item");
   const items: NormalizedCatalogContentItem[] = [];
 
   for (const itemBlock of itemBlocks) {
@@ -179,15 +184,15 @@ function normalizeOdyseeRssPayload(
   };
 }
 
-function normalizeItem(item: string, fallbackChannelClaim: string): NormalizedCatalogContentItem | null {
-  const guid = readElementText(item, "guid");
-  const link = readElementText(item, "link");
+function normalizeItem(item: XmlElement, fallbackChannelClaim: string): NormalizedCatalogContentItem | null {
+  const guid = xmlText(item, "guid");
+  const link = xmlText(item, "link");
   const itemClaim = itemClaimFromGuid(guid) ?? itemClaimFromCanonicalUrl(link);
   if (itemClaim === null) {
     return null;
   }
 
-  const title = readElementText(item, "title");
+  const title = xmlText(item, "title");
   if (!isNonEmptyText(title)) {
     return null;
   }
@@ -195,12 +200,12 @@ function normalizeItem(item: string, fallbackChannelClaim: string): NormalizedCa
   const channelClaim = channelClaimFromGuid(guid) ?? creatorClaimFromUrl(link) ?? fallbackChannelClaim;
   const contentExternalId = claimIdFromSegment(itemClaim);
   const canonicalUrl = canonicalContentUrl(channelClaim, itemClaim);
-  const enclosureUrl = readAttribute(item, "enclosure", "url");
-  const enclosureType = readAttribute(item, "enclosure", "type");
-  const description = readElementText(item, "content:encoded") ?? readElementText(item, "description");
-  const thumbnailUrl = readAttribute(item, "itunes:image", "href");
-  const publishedAt = parseDate(readElementText(item, "isoDate") ?? readElementText(item, "pubDate"));
-  const durationSeconds = parseDurationSeconds(readElementText(item, "itunes:duration"));
+  const enclosureUrl = xmlAttribute(item, "enclosure", "url");
+  const enclosureType = xmlAttribute(item, "enclosure", "type");
+  const description = xmlText(item, "content:encoded") ?? xmlText(item, "description");
+  const thumbnailUrl = xmlAttribute(item, "itunes:image", "href");
+  const publishedAt = parseDate(xmlText(item, "isoDate") ?? xmlText(item, "pubDate"));
+  const durationSeconds = parseDurationSeconds(xmlText(item, "itunes:duration"));
   const sources = buildContentSources(contentExternalId, canonicalUrl, enclosureUrl, enclosureType);
 
   return {
@@ -421,50 +426,6 @@ function decodePathSegment(value: string): string {
   } catch {
     return value;
   }
-}
-
-function readElementText(xml: string, tagName: string): string | null {
-  const block = readElementBlock(xml, tagName);
-  if (block === null) {
-    return null;
-  }
-  return decodeXmlText(stripCdata(block).replace(/<[^>]+>/g, "").trim());
-}
-
-function readElementBlock(xml: string, tagName: string): string | null {
-  const blocks = readElementBlocks(xml, tagName);
-  return blocks[0] ?? null;
-}
-
-function readElementBlocks(xml: string, tagName: string): readonly string[] {
-  const escapedTagName = escapeRegExp(tagName);
-  const pattern = new RegExp(`<${escapedTagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${escapedTagName}>`, "gi");
-  return [...xml.matchAll(pattern)].map((match) => match[1]).filter(isNonEmptyText);
-}
-
-function readAttribute(xml: string, tagName: string, attributeName: string): string | null {
-  const escapedTagName = escapeRegExp(tagName);
-  const escapedAttributeName = escapeRegExp(attributeName);
-  const pattern = new RegExp(`<${escapedTagName}\\b[^>]*\\s${escapedAttributeName}=(['"])(.*?)\\1`, "i");
-  const value = pattern.exec(xml)?.[2];
-  return isNonEmptyText(value) ? decodeXmlText(value) : null;
-}
-
-function stripCdata(value: string): string {
-  return value.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1");
-}
-
-function decodeXmlText(value: string): string {
-  return value
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function parseDate(value: string | null): Date | null {

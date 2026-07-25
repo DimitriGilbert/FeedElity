@@ -1,12 +1,15 @@
 import type {
   CatalogContentListItem,
   CatalogFeed,
+  RefreshFeedResultWithFeed,
+  RefreshRun,
   SourceType,
   UserContentStatus,
   UserSetting,
   UserSubscriptionWithCreator,
 } from "@FeedElity/api";
 import { For, Match, Show, Suspense, Switch, createEffect, createMemo, createResource, createSignal, onCleanup, onMount, untrack } from "solid-js";
+import TriangleAlert from "lucide-solid/icons/triangle-alert";
 import ChevronDown from "lucide-solid/icons/chevron-down";
 import Plus from "lucide-solid/icons/plus";
 import RefreshCw from "lucide-solid/icons/refresh-cw";
@@ -19,6 +22,7 @@ import { client } from "@/utils/orpc";
 import { ContentListColumn } from "./app-shell-content-column";
 import { PaneResizer } from "./pane-resizer";
 import { CreatorSourceRow, FeedRow } from "./app-shell-rows";
+import { RefreshStatusDialog } from "./refresh-status-dialog";
 import {
   PlaylistColumnSection,
   SubscriptionActionButton,
@@ -33,6 +37,7 @@ import {
   feedListLimit,
   formatError,
   formatSourceLabel,
+  joinFeedResultsWithFeeds,
   leftPaneTabLabels,
   minLeftFraction,
   minMiddleFraction,
@@ -202,39 +207,6 @@ function appendUniqueFeeds(existingFeeds: readonly CatalogFeed[], nextFeeds: rea
   return [...feedById.values()];
 }
 
-function refreshFeedResultErrorMessage(errorSummaryJson: string | null): string | null {
-  if (errorSummaryJson === null) {
-    return null;
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(errorSummaryJson);
-    if (Array.isArray(parsed)) {
-      const providerPause = parsed.find((item: unknown) => refreshErrorCode(item) === "provider-refresh-paused");
-      return refreshErrorMessage(providerPause ?? parsed[0]);
-    }
-    return refreshErrorMessage(parsed);
-  } catch {
-    return null;
-  }
-}
-
-function refreshErrorCode(value: unknown): string | null {
-  if (typeof value !== "object" || value === null) {
-    return null;
-  }
-  const candidate = value as Record<string, unknown>;
-  return typeof candidate.code === "string" ? candidate.code : null;
-}
-
-function refreshErrorMessage(value: unknown): string | null {
-  if (typeof value !== "object" || value === null) {
-    return null;
-  }
-  const candidate = value as Record<string, unknown>;
-  return typeof candidate.message === "string" ? candidate.message : null;
-}
-
 interface CreatorSourceColumnProps {
   readonly isAuthenticated: () => boolean;
   readonly mode: ShellMode;
@@ -249,7 +221,7 @@ interface CreatorSourceColumnProps {
   readonly subscriptionsReloadKey: () => number;
   readonly playlistItemsReloadKey: () => number;
   readonly middlePanePanel: () => MiddlePanePanel | null;
-  readonly onCatalogChanged: () => void;
+  readonly onContentListLiveReload: () => void;
   readonly onSubscriptionsChanged: () => void;
   readonly onClearCreator: () => void;
   readonly onSelectCreator: (creator: BrowsableCreator) => void;
@@ -321,10 +293,24 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [feedOffset, setFeedOffset] = createSignal<PaginationOffsetState>({ key: "", nextOffset: 0 });
   const [feedPageError, setFeedPageError] = createSignal<string | null>(null);
   const [refreshBusy, setRefreshBusy] = createSignal<"normal" | "force" | null>(null);
+  const [scopedRefreshBusy, setScopedRefreshBusy] = createSignal<string | null>(null);
   const [refreshError, setRefreshError] = createSignal<string | null>(null);
   const [activeRefreshRunId, setActiveRefreshRunId] = createSignal<string | null>(null);
   const [refreshPollKey, setRefreshPollKey] = createSignal(0);
-  const [refreshCompletedFeedsSeen, setRefreshCompletedFeedsSeen] = createSignal(0);
+  // High-water mark of ingested items seen during the current run. The content
+  // list refetches ONLY when this strictly increases — i.e. when the run
+  // actually created new content — never on every poll tick or every feed
+  // completion. Feeds that complete with zero new items trigger no refetch,
+  // so a force-refresh-all no longer pegs the CPU re-rendering on each poll.
+  const [refreshItemsSeen, setRefreshItemsSeen] = createSignal(0);
+  // Snapshot of the last completed run so its full per-feed failure list stays
+  // viewable after the run finishes — the status resource is nulled on
+  // completion, which previously destroyed the failure data immediately.
+  const [refreshStatusOpen, setRefreshStatusOpen] = createSignal(false);
+  const [lastCompletedStatus, setLastCompletedStatus] = createSignal<{
+    readonly run: RefreshRun;
+    readonly results: readonly RefreshFeedResultWithFeed[];
+  } | null>(null);
   const [libraryCreatorLimit, setLibraryCreatorLimit] = createSignal(creatorListLimit);
   const creatorListInput = createMemo(() => toCreatorListInput(search(), sourceType()));
   const creatorListResourceKey = createMemo(() => toCreatorListResourceKey(creatorListInput(), props.catalogReloadKey()));
@@ -343,7 +329,13 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     client.overlays.subscriptions(),
   );
   const feedListInput = createMemo(() => toFeedListInput(props.selectedCreatorId()));
-  const feedListResourceKey = createMemo(() => toFeedListResourceKey(feedListInput()));
+  // Surgical reload signal scoped to the selected creator's feed rows only.
+  // Bumped after a single-creator refresh so the feed metadata
+  // (lastNormalRefreshAt / nextRefreshAfter) updates — WITHOUT bumping
+  // catalogReloadKey, which would tear down the creator list, content list,
+  // and video viewer.
+  const [feedListReloadKey, setFeedListReloadKey] = createSignal(0);
+  const feedListResourceKey = createMemo(() => `${toFeedListResourceKey(feedListInput())}${feedListReloadKey().toString()}`);
   const [feeds] = createResource(
     feedListResourceKey,
     () => {
@@ -509,15 +501,30 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     }
 
     if (run.status !== "running") {
+      // Persist the full per-feed result list before the status resource is
+      // torn down, so failures remain viewable in the status dialog. Only
+      // snapshot when something actually failed — a clean run clears any
+      // prior failure indicator.
+      if (run.feedsFailedCount > 0) {
+        setLastCompletedStatus({ run, results: loadedStatus.latestFeedResults });
+      } else {
+        setLastCompletedStatus(null);
+      }
       setRefreshBusy(null);
       setActiveRefreshRunId(null);
-      props.onCatalogChanged();
+      props.onContentListLiveReload();
       return;
     }
 
-    const completedFeeds = run.feedsSucceededCount + run.feedsFailedCount;
-    if (completedFeeds > refreshCompletedFeedsSeen()) {
-      setRefreshCompletedFeedsSeen(completedFeeds);
+    // Refetch the content list ONLY when the run has ingested new content since
+    // the last poll — i.e. itemsDiscoveredCount strictly increased. A feed that
+    // completes with zero new items must NOT trigger a refetch; otherwise a
+    // force-refresh-all re-renders the whole content list on every 2.5s poll for
+    // the entire run, pegging the CPU.
+    const discoveredItems = run.itemsDiscoveredCount;
+    if (discoveredItems > refreshItemsSeen()) {
+      setRefreshItemsSeen(discoveredItems);
+      props.onContentListLiveReload();
     }
 
     if (refreshPollTimer !== null) {
@@ -531,7 +538,8 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const runHeaderRefresh = async (force: boolean) => {
     setRefreshBusy(force ? "force" : "normal");
     setRefreshError(null);
-    setRefreshCompletedFeedsSeen(0);
+    setRefreshItemsSeen(0);
+    setLastCompletedStatus(null);
     try {
       const started = await client.refresh.startAll({ force });
       setActiveRefreshRunId(started.run.id);
@@ -539,6 +547,41 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     } catch (error) {
       setRefreshError(formatError(error));
       setRefreshBusy(null);
+    }
+  };
+
+  // Scoped (single-creator) force refresh. Unlike the header refresh, this runs
+  // synchronously on the server and returns the full result inline, so there is
+  // no polling loop. Failures feed the same lastCompletedStatus snapshot and
+  // refresh-status dialog as the global refresh — one error surface.
+  const runCreatorRefresh = async (creatorId: string) => {
+    if (!props.isAuthenticated()) {
+      return;
+    }
+    if (refreshBusy() !== null || scopedRefreshBusy() !== null) {
+      return;
+    }
+
+    setScopedRefreshBusy(creatorId);
+    setRefreshError(null);
+    setLastCompletedStatus(null);
+    try {
+      const result = await client.refresh.runCreator({ creatorId, force: true });
+      const joined = joinFeedResultsWithFeeds(result.feedResults, result.selectedFeeds);
+      if (result.run.feedsFailedCount > 0) {
+        setLastCompletedStatus({ run: result.run, results: joined });
+      } else {
+        setLastCompletedStatus(null);
+      }
+      props.onContentListLiveReload();
+      // Bump ONLY the selected creator's feed-list resource so the feed-row
+      // metadata refreshes. Never bump catalogReloadKey here — that would tear
+      // down the creator list, content list, and video viewer.
+      setFeedListReloadKey((key) => key + 1);
+    } catch (error) {
+      setRefreshError(formatError(error));
+    } finally {
+      setScopedRefreshBusy(null);
     }
   };
 
@@ -551,12 +594,8 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     const completedFeeds = run.feedsSucceededCount + run.feedsFailedCount;
     return `${completedFeeds}/${run.feedsRequestedCount}`;
   });
-  const refreshProviderMessage = createMemo(() => {
-    const status = activeRefreshStatusValue();
-    const failedResult = status?.latestFeedResults.find((feedResult) => feedResult.status === "failed");
-    return refreshFeedResultErrorMessage(status?.latestRun?.errorSummaryJson ?? null)
-      ?? (failedResult === undefined ? null : refreshFeedResultErrorMessage(failedResult.errorSummaryJson));
-  });
+  const failedFeedCount = createMemo(() => lastCompletedStatus()?.results.filter((result) => result.status === "failed").length ?? 0);
+  const lastRunHadFailures = createMemo(() => (lastCompletedStatus()?.run.feedsFailedCount ?? 0) > 0);
 
   return (
     <section
@@ -665,10 +704,20 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
           </span>
         </div>
         <Show when={refreshError()}>
-          {(message) => <p class="mt-1 text-xs text-destructive">{message()}</p>}
+          {(message) => <p class="mt-1 text-xs text-destructive" data-refresh-status-error>{message()}</p>}
         </Show>
-        <Show when={refreshProviderMessage()}>
-          {(message) => <p class="mt-1 text-xs text-destructive">{message()}</p>}
+        <Show when={lastRunHadFailures()}>
+          <button
+            type="button"
+            class="mt-1 inline-flex items-center gap-1 rounded-md border border-destructive bg-destructive/10 px-2 py-1 text-xs font-semibold text-destructive transition hover:bg-destructive/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            aria-label={`Refresh completed with ${failedFeedCount()} failed feed${failedFeedCount() === 1 ? "" : "s"}. View refresh status.`}
+            title="View refresh status"
+            data-refresh-status-trigger
+            onClick={() => setRefreshStatusOpen(true)}
+          >
+            <TriangleAlert class="h-3.5 w-3.5" aria-hidden="true" />
+            {failedFeedCount()} failed
+          </button>
         </Show>
         <div class="flex items-center gap-1.5">
           <label class="sr-only" for={creatorSearchInputId}>
@@ -750,8 +799,10 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
                           isSelected={props.selectedCreatorId() === creator.id}
                           isSubscribed={subscriptionCreatorIds().has(creator.id)}
                           showSubscriptionControl={props.mode === "catalog"}
+                          refreshBusy={scopedRefreshBusy() === creator.id || (scopedRefreshBusy() === null && refreshBusy() !== null)}
                           readerDensity={props.readerDensity()}
                           onSelectCreator={props.onSelectCreator}
+                          onForceRefreshCreator={runCreatorRefresh}
                           subscriptionControl={
                             <SubscriptionActionButton
                               creatorId={creator.id}
@@ -785,13 +836,28 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
             <aside class={sourceFeedListRegionClass} aria-label="Selected source feeds" data-source-feed-scroll-region>
               <div class="flex items-center justify-between gap-2">
                 <p class="min-w-0 truncate text-xs font-semibold text-foreground">{creator().displayName}</p>
-                <Show when={props.isAuthenticated()}>
-                  <SubscriptionActionButton
-                    creatorId={creator().id}
-                    isSubscribed={subscriptionCreatorIds().has(creator().id)}
-                    onUpdateSubscription={updateSubscription}
-                  />
-                </Show>
+                <div class="flex items-center gap-1">
+                  <Show when={props.isAuthenticated()}>
+                    <button
+                      type="button"
+                      class="shrink-0 rounded-md border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                      aria-label={`Force refresh ${creator().displayName}`}
+                      title="Force refresh this source"
+                      data-refresh-creator={creator().id}
+                      disabled={scopedRefreshBusy() !== null || refreshBusy() !== null}
+                      onClick={async () => {
+                        await runCreatorRefresh(creator().id);
+                      }}
+                    >
+                      <RefreshCw size={14} class={scopedRefreshBusy() === creator().id ? "animate-spin" : ""} />
+                    </button>
+                    <SubscriptionActionButton
+                      creatorId={creator().id}
+                      isSubscribed={subscriptionCreatorIds().has(creator().id)}
+                      onUpdateSubscription={updateSubscription}
+                    />
+                  </Show>
+                </div>
               </div>
               <Switch>
                 <Match when={feeds.loading}>
@@ -847,7 +913,14 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
           </div>
         </Show>
       </div>
-      <div class={sourceActionsRegionClass} data-source-actions-region />
+      <div class={sourceActionsRegionClass} data-source-actions-region>
+        <RefreshStatusDialog
+          open={refreshStatusOpen()}
+          run={lastCompletedStatus()?.run ?? null}
+          feedResults={lastCompletedStatus()?.results ?? []}
+          onClose={() => setRefreshStatusOpen(false)}
+        />
+      </div>
     </section>
   );
 }
@@ -871,6 +944,7 @@ export default function AppShell(props: AppShellProps) {
   const [subscriptionsReloadKey, setSubscriptionsReloadKey] = createSignal(0);
   const [favoritesReloadKey, setFavoritesReloadKey] = createSignal(0);
   const [statusReloadKey, setStatusReloadKey] = createSignal(0);
+  const [listLiveReloadKey, setListLiveReloadKey] = createSignal(0);
   const [statusSelectionError, setStatusSelectionError] = createSignal<string | null>(null);
   const [activeTab, setActiveTab] = createSignal<LeftPaneTab>("library");
   const [middlePanePanel, setMiddlePanePanel] = createSignal<MiddlePanePanel | null>(null);
@@ -1089,7 +1163,7 @@ export default function AppShell(props: AppShellProps) {
           subscriptionsReloadKey={subscriptionsReloadKey}
           playlistItemsReloadKey={playlistItemsReloadKey}
           middlePanePanel={middlePanePanel}
-          onCatalogChanged={() => setCatalogReloadKey((key) => key + 1)}
+          onContentListLiveReload={() => setListLiveReloadKey((key) => key + 1)}
           onSubscriptionsChanged={() => setSubscriptionsReloadKey((key) => key + 1)}
           onClearCreator={() => {
             setSelectedCreator(null);
@@ -1118,6 +1192,7 @@ export default function AppShell(props: AppShellProps) {
           readerDensity={readerDensity}
           contentStatuses={() => contentStatuses() ?? emptyUserContentStatuses}
           statusReloadKey={statusReloadKey}
+          listLiveReloadKey={listLiveReloadKey}
           middlePanePanel={middlePanePanel}
           onCloseMiddlePanePanel={() => setMiddlePanePanel(null)}
           onAddSource={async (value) => {

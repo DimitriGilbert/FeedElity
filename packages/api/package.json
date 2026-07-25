@@ -23,6 +23,7 @@
     "@orpc/zod": "catalog:",
     "dotenv": "catalog:",
     "drizzle-orm": "catalog:",
+    "fast-xml-parser": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

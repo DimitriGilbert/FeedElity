@@ -9,6 +9,7 @@ import Eye from "lucide-solid/icons/eye";
 import EyeOff from "lucide-solid/icons/eye-off";
 import Heart from "lucide-solid/icons/heart";
 import Plus from "lucide-solid/icons/plus";
+import RefreshCw from "lucide-solid/icons/refresh-cw";
 import Target from "lucide-solid/icons/target";
 import X from "lucide-solid/icons/x";
 
@@ -54,9 +55,11 @@ export interface CreatorSourceRowProps {
   readonly isSelected: boolean;
   readonly isSubscribed: boolean;
   readonly showSubscriptionControl: boolean;
+  readonly refreshBusy: boolean;
   readonly readerDensity: ReaderDensity;
   readonly subscriptionControl: JSX.Element;
   readonly onSelectCreator: (creator: BrowsableCreator) => void;
+  readonly onForceRefreshCreator: (creatorId: string) => Promise<void>;
 }
 
 export function CreatorSourceRow(props: CreatorSourceRowProps) {
@@ -85,8 +88,26 @@ export function CreatorSourceRow(props: CreatorSourceRowProps) {
           </Show>
           <span class="block truncate text-sm font-semibold">{props.creator.displayName}</span>
         </button>
-        <Show when={props.isAuthenticated && props.showSubscriptionControl}>
-          <span class="opacity-0 transition-opacity delay-100 duration-100 group-hover:opacity-100 group-focus-within:opacity-100">{props.subscriptionControl}</span>
+        <Show when={props.isAuthenticated}>
+          <div class="pointer-events-none flex items-center gap-1 opacity-0 transition-opacity delay-100 duration-100 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+            <button
+              type="button"
+              class="shrink-0 rounded-md border border-border bg-background p-1 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+              aria-label={`Force refresh ${props.creator.displayName}`}
+              title="Force refresh this source"
+              data-refresh-creator={props.creator.id}
+              disabled={props.refreshBusy}
+              onClick={(event) => {
+                event.stopPropagation();
+                void props.onForceRefreshCreator(props.creator.id);
+              }}
+            >
+              <RefreshCw size={13} class={props.refreshBusy ? "animate-spin" : ""} />
+            </button>
+            <Show when={props.showSubscriptionControl}>
+              <span class="flex items-center">{props.subscriptionControl}</span>
+            </Show>
+          </div>
         </Show>
       </div>
     </div>
@@ -400,17 +421,20 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
         </span>
       </button>
       <Show when={isAuthenticated()}>
-        <div class="mt-1 flex items-center justify-end gap-1">
-          <div class="flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
-            <Show when={statusError()}>
-              {(message) => <p class="min-w-0 flex-1 truncate text-xs text-destructive">{message()}</p>}
-            </Show>
-            <Show when={favoriteError()}>
-              {(message) => <p class="min-w-0 flex-1 truncate text-xs text-destructive">{message()}</p>}
-            </Show>
-            <Show when={playlistError()}>
-              {(message) => <p class="min-w-0 flex-1 truncate text-xs text-destructive">{message()}</p>}
-            </Show>
+        <div
+          class="pointer-events-none absolute bottom-1 right-1 flex items-center justify-end gap-1 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+          data-content-row-actions
+        >
+          <Show when={statusError()}>
+            {(message) => <p class="pointer-events-none min-w-0 max-w-[8rem] truncate text-xs text-destructive">{message()}</p>}
+          </Show>
+          <Show when={favoriteError()}>
+            {(message) => <p class="pointer-events-none min-w-0 max-w-[8rem] truncate text-xs text-destructive">{message()}</p>}
+          </Show>
+          <Show when={playlistError()}>
+            {(message) => <p class="pointer-events-none min-w-0 max-w-[8rem] truncate text-xs text-destructive">{message()}</p>}
+          </Show>
+          <div class="flex items-center gap-1">
             <button
               type="button"
               class="rounded-md border border-border bg-card p-1 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"

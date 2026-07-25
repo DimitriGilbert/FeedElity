@@ -2,6 +2,10 @@ import type {
   CatalogContentListItem,
   CatalogContentSource,
   CatalogCreator,
+  CatalogFeed,
+  RefreshFeedErrorSummary,
+  RefreshFeedResult,
+  RefreshFeedResultWithFeed,
   RefreshRun,
   RefreshRunReport,
   SourceType,
@@ -309,6 +313,97 @@ export function formatError(error: unknown): string {
   }
 
   return "Catalog request failed.";
+}
+
+/**
+ * A single feed-level refresh failure parsed from a run/feed error summary.
+ * Mirrors {@link RefreshFeedErrorSummary} but as a plain validated value.
+ */
+export interface ParsedRefreshError {
+  readonly feedId: string;
+  readonly code: string;
+  readonly message: string;
+}
+
+function isRefreshFeedErrorSummary(value: unknown): value is RefreshFeedErrorSummary {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.feedId === "string" &&
+    typeof candidate.code === "string" &&
+    typeof candidate.message === "string"
+  );
+}
+
+/**
+ * Parse a run/feed errorSummaryJson value into typed summaries. Accepts both a
+ * single error-summary object and an array of them (the catalog persists a
+ * single object per failed feed; runs may carry an array). Returns an empty
+ * array for null input, malformed JSON, or entries that do not match the error
+ * summary shape. Never throws.
+ */
+export function parseRefreshErrorSummaries(errorSummaryJson: string | null): readonly ParsedRefreshError[] {
+  if (errorSummaryJson === null) {
+    return [];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(errorSummaryJson);
+  } catch {
+    return [];
+  }
+
+  const candidates = Array.isArray(parsed) ? parsed : [parsed];
+
+  return candidates.filter(isRefreshFeedErrorSummary).map((summary) => ({
+    feedId: summary.feedId,
+    code: summary.code,
+    message: summary.message,
+  }));
+}
+
+/**
+ * Join a scoped-refresh run's per-feed results with the catalog feeds that were
+ * selected for the run, producing the `RefreshFeedResultWithFeed[]` shape the
+ * refresh status dialog expects. A result whose feedId no longer maps to a
+ * selected feed (e.g. the feed was removed mid-run) is dropped rather than
+ * rendered without a label. Deterministic order follows `feedResults`.
+ */
+export function joinFeedResultsWithFeeds(
+  feedResults: readonly RefreshFeedResult[],
+  selectedFeeds: readonly CatalogFeed[],
+): readonly RefreshFeedResultWithFeed[] {
+  const feedById = new Map(selectedFeeds.map((feed) => [feed.id, feed]));
+  const joined: RefreshFeedResultWithFeed[] = [];
+
+  for (const result of feedResults) {
+    const feed = feedById.get(result.feedId);
+    if (feed === undefined) {
+      continue;
+    }
+
+    joined.push({ ...result, feed });
+  }
+
+  return joined;
+}
+
+const refreshErrorCodeLabels: Readonly<Record<string, string>> = {
+  "provider-refresh-paused": "Provider rate-limited",
+  "catalog-persistence-failed": "Catalog write failed",
+  "adapter-not-registered": "Source type unsupported",
+};
+
+/**
+ * Human label for a refresh error code. Falls back to the raw code for unknown
+ * (including adapter-passthrough) codes.
+ */
+export function formatRefreshErrorCodeLabel(code: string): string {
+  return refreshErrorCodeLabels[code] ?? code;
 }
 
 export function formatContentPublishedAt(publishedAt: Date | null): string {
