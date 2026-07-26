@@ -42,6 +42,8 @@ import {
   mergeUniqueContentItemsForDisplay,
   pageHasMoreForKey,
   pageItemsForKey,
+  persistHidePlayed,
+  readPersistedHidePlayed,
   showsCatalogFilters,
   toContentListInput,
   toContentStatusFlags,
@@ -246,7 +248,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
   const [search, setSearch] = createSignal("");
   const [sourceType, setSourceType] = createSignal<SourceType | null>(null);
   const [viewMode, setViewMode] = createSignal<ContentViewMode>(props.mode === "library" ? "subscribed" : "catalog");
-  const [hidePlayed, setHidePlayed] = createSignal(false);
+  const [hidePlayed, setHidePlayed] = createSignal<boolean>(readPersistedHidePlayed() ?? false);
   const [appendedContentPage, setAppendedContentPage] = createSignal<AppendedPageState<CatalogContentListItem>>(emptyAppendedPageState());
   const [contentOffset, setContentOffset] = createSignal<PaginationOffsetState>({ key: "", nextOffset: 0 });
   const [contentPageBusy, setContentPageBusy] = createSignal(false);
@@ -262,6 +264,14 @@ export function ContentListColumn(props: ContentListColumnProps) {
   createEffect(() => {
     if (!props.isAuthenticated()) {
       setViewMode(props.mode === "library" ? "subscribed" : "catalog");
+    }
+  });
+
+  // Default "hide played" to on when the user connects, but only until they make
+  // an explicit choice — once a preference is persisted it always wins.
+  createEffect(() => {
+    if (props.isAuthenticated() && readPersistedHidePlayed() === null) {
+      setHidePlayed(true);
     }
   });
 
@@ -480,7 +490,11 @@ export function ContentListColumn(props: ContentListColumnProps) {
                 id={contentHidePlayedInputId}
                 type="checkbox"
                 checked={hidePlayed()}
-                onChange={(event) => setHidePlayed(event.currentTarget.checked)}
+                onChange={(event) => {
+                  const next = event.currentTarget.checked;
+                  setHidePlayed(next);
+                  persistHidePlayed(next);
+                }}
               />
               <span>Hide played</span>
             </label>

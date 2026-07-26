@@ -30,6 +30,7 @@ import {
   formatRefreshReportSummary,
   formatRefreshRunSummary,
   formatSettingValue,
+  hidePlayedLocalStorageKey,
   parseRefreshErrorSummaries,
   getShellColumnCount,
   hasInternalAppHeader,
@@ -464,7 +465,8 @@ test("content list exposes no no-op filter controls", async () => {
   expect(playedBranchIndex).toBeGreaterThan(-1);
   expect(contentHidePlayedInputId).toBe("content-hide-played");
   expect(source).toContain("Hide played");
-  expect(source).toContain("setHidePlayed(event.currentTarget.checked)");
+  expect(source).toContain("setHidePlayed(next)");
+  expect(source).toContain("persistHidePlayed(next)");
   expect(source).not.toContain(`${"played"} only`);
 });
 
@@ -1094,12 +1096,27 @@ test("anonymous users do not call protected status or history procedures", async
 test("hide played is state filtering and not DOM filtering", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("const [hidePlayed, setHidePlayed] = createSignal(false)");
+  expect(source).toContain("const [hidePlayed, setHidePlayed] = createSignal<boolean>(readPersistedHidePlayed() ?? false)");
   expect(source).toContain("locallyFilteredItems.filter((contentItem) => !toContentStatusFlags(statuses, contentItem.id).played)");
   expect(source).toContain("<For each={displayedContentItems()}>");
   expect(source).not.toContain("querySelector");
   expect(source).not.toContain("classList");
   expect(source).not.toContain("hidden =");
+});
+
+test("hide played defaults to on when connected unless an explicit preference exists", async () => {
+  const source = await readAppShellSource();
+
+  // No stored preference -> default to true once authenticated.
+  expect(source).toContain("if (props.isAuthenticated() && readPersistedHidePlayed() === null)");
+  expect(source).toContain("setHidePlayed(true)");
+  // The seed value: an explicit preference wins, otherwise start false (the
+  // authenticated default is applied by the effect above, not the seed).
+  expect(source).toContain("createSignal<boolean>(readPersistedHidePlayed() ?? false)");
+});
+
+test("hide played preference is persisted via localStorage helpers", () => {
+  expect(hidePlayedLocalStorageKey).toBe("feedelity.hide-played");
 });
 
 test("favorite toggles are real authenticated actions in list rows and viewer", async () => {

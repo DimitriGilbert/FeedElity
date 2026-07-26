@@ -174,6 +174,36 @@ export const paneWidthsLocalStorageKey = "feedelity.pane-widths";
 
 export type PersistedPaneWidths = { left: number; middle: number };
 
+export const hidePlayedLocalStorageKey = "feedelity.hide-played";
+
+/**
+ * Reads the persisted "hide played" preference.
+ * Returns `null` when no preference has been stored (or localStorage is unavailable),
+ * so callers can distinguish "no choice yet" from an explicit `false`.
+ */
+export function readPersistedHidePlayed(): boolean | null {
+  try {
+    const stored = localStorage.getItem(hidePlayedLocalStorageKey);
+    if (stored === "true") return true;
+    if (stored === "false") return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persists an explicit "hide played" choice. Failures are ignored: localStorage
+ * may be unavailable (private mode, sandboxed iframe) and the toggle still works in-memory.
+ */
+export function persistHidePlayed(value: boolean): void {
+  try {
+    localStorage.setItem(hidePlayedLocalStorageKey, value ? "true" : "false");
+  } catch {
+    // localStorage may be unavailable; in-memory state is unaffected
+  }
+}
+
 export function clampLeftFraction(left: number, middle: number): number {
   return Math.max(minLeftFraction, Math.min(left, 1 - middle - minRightFraction));
 }
