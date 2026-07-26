@@ -318,6 +318,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     creatorListResourceKey,
     () => client.catalog.creators(untrack(creatorListInput)),
   );
+  const creatorsValue = createMemo(() => creators.latest);
   const subscriptionsResourceInput = createMemo(() => {
     if (!props.isAuthenticated()) {
       return null;
@@ -328,6 +329,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [subscriptions] = createResource(subscriptionsResourceInput, () =>
     client.overlays.subscriptions(),
   );
+  const subscriptionsValue = createMemo(() => subscriptions.latest);
   const feedListInput = createMemo(() => toFeedListInput(props.selectedCreatorId()));
   // Surgical reload signal scoped to the selected creator's feed rows only.
   // Bumped after a single-creator refresh so the feed metadata
@@ -357,11 +359,11 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     return runId === null ? null : client.refresh.status({ runId, limit: 1, feedResultsLimit: 10 });
   });
   const activeRefreshStatusValue = createMemo(() => activeRefreshStatus.latest);
-  const subscriptionCreatorIds = createMemo(() => new Set((subscriptions() ?? emptySubscriptions).map((subscription) => subscription.creator.id)));
+  const subscriptionCreatorIds = createMemo(() => new Set((subscriptionsValue() ?? emptySubscriptions).map((subscription) => subscription.creator.id)));
   const listedCreators = createMemo<readonly BrowsableCreator[]>(() => {
     if (props.mode === "library") {
       const trimmedSearch = search().trim().toLowerCase();
-      const subscribedCreators = (subscriptions() ?? emptySubscriptions).map((subscription) => subscription.creator);
+      const subscribedCreators = (subscriptionsValue() ?? emptySubscriptions).map((subscription) => subscription.creator);
       return subscribedCreators.filter((creator) => {
         const matchesSearch = trimmedSearch.length === 0 || creator.displayName.toLowerCase().includes(trimmedSearch);
         const matchesSourceType = sourceType() === null || creator.sourceType === sourceType();
@@ -369,14 +371,14 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
       }).slice(0, libraryCreatorLimit());
     }
 
-    return appendUniqueCreators(creators() ?? emptyBrowsableCreators, pageItemsForKey(appendedCatalogCreatorPage(), creatorListResourceKey()));
+    return appendUniqueCreators(creatorsValue() ?? emptyBrowsableCreators, pageItemsForKey(appendedCatalogCreatorPage(), creatorListResourceKey()));
   });
   const creatorCount = createMemo(() => listedCreators().length);
   const catalogCreatorHasMore = createMemo(() =>
     pageHasMoreForKey(
       appendedCatalogCreatorPage(),
       creatorListResourceKey(),
-      (creators() ?? emptyBrowsableCreators).length,
+      (creatorsValue() ?? emptyBrowsableCreators).length,
       creatorListLimit,
     ),
   );
@@ -386,7 +388,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     }
 
     const trimmedSearch = search().trim().toLowerCase();
-    const matchingCreators = (subscriptions() ?? emptySubscriptions).filter((subscription) => {
+    const matchingCreators = (subscriptionsValue() ?? emptySubscriptions).filter((subscription) => {
       const creator = subscription.creator;
       const matchesSearch = trimmedSearch.length === 0 || creator.displayName.toLowerCase().includes(trimmedSearch);
       const matchesSourceType = sourceType() === null || creator.sourceType === sourceType();
@@ -975,18 +977,15 @@ export default function AppShell(props: AppShellProps) {
     if (selectedCreator()?.id === creator.id) {
       setSelectedCreator(null);
       setSelectedFeed(null);
-      setSelectedContent(null);
       return;
     }
 
     setSelectedCreator(creator);
     setSelectedFeed(null);
-    setSelectedContent(null);
   };
 
   const selectFeed = (feed: CatalogFeed | null) => {
     setSelectedFeed(feed);
-    setSelectedContent(null);
   };
 
   const patchContentStatus = (status: UserContentStatus) => {
