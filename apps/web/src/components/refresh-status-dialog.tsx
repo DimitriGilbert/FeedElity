@@ -117,6 +117,17 @@ export function RefreshStatusDialog(props: RefreshStatusDialogProps) {
                     </span>
                   </span>
 
+                  <a
+                    href={result.feed.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="mt-0.5 block truncate text-xs text-muted-foreground underline decoration-dotted underline-offset-2 transition hover:text-foreground"
+                    title={result.feed.url}
+                    data-refresh-status-feed-url
+                  >
+                    {result.feed.url}
+                  </a>
+
                   <Show
                     when={parseRefreshErrorSummaries(result.errorSummaryJson)[0]}
                     keyed

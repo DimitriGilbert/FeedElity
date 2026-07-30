@@ -445,7 +445,7 @@ async function refreshOneFeed(
     let summary = fromAdapterError(feed.id, fetched.error);
     const refusalStatus = providerRefusalStatus(fetched.error);
     if (refusalStatus !== null) {
-      summary = providerRefusalSummary(feed.sourceType, feed.id, refusalStatus);
+      summary = providerRefusalSummary(feed, fetched.error, refusalStatus);
       providerPauses.set(feed.sourceType, {
         sourceType: feed.sourceType,
         until: new Date(startedAt.getTime() + providerRefusalPauseMs),
@@ -560,13 +560,31 @@ function statusFromMessage(message: string): number | null {
   return Number.isInteger(parsed) ? parsed : null;
 }
 
-function providerRefusalSummary(sourceType: SourceType, feedId: string, status: number): RefreshFeedErrorSummary {
+function providerRefusalSummary(feed: CatalogFeed, error: SourceAdapterError, status: number): RefreshFeedErrorSummary {
+  const feedName = feed.title ?? feed.url;
   return {
-    feedId,
+    feedId: feed.id,
     code: "provider-refresh-paused",
-    message: `${sourceLabel(sourceType)} is refusing refresh requests with HTTP ${status}. Other providers will continue; retry ${sourceLabel(sourceType)} later.`,
+    message: `${sourceLabel(feed.sourceType)} returned HTTP ${status} (${httpStatusReason(status)}) for "${feedName}" (${feed.url}). The adapter error was: ${error.message}. Further ${sourceLabel(feed.sourceType)} feeds were skipped for this run; retry later.`,
   };
 }
+
+function httpStatusReason(status: number): string {
+  return httpStatusReasons[status] ?? "error";
+}
+
+const httpStatusReasons: Readonly<Record<number, string>> = {
+  400: "Bad Request",
+  401: "Unauthorized",
+  403: "Forbidden",
+  404: "Not Found",
+  408: "Request Timeout",
+  429: "Too Many Requests",
+  500: "Internal Server Error",
+  502: "Bad Gateway",
+  503: "Service Unavailable",
+  504: "Gateway Timeout",
+};
 
 function uniqueProviderPauseSummaries(providerPauses: ReadonlyMap<SourceType, ProviderPause>): readonly RefreshFeedErrorSummary[] {
   return [...providerPauses.values()].map((pause) => pause.reason);

@@ -43,16 +43,16 @@ export const youtubeAdapter: SourceAdapter<"youtube"> = {
       const feedUrl = channelId === input.sourceExternalId ? input.canonicalUrl : canonicalFeedUrl(channelId);
       const response: unknown = await fetch(feedUrl);
       if (!isFetchTextResponse(response)) {
-        return failure("remote-fetch-failed", "YouTube feed fetch returned an unreadable response.", feedUrl);
+        return failure("remote-fetch-failed", `YouTube feed fetch returned an unreadable response from ${feedUrl}.`, feedUrl);
       }
       if (!response.ok) {
-        return failure("remote-fetch-failed", `YouTube feed fetch failed with status ${response.status}.`, feedUrl, undefined, response.status);
+        return failure("remote-fetch-failed", `YouTube feed fetch failed with status ${response.status} from ${feedUrl}.`, feedUrl, undefined, response.status);
       }
 
       const payload = await response.text();
       return this.normalizeCatalogPayload({ ...input, sourceExternalId: channelId, canonicalUrl: feedUrl }, payload);
     } catch (error: unknown) {
-      return failure("remote-fetch-failed", "YouTube feed fetch failed.", input.canonicalUrl, error);
+      return failure("remote-fetch-failed", `YouTube feed fetch failed for ${input.canonicalUrl}: ${errorMessage(error)}.`, input.canonicalUrl, error);
     }
   },
 };
@@ -413,6 +413,10 @@ function stableJson(value: Record<string, string>): string {
 
 function isNonEmptyText(value: string | null | undefined): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error && error.message.trim().length > 0 ? error.message : "unknown error";
 }
 
 interface FetchTextResponse {

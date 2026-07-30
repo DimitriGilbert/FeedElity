@@ -555,20 +555,20 @@ test("refresh results expose feed labels errors and skipped reasons", async () =
 
 test("parseRefreshErrorSummaries reads all feed failures and tolerates bad input", () => {
   const valid = JSON.stringify([
-    { feedId: "feed-1", code: "provider-refresh-paused", message: "YouTube is refusing refresh requests." },
+    { feedId: "feed-1", code: "provider-refresh-paused", message: "YouTube returned HTTP 429 (Too Many Requests) for \"Creator Uploads\" (https://www.youtube.com/feeds/videos.xml?channel_id=UC123). The adapter error was: YouTube feed fetch failed with status 429 from https://www.youtube.com/feeds/videos.xml?channel_id=UC123. Further YouTube feeds were skipped for this run; retry later." },
     { feedId: "feed-2", code: "adapter-failed", message: "Remote feed unavailable." },
   ]);
 
   expect(parseRefreshErrorSummaries(valid)).toEqual([
-    { feedId: "feed-1", code: "provider-refresh-paused", message: "YouTube is refusing refresh requests." },
+    { feedId: "feed-1", code: "provider-refresh-paused", message: "YouTube returned HTTP 429 (Too Many Requests) for \"Creator Uploads\" (https://www.youtube.com/feeds/videos.xml?channel_id=UC123). The adapter error was: YouTube feed fetch failed with status 429 from https://www.youtube.com/feeds/videos.xml?channel_id=UC123. Further YouTube feeds were skipped for this run; retry later." },
     { feedId: "feed-2", code: "adapter-failed", message: "Remote feed unavailable." },
   ]);
 
   // The catalog persists a SINGLE error-summary object per failed feed (not an
   // array). The parser must accept that shape — this is the real prod form.
-  const single = JSON.stringify({ feedId: "feed-1", code: "remote-fetch-failed", message: "YouTube feed fetch failed with status 404." });
+  const single = JSON.stringify({ feedId: "feed-1", code: "remote-fetch-failed", message: "YouTube feed fetch failed with status 404 from https://www.youtube.com/feeds/videos.xml?channel_id=UC123." });
   expect(parseRefreshErrorSummaries(single)).toEqual([
-    { feedId: "feed-1", code: "remote-fetch-failed", message: "YouTube feed fetch failed with status 404." },
+    { feedId: "feed-1", code: "remote-fetch-failed", message: "YouTube feed fetch failed with status 404 from https://www.youtube.com/feeds/videos.xml?channel_id=UC123." },
   ]);
 
   // Null (no error summary) yields nothing.

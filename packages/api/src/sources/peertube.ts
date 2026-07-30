@@ -74,16 +74,16 @@ export const peertubeAdapter: SourceAdapter<"peertube"> = {
     try {
       const response: unknown = await fetch(input.canonicalUrl);
       if (!isFetchTextResponse(response)) {
-        return failure("remote-fetch-failed", "PeerTube API fetch returned an unreadable response.", input.canonicalUrl);
+        return failure("remote-fetch-failed", `PeerTube API fetch returned an unreadable response from ${input.canonicalUrl}.`, input.canonicalUrl);
       }
       if (!response.ok) {
-        return failure("remote-fetch-failed", `PeerTube API fetch failed with status ${response.status}.`, input.canonicalUrl, undefined, response.status);
+        return failure("remote-fetch-failed", `PeerTube API fetch failed with status ${response.status} from ${input.canonicalUrl}.`, input.canonicalUrl, undefined, response.status);
       }
 
       const payload = await response.text();
       return this.normalizeCatalogPayload(input, payload);
     } catch (error: unknown) {
-      return failure("remote-fetch-failed", "PeerTube API fetch failed.", input.canonicalUrl, error);
+      return failure("remote-fetch-failed", `PeerTube API fetch failed for ${input.canonicalUrl}: ${errorMessage(error)}.`, input.canonicalUrl, error);
     }
   },
 };
@@ -595,6 +595,10 @@ function isPeerTubeVideo(value: PeerTubeVideo | null): value is PeerTubeVideo {
 
 function isNonEmptyText(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error && error.message.trim().length > 0 ? error.message : "unknown error";
 }
 
 function normalizeHost(hostname: string): string {
