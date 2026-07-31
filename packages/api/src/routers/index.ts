@@ -22,17 +22,23 @@ import {
   listRefreshRuns,
 } from "../repositories/catalog";
 import {
+  addCollectionMember,
   addPlaylistItem,
+  createCollection,
   createPlaylist,
+  deleteCollectionForUser,
   deletePlaylistForUser,
   deleteContentStatusForUser,
   deleteUserSettingForUser,
   findOrCreateContentStatus,
   getContentStatusForUser,
+  getCollectionForUser,
   findOrCreateSubscription,
   getNextPlaylistItemPositionForUserPlaylist,
   getPlaylistForUser,
   getSubscriptionWithCreatorForUser,
+  listCollectionMembersWithCreatorsForUserCollection,
+  listCollectionsForUser,
   listSubscribedContentItemsForUser,
   listContentStatusWithContentForUser,
   listContentStatusesForUser,
@@ -40,11 +46,13 @@ import {
   listPlaylistsForUser,
   listSubscriptionsWithCreatorsForUser,
   listUserSettingsForUser,
+  removeCollectionMemberForUser,
   removePlaylistItemForUser,
   reorderPlaylistItemsForUser,
   saveUserSetting,
   toggleFavoriteContentStatusForUser,
   unsubscribeFromCreatorForUser,
+  updateCollectionForUser,
   updatePlaylistForUser,
 } from "../repositories/overlays";
 import { addSource, batchAddSources } from "../services/ingestion";
@@ -96,6 +104,43 @@ const reorderPlaylistItemsInput = z.object({
   playlistItemIds: z.array(z.string().min(1)).max(500),
 });
 
+const collectionNameInput = z.string().trim().min(1).max(120);
+
+const collectionDescriptionInput = z.string().trim().max(2_000).nullable().optional();
+
+const collectionPositionInput = z.number().int().min(0).max(1_000_000).optional();
+
+const createCollectionInput = z.object({
+  name: collectionNameInput,
+  description: collectionDescriptionInput,
+  position: collectionPositionInput,
+});
+
+const updateCollectionInput = z.object({
+  collectionId: z.string().min(1),
+  name: collectionNameInput,
+  description: collectionDescriptionInput,
+  position: collectionPositionInput,
+});
+
+const deleteCollectionInput = z.object({
+  collectionId: z.string().min(1),
+});
+
+const collectionMembersInput = z.object({
+  collectionId: z.string().min(1),
+});
+
+const addCollectionMemberInput = z.object({
+  collectionId: z.string().min(1),
+  creatorId: z.string().min(1),
+});
+
+const removeCollectionMemberInput = z.object({
+  collectionId: z.string().min(1),
+  memberId: z.string().min(1),
+});
+
 const sourceTypeInput = z.enum(["youtube", "odysee", "peertube"]);
 
 const boundedSearchInput = z.string().trim().min(1).max(120);
@@ -127,6 +172,7 @@ const contentListInput = z
     search: boundedSearchInput.optional(),
     creatorId: z.string().min(1).optional(),
     feedId: z.string().min(1).optional(),
+    collectionId: z.string().min(1).optional(),
     sourceType: sourceTypeInput.optional(),
     limit: catalogLimitInput,
     offset: catalogOffsetInput,
@@ -309,7 +355,11 @@ export const appRouter = {
       return listCatalogFeedsForBrowsing(context.db, input ?? { limit: 50 });
     }),
     contentItems: publicProcedure.input(contentListInput).handler(({ input, context }) => {
-      return listCatalogContentItems(context.db, input ?? { limit: 50 });
+      const collectionId = input?.collectionId;
+      return listCatalogContentItems(context.db, {
+        ...(input ?? { limit: 50 }),
+        collectionUserId: collectionId === undefined ? undefined : context.session?.user.id,
+      });
     }),
     contentDetail: publicProcedure.input(contentDetailInput).handler(async ({ input, context }) => {
       const detail = await getCatalogContentDetail(context.db, input.id);
@@ -651,6 +701,64 @@ export const appRouter = {
     }),
     deleteSetting: protectedProcedure.input(deleteSettingInput).handler(async ({ input, context }) => {
       return { deleted: await deleteUserSettingForUser(context.db, context.session.user.id, input.key) };
+    }),
+    collections: protectedProcedure.handler(({ context }) => {
+      return listCollectionsForUser(context.db, context.session.user.id);
+    }),
+    createCollection: protectedProcedure.input(createCollectionInput).handler(({ input, context }) => {
+      return createCollection(context.db, {
+        userId: context.session.user.id,
+        name: input.name,
+        description: input.description,
+        position: input.position,
+      });
+    }),
+    updateCollection: protectedProcedure.input(updateCollectionInput).handler(async ({ input, context }) => {
+      const collection = await updateCollectionForUser(context.db, {
+        userId: context.session.user.id,
+        collectionId: input.collectionId,
+        name: input.name,
+        description: input.description,
+        position: input.position,
+      });
+      if (collection === null) {
+        throw new ORPCError("NOT_FOUND");
+      }
+      return collection;
+    }),
+    deleteCollection: protectedProcedure.input(deleteCollectionInput).handler(async ({ input, context }) => {
+      return { deleted: await deleteCollectionForUser(context.db, context.session.user.id, input.collectionId) };
+    }),
+    collectionMembers: protectedProcedure.input(collectionMembersInput).handler(({ input, context }) => {
+      return listCollectionMembersWithCreatorsForUserCollection(
+        context.db,
+        context.session.user.id,
+        input.collectionId,
+      );
+    }),
+    addCollectionMember: protectedProcedure.input(addCollectionMemberInput).handler(async ({ input, context }) => {
+      if ((await getCollectionForUser(context.db, context.session.user.id, input.collectionId)) === null) {
+        throw new ORPCError("NOT_FOUND");
+      }
+      if ((await getCatalogCreatorSummaryById(context.db, input.creatorId)) === null) {
+        throw new ORPCError("NOT_FOUND");
+      }
+
+      return addCollectionMember(context.db, {
+        userId: context.session.user.id,
+        collectionId: input.collectionId,
+        creatorId: input.creatorId,
+      });
+    }),
+    removeCollectionMember: protectedProcedure.input(removeCollectionMemberInput).handler(async ({ input, context }) => {
+      return {
+        removed: await removeCollectionMemberForUser(
+          context.db,
+          context.session.user.id,
+          input.collectionId,
+          input.memberId,
+        ),
+      };
     }),
   },
   migration: {

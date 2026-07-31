@@ -52,6 +52,26 @@ export interface PlaylistItemWithContent extends PlaylistItem {
   readonly content: CatalogContentListItem;
 }
 
+export interface CreatorCollection {
+  readonly id: string;
+  readonly userId: string;
+  readonly name: string;
+  readonly description: string | null;
+  readonly position: number;
+}
+
+export interface CollectionMember {
+  readonly id: string;
+  readonly userId: string;
+  readonly collectionId: string;
+  readonly creatorId: string;
+  readonly addedAt: Date;
+}
+
+export interface CollectionMemberWithCreator extends CollectionMember {
+  readonly creator: CatalogCreatorSummary;
+}
+
 export interface UserSetting {
   readonly id: string;
   readonly userId: string;

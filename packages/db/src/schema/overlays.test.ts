@@ -3,7 +3,9 @@ import { getTableConfig } from "drizzle-orm/sqlite-core";
 import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 
 import {
+  collectionMember,
   contentStatus,
+  creatorCollection,
   migrationMapping,
   migrationRun,
   playlist,
@@ -12,7 +14,7 @@ import {
   userSetting,
 } from "./overlays";
 
-const userOwnedOverlayTables = [subscription, contentStatus, playlist, playlistItem, userSetting];
+const userOwnedOverlayTables = [subscription, contentStatus, playlist, playlistItem, userSetting, creatorCollection, collectionMember];
 
 function columnNames(table: SQLiteTable): string[] {
   return getTableConfig(table).columns.map((column) => column.name);
@@ -115,5 +117,28 @@ describe("user overlay and migration schema", () => {
 
   test("playlists are indexed by owner and list position", () => {
     expect(indexColumnsByName(playlist, "playlist_user_position_idx")).toEqual(["user_id", "position"]);
+  });
+
+  test("collection members are unique per collection and creator", () => {
+    expect(uniqueIndexColumnsByName(collectionMember, "collection_member_collection_creator_uidx")).toEqual([
+      "collection_id",
+      "creator_id",
+    ]);
+  });
+
+  test("collection members enforce owner consistency with their parent collection", () => {
+    expect(uniqueIndexColumnsByName(creatorCollection, "creator_collection_id_user_uidx")).toEqual(["id", "user_id"]);
+    expect(foreignKeyColumnsByName(collectionMember, "collection_member_collection_owner_fk")).toEqual({
+      columns: ["collection_id", "user_id"],
+      foreignColumns: ["id", "user_id"],
+      onDelete: "cascade",
+    });
+  });
+
+  test("collections are indexed by owner and list position", () => {
+    expect(indexColumnsByName(creatorCollection, "creator_collection_user_position_idx")).toEqual([
+      "user_id",
+      "position",
+    ]);
   });
 });

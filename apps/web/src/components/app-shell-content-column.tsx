@@ -2,6 +2,7 @@ import type {
   AddSourceValue,
   CatalogContentListItem,
   CatalogFeed,
+  CollectionMemberWithCreator,
   Playlist,
   SourceType,
   UserContentStatus,
@@ -66,6 +67,8 @@ const emptyCatalogContentItems: readonly CatalogContentListItem[] = [];
 
 const emptyPlaylists: readonly Playlist[] = [];
 
+const emptyCollectionMembers: readonly CollectionMemberWithCreator[] = [];
+
 function toSourceFilterValue(value: string): SourceType | null {
   return sourceFilterOptions.find((sourceType) => sourceType === value) ?? null;
 }
@@ -77,6 +80,7 @@ function toContentItemsResourceKey(mode: ContentItemsResourceMode, input: Conten
     input.search ?? "",
     input.creatorId ?? "",
     input.feedId ?? "",
+    input.collectionId ?? "",
     input.sourceType ?? "",
     input.limit.toString(),
     input.offset.toString(),
@@ -153,8 +157,16 @@ async function readContentItems(mode: ContentItemsResourceMode, input: ContentLi
   return [];
 }
 
-function contentItemMatchesLocalFilters(contentItem: CatalogContentListItem, input: ContentListInput): boolean {
+function contentItemMatchesLocalFilters(
+  contentItem: CatalogContentListItem,
+  input: ContentListInput,
+  collectionMemberCreatorIds: ReadonlySet<string>,
+): boolean {
   if (input.creatorId !== undefined && contentItem.creatorId !== input.creatorId) {
+    return false;
+  }
+
+  if (input.collectionId !== undefined && !collectionMemberCreatorIds.has(contentItem.creatorId)) {
     return false;
   }
 
@@ -224,6 +236,9 @@ export interface ContentListColumnProps {
   readonly mode: ShellMode;
   readonly readerDensity: () => ReaderDensity;
   readonly selectedPlaylistId: () => string | null;
+  readonly selectedCollectionId: () => string | null;
+  readonly onClearCollection: () => void;
+  readonly collectionsReloadKey: () => number;
   readonly selectedCreator: () => BrowsableCreator | null;
   readonly selectedFeed: () => CatalogFeed | null;
   readonly selectedContentItemId: () => string | null;
@@ -277,8 +292,38 @@ export function ContentListColumn(props: ContentListColumnProps) {
 
   const authenticatedPlaylistSource = createMemo(() => (props.isAuthenticated() ? "content-list-playlists" : null));
   const [playlists] = createResource(authenticatedPlaylistSource, () => client.overlays.playlists());
+  const selectedCollectionMemberSource = createMemo(() => {
+    if (!props.isAuthenticated()) {
+      return null;
+    }
+    const collectionId = props.selectedCollectionId();
+    return collectionId === null ? null : collectionId;
+  });
+  const [selectedCollectionMembers] = createResource(selectedCollectionMemberSource, (collectionId) =>
+    client.overlays.collectionMembers({ collectionId }),
+  );
+  const collectionMemberCreatorIds = createMemo(
+    () => new Set((selectedCollectionMembers() ?? emptyCollectionMembers).map((member) => member.creatorId)),
+  );
+  const collectionsResourceSource = createMemo(() =>
+    props.isAuthenticated() ? `content-list-collections-${props.collectionsReloadKey().toString()}` : null,
+  );
+  const [collections] = createResource(collectionsResourceSource, () => client.overlays.collections());
+  const selectedCollectionName = createMemo(() => {
+    const collectionId = props.selectedCollectionId();
+    if (collectionId === null) {
+      return null;
+    }
+    return collections()?.find((collection) => collection.id === collectionId)?.name ?? null;
+  });
   const contentListInput = createMemo(() =>
-    toContentListInput(search(), props.selectedCreator()?.id ?? null, props.selectedFeed()?.id ?? null, sourceType()),
+    toContentListInput(
+      search(),
+      props.selectedCreator()?.id ?? null,
+      props.selectedFeed()?.id ?? null,
+      props.selectedCollectionId(),
+      sourceType(),
+    ),
   );
   const contentItemsResourceMode = createMemo<ContentItemsResourceMode>(() => {
     if (props.isAuthenticated() && viewMode() === "favorites") {
@@ -367,7 +412,9 @@ export function ContentListColumn(props: ContentListColumnProps) {
     const input = contentListInput();
     const locallyFilteredItems = showsCatalogFilters(viewMode())
       ? currentContentItems
-      : currentContentItems.filter((contentItem) => contentItemMatchesLocalFilters(contentItem, input));
+      : currentContentItems.filter((contentItem) =>
+        contentItemMatchesLocalFilters(contentItem, input, collectionMemberCreatorIds()),
+      );
 
     const visibleItems = props.isAuthenticated() && hidePlayed()
       ? (() => {
@@ -469,6 +516,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
       data-shell-column="content"
       data-selected-creator-id={props.selectedCreator()?.id ?? ""}
       data-selected-feed-id={props.selectedFeed()?.id ?? ""}
+      data-selected-collection-id={props.selectedCollectionId() ?? ""}
     >
       <div class={contentHeaderRegionClass} data-content-header-region>
         <div class="flex items-center gap-2">
@@ -514,6 +562,24 @@ export function ContentListColumn(props: ContentListColumnProps) {
             </Show>
           </button>
         </div>
+        <Show when={props.isAuthenticated() && selectedCollectionName() !== null}>
+          {(name) => (
+            <div class="mt-2 flex items-center gap-2" data-collection-filter-active>
+              <span class="min-w-0 flex-1 truncate rounded-md border border-border bg-muted px-2 py-1 text-[0.72rem] text-muted-foreground">
+                Collection: {name()}
+              </span>
+              <button
+                type="button"
+                class="shrink-0 rounded-md border border-border bg-background p-1 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                aria-label="Clear collection filter"
+                title="Clear collection filter"
+                onClick={() => props.onClearCollection()}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          )}
+        </Show>
         <Show when={controlsExpanded()}>
           <Show when={props.isAuthenticated()}>
             <div class="mt-2 grid grid-cols-4 gap-2" aria-label="Content view">

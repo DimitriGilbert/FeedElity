@@ -2,6 +2,9 @@ import type {
   AddSourceResult,
   AddSourceValue,
   CatalogContentListItem,
+  CatalogCreator,
+  CollectionMemberWithCreator,
+  CreatorCollection,
   IngestionError,
   Playlist,
   PlaylistItemWithContent,
@@ -22,6 +25,9 @@ import { client } from "@/utils/orpc";
 import {
   addSourceHelpId,
   addSourceInputId,
+  collectionDescriptionInputId,
+  collectionMemberSearchInputId,
+  collectionNameInputId,
   formatError,
   formatSettingValue,
   playlistDescriptionInputId,
@@ -512,6 +518,431 @@ export function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
           </section>
         </Show>
       </details>
+    </section>
+  );
+}
+
+interface CollectionColumnSectionProps {
+  readonly selectedCollectionId: () => string | null;
+  readonly collectionsReloadKey: () => number;
+  readonly onSelectCollection: (collectionId: string | null) => void;
+  readonly onCollectionsChanged: () => void;
+}
+
+const emptyCollections: readonly CreatorCollection[] = [];
+
+const emptyCollectionMembers: readonly CollectionMemberWithCreator[] = [];
+
+const emptyCreatorSearchResults: readonly CatalogCreator[] = [];
+
+const creatorSearchLimit = 20;
+
+export function CollectionColumnSection(props: CollectionColumnSectionProps) {
+  const collectionsSource = createMemo(() => (props.collectionsReloadKey() >= 0 ? "content-list-collections" : null));
+  const [collections, { refetch: refetchCollections }] = createResource(collectionsSource, () =>
+    client.overlays.collections(),
+  );
+  const [collectionName, setCollectionName] = createSignal("");
+  const [collectionDescription, setCollectionDescription] = createSignal("");
+  const [editingCollection, setEditingCollection] = createSignal<CreatorCollection | null>(null);
+  const [collectionError, setCollectionError] = createSignal<string | null>(null);
+  const [collectionBusy, setCollectionBusy] = createSignal(false);
+  const [memberSearch, setMemberSearch] = createSignal("");
+  const [memberAddBusy, setMemberAddBusy] = createSignal<string | null>(null);
+
+  const selectedCollectionMembersInput = createMemo(() => {
+    const collectionId = props.selectedCollectionId();
+    if (collectionId === null) {
+      return null;
+    }
+
+    return `${collectionId}${props.collectionsReloadKey().toString()}`;
+  });
+  const [selectedCollectionMembers, { refetch: refetchSelectedCollectionMembers }] = createResource(
+    selectedCollectionMembersInput,
+    (resourceKey) => {
+      const [collectionId] = resourceKey.split("", 1);
+      if (collectionId === undefined) {
+        return emptyCollectionMembers;
+      }
+
+      return client.overlays.collectionMembers({ collectionId });
+    },
+  );
+
+  const creatorSearchInput = createMemo(() => {
+    const collectionId = props.selectedCollectionId();
+    const trimmed = memberSearch().trim();
+    if (collectionId === null || trimmed.length === 0) {
+      return null;
+    }
+
+    return `${collectionId}${trimmed}`;
+  });
+  const [creatorSearchResults] = createResource(creatorSearchInput, async (resourceKey) => {
+    const [, search] = resourceKey.split("", 2);
+    if (search === undefined) {
+      return emptyCreatorSearchResults;
+    }
+
+    return client.catalog.creators({ search, limit: creatorSearchLimit });
+  });
+
+  const memberCreatorIds = createMemo(
+    () => new Set((selectedCollectionMembers() ?? emptyCollectionMembers).map((member) => member.creatorId)),
+  );
+
+  const editCollection = (collection: CreatorCollection | null) => {
+    props.onSelectCollection(collection?.id ?? null);
+    setEditingCollection(collection);
+    setCollectionName(collection?.name ?? "");
+    setCollectionDescription(collection?.description ?? "");
+    setMemberSearch("");
+  };
+
+  const createCollection = async () => {
+    const name = collectionName().trim();
+    if (name.length === 0) {
+      setCollectionError("Name the collection before saving.");
+      return;
+    }
+
+    setCollectionBusy(true);
+    setCollectionError(null);
+    try {
+      const collection = await client.overlays.createCollection({
+        name,
+        description: collectionDescription().trim().length === 0 ? null : collectionDescription().trim(),
+      });
+      editCollection(collection);
+      await refetchCollections();
+      props.onCollectionsChanged();
+    } catch (error) {
+      setCollectionError(formatError(error));
+    } finally {
+      setCollectionBusy(false);
+    }
+  };
+
+  const updateCollection = async (collection: CreatorCollection) => {
+    const name = collectionName().trim();
+    if (name.length === 0) {
+      setCollectionError("Name the collection before saving.");
+      return;
+    }
+
+    setCollectionBusy(true);
+    setCollectionError(null);
+    try {
+      await client.overlays.updateCollection({
+        collectionId: collection.id,
+        name,
+        description: collectionDescription().trim().length === 0 ? null : collectionDescription().trim(),
+        position: collection.position,
+      });
+      await refetchCollections();
+      props.onCollectionsChanged();
+    } catch (error) {
+      setCollectionError(formatError(error));
+    } finally {
+      setCollectionBusy(false);
+    }
+  };
+
+  const deleteCollection = async (collectionId: string) => {
+    setCollectionBusy(true);
+    setCollectionError(null);
+    try {
+      await client.overlays.deleteCollection({ collectionId });
+      editCollection(null);
+      await refetchCollections();
+      props.onCollectionsChanged();
+    } catch (error) {
+      setCollectionError(formatError(error));
+    } finally {
+      setCollectionBusy(false);
+    }
+  };
+
+  const addMember = async (creatorId: string) => {
+    const collectionId = props.selectedCollectionId();
+    if (collectionId === null) {
+      return;
+    }
+
+    setMemberAddBusy(creatorId);
+    setCollectionError(null);
+    try {
+      await client.overlays.addCollectionMember({ collectionId, creatorId });
+      await refetchSelectedCollectionMembers();
+      setMemberSearch("");
+    } catch (error) {
+      setCollectionError(formatError(error));
+    } finally {
+      setMemberAddBusy(null);
+    }
+  };
+
+  const removeMember = async (member: CollectionMemberWithCreator) => {
+    setCollectionBusy(true);
+    setCollectionError(null);
+    try {
+      await client.overlays.removeCollectionMember({ collectionId: member.collectionId, memberId: member.id });
+      await refetchSelectedCollectionMembers();
+    } catch (error) {
+      setCollectionError(formatError(error));
+    } finally {
+      setCollectionBusy(false);
+    }
+  };
+
+  return (
+    <section class="border-t border-border px-2 py-2" aria-labelledby="collection-section-title" data-collection-section>
+      <div class="flex items-center justify-between gap-2">
+        <h3 id="collection-section-title" class="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          Collections
+        </h3>
+        <span class="text-[0.68rem] text-muted-foreground">{collections()?.length ?? 0} saved</span>
+      </div>
+      <Show when={(collections()?.length ?? 0) > 0}>
+        <div class="mt-2">
+          <label class="sr-only" for="source-collection-selector">
+            Selected collection
+          </label>
+          <select
+            id="source-collection-selector"
+            class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+            value={props.selectedCollectionId() ?? ""}
+            onChange={(event) => {
+              const collectionId = event.currentTarget.value;
+              editCollection(
+                collectionId.length === 0 ? null : collections()?.find((collection) => collection.id === collectionId) ?? null,
+              );
+            }}
+            data-compact-collection-selector
+          >
+            <option value="">No collection selected</option>
+            <For each={collections() ?? emptyCollections}>
+              {(collection) => <option value={collection.id}>{collection.name}</option>}
+            </For>
+          </select>
+        </div>
+      </Show>
+      <Show when={collectionError()}>
+        {(message) => <p class="mt-2 border border-destructive px-2 py-1.5 text-[0.72rem] text-destructive">{message()}</p>}
+      </Show>
+      <details class="mt-2 border-t border-border p-2" data-collection-management-panel open={props.selectedCollectionId() === null}>
+        <summary class="cursor-pointer text-xs font-semibold text-foreground">Manage collections</summary>
+        <form
+          class="mt-2 space-y-2 border-t border-border p-2"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            const collection = editingCollection();
+            if (collection === null) {
+              await createCollection();
+            } else {
+              await updateCollection(collection);
+            }
+          }}
+        >
+          <label class="sr-only" for={collectionNameInputId}>
+            Collection name
+          </label>
+          <input
+            id={collectionNameInputId}
+            class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+            value={collectionName()}
+            maxlength={120}
+            placeholder="Collection name"
+            onInput={(event) => setCollectionName(event.currentTarget.value)}
+          />
+          <label class="sr-only" for={collectionDescriptionInputId}>
+            Collection description
+          </label>
+          <textarea
+            id={collectionDescriptionInputId}
+            class="min-h-14 w-full resize-none border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+            value={collectionDescription()}
+            maxlength={2000}
+            placeholder="Description"
+            onInput={(event) => setCollectionDescription(event.currentTarget.value)}
+          />
+          <div class="grid grid-cols-2 gap-2">
+            <button
+              type="submit"
+              class="inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-primary p-1 text-xs font-semibold text-primary-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+              aria-label={editingCollection() === null ? "Create collection" : "Save collection"}
+              title={editingCollection() === null ? "Create collection" : "Save collection"}
+              disabled={collectionBusy()}
+            >
+              {editingCollection() === null ? <Plus size={14} /> : <Save size={14} />}
+            </button>
+            <button
+              type="button"
+              class="inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-card p-1 text-xs font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              aria-label="New collection"
+              title="New collection"
+              onClick={() => editCollection(null)}
+            >
+              New
+            </button>
+          </div>
+        </form>
+        <Switch>
+          <Match when={collections.loading && collections() === undefined}>
+            <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading collections.</p>
+          </Match>
+          <Match when={collections.error !== undefined}>
+            <p class="mt-2 text-[0.72rem] leading-5 text-destructive">Collections unavailable.</p>
+          </Match>
+          <Match when={(collections()?.length ?? 0) === 0}>
+            <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Create a collection to group creators by interest.</p>
+          </Match>
+          <Match when={collections()}>
+            {(loadedCollections) => (
+              <ol class="mt-2 space-y-1" aria-label="Collections">
+                <For each={loadedCollections()}>
+                  {(collection) => (
+                    <li class="border-t border-border p-2">
+                      <button
+                        type="button"
+                        class="w-full text-left text-card-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                        aria-pressed={props.selectedCollectionId() === collection.id}
+                        onClick={() =>
+                          editCollection(props.selectedCollectionId() === collection.id ? null : collection)
+                        }
+                      >
+                        <span class="block truncate text-xs font-semibold">{collection.name}</span>
+                        <Show when={collection.description !== null}>
+                          <span class="mt-1 block truncate text-[0.68rem] text-muted-foreground">
+                            {collection.description}
+                          </span>
+                        </Show>
+                      </button>
+                      <Show when={props.selectedCollectionId() === collection.id}>
+                        <div class="mt-2 flex gap-2">
+                          <button
+                            type="button"
+                            class="flex-1 inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-background p-1 text-[0.68rem] font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                            aria-label="Save collection"
+                            title="Save collection"
+                            disabled={collectionBusy()}
+                            onClick={async () => {
+                              await updateCollection(collection);
+                            }}
+                          >
+                            <Save size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            class="flex-1 inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-background p-1 text-[0.68rem] font-semibold text-destructive transition hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                            aria-label="Delete collection"
+                            title="Delete collection"
+                            disabled={collectionBusy()}
+                            onClick={async () => {
+                              await deleteCollection(collection.id);
+                            }}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </Show>
+                    </li>
+                  )}
+                </For>
+              </ol>
+            )}
+          </Match>
+        </Switch>
+      </details>
+      <Show when={props.selectedCollectionId() !== null}>
+        <section class="mt-2 border-t border-border pt-2" aria-label="Selected collection members">
+          <Switch>
+            <Match when={selectedCollectionMembers.loading && selectedCollectionMembers() === undefined}>
+              <p class="text-[0.72rem] leading-5 text-muted-foreground">Loading collection creators.</p>
+            </Match>
+            <Match when={selectedCollectionMembers.error !== undefined}>
+              <p class="text-[0.72rem] leading-5 text-destructive">Collection creators unavailable.</p>
+            </Match>
+            <Match when={(selectedCollectionMembers()?.length ?? 0) === 0}>
+              <p class="text-[0.72rem] leading-5 text-muted-foreground">Search the catalog below to add creators.</p>
+            </Match>
+            <Match when={selectedCollectionMembers()}>
+              {(members) => (
+                <ol class="space-y-1" aria-label="Creators in selected collection">
+                  <For each={members()}>
+                    {(member) => (
+                      <li class="flex items-center gap-2 border-t border-border p-1">
+                        <span class="min-w-0 flex-1 truncate text-[0.72rem] font-semibold text-card-foreground">
+                          {member.creator.displayName}
+                        </span>
+                        <button
+                          type="button"
+                          class="shrink-0 inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-background p-1 text-[0.68rem] font-semibold text-destructive transition hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                          aria-label={`Remove ${member.creator.displayName} from collection`}
+                          title="Remove from collection"
+                          disabled={collectionBusy()}
+                          onClick={async () => {
+                            await removeMember(member);
+                          }}
+                        >
+                          <UserMinus size={12} />
+                        </button>
+                      </li>
+                    )}
+                  </For>
+                </ol>
+              )}
+            </Match>
+          </Switch>
+          <div class="mt-2">
+            <label class="sr-only" for={collectionMemberSearchInputId}>
+              Search creators to add
+            </label>
+            <input
+              id={collectionMemberSearchInputId}
+              class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+              type="search"
+              value={memberSearch()}
+              placeholder="Search creators to add"
+              autocomplete="off"
+              onInput={(event) => setMemberSearch(event.currentTarget.value)}
+            />
+          </div>
+          <Show when={creatorSearchResults() !== undefined && (creatorSearchResults()?.length ?? 0) > 0}>
+            <ol class="mt-1 space-y-1" aria-label="Creator search results">
+              <For each={creatorSearchResults() ?? emptyCreatorSearchResults}>
+                {(creator) => (
+                  <li class="flex items-center gap-2 border-t border-border p-1">
+                    <span class="min-w-0 flex-1 truncate text-[0.72rem] text-card-foreground">
+                      {creator.displayName}
+                    </span>
+                    <Show
+                      when={memberCreatorIds().has(creator.id)}
+                      fallback={
+                        <button
+                          type="button"
+                          class="shrink-0 inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-background p-1 text-[0.68rem] font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                          aria-label={`Add ${creator.displayName} to collection`}
+                          title="Add to collection"
+                          disabled={memberAddBusy() === creator.id}
+                          onClick={async () => {
+                            await addMember(creator.id);
+                          }}
+                        >
+                          <UserPlus size={12} />
+                        </button>
+                      }
+                    >
+                      <span class="shrink-0 text-[0.68rem] text-muted-foreground">Added</span>
+                    </Show>
+                  </li>
+                )}
+              </For>
+            </ol>
+          </Show>
+        </section>
+      </Show>
     </section>
   );
 }

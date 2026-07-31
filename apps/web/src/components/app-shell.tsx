@@ -25,6 +25,7 @@ import { CreatorSourceRow, FeedRow } from "./app-shell-rows";
 import { RefreshStatusDialog } from "./refresh-status-dialog";
 import {
   PlaylistColumnSection,
+  CollectionColumnSection,
   SubscriptionActionButton,
 } from "./app-shell-source-sections";
 import {
@@ -217,9 +218,12 @@ interface CreatorSourceColumnProps {
   readonly selectedCreator: () => BrowsableCreator | null;
   readonly selectedFeed: () => CatalogFeed | null;
   readonly selectedPlaylistId: () => string | null;
+  readonly selectedCollectionId: () => string | null;
   readonly catalogReloadKey: () => number;
   readonly subscriptionsReloadKey: () => number;
   readonly playlistItemsReloadKey: () => number;
+  readonly collectionsReloadKey: () => number;
+  readonly onCollectionsChanged: () => void;
   readonly middlePanePanel: () => MiddlePanePanel | null;
   readonly onContentListLiveReload: () => void;
   readonly onSubscriptionsChanged: () => void;
@@ -227,6 +231,7 @@ interface CreatorSourceColumnProps {
   readonly onSelectCreator: (creator: BrowsableCreator) => void;
   readonly onSelectFeed: (feed: CatalogFeed | null) => void;
   readonly onSelectPlaylist: (playlistId: string | null) => void;
+  readonly onSelectCollection: (collectionId: string | null) => void;
   readonly onSelectContent: (contentItem: CatalogContentListItem) => Promise<void>;
   readonly onOpenMiddlePanePanel: (panel: MiddlePanePanel) => void;
   readonly onOpenSettings: () => void;
@@ -636,6 +641,17 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
               {leftPaneTabLabels.playlists}
             </button>
           </Show>
+          <Show when={props.isAuthenticated()}>
+            <button
+              role="tab"
+              type="button"
+              aria-selected={props.activeTab() === "collections"}
+              class={`flex-1 border-b-2 px-2 py-1.5 text-xs font-semibold transition ${props.activeTab() === "collections" ? "border-b-ring text-foreground" : "border-b-transparent text-muted-foreground hover:text-foreground"}`}
+              onClick={() => props.setActiveTab("collections")}
+            >
+              {leftPaneTabLabels.collections}
+            </button>
+          </Show>
         </div>
         <div class="flex items-center gap-1.5">
           <button
@@ -914,6 +930,16 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
             />
           </div>
         </Show>
+        <Show when={props.activeTab() === "collections" && props.isAuthenticated()}>
+          <div class={sourceCreatorListRegionClass} data-source-scroll-region>
+            <CollectionColumnSection
+              selectedCollectionId={props.selectedCollectionId}
+              collectionsReloadKey={props.collectionsReloadKey}
+              onSelectCollection={props.onSelectCollection}
+              onCollectionsChanged={props.onCollectionsChanged}
+            />
+          </div>
+        </Show>
       </div>
       <div class={sourceActionsRegionClass} data-source-actions-region>
         <RefreshStatusDialog
@@ -941,7 +967,9 @@ export default function AppShell(props: AppShellProps) {
   const [selectedFeed, setSelectedFeed] = createSignal<CatalogFeed | null>(null);
   const [selectedContent, setSelectedContent] = createSignal<CatalogContentListItem | null>(null);
   const [selectedPlaylistId, setSelectedPlaylistId] = createSignal<string | null>(null);
+  const [selectedCollectionId, setSelectedCollectionId] = createSignal<string | null>(null);
   const [playlistItemsReloadKey, setPlaylistItemsReloadKey] = createSignal(0);
+  const [collectionsReloadKey, setCollectionsReloadKey] = createSignal(0);
   const [catalogReloadKey, setCatalogReloadKey] = createSignal(0);
   const [subscriptionsReloadKey, setSubscriptionsReloadKey] = createSignal(0);
   const [favoritesReloadKey, setFavoritesReloadKey] = createSignal(0);
@@ -1158,9 +1186,12 @@ export default function AppShell(props: AppShellProps) {
           selectedCreator={selectedCreator}
           selectedFeed={selectedFeed}
           selectedPlaylistId={selectedPlaylistId}
+          selectedCollectionId={selectedCollectionId}
           catalogReloadKey={catalogReloadKey}
           subscriptionsReloadKey={subscriptionsReloadKey}
           playlistItemsReloadKey={playlistItemsReloadKey}
+          collectionsReloadKey={collectionsReloadKey}
+          onCollectionsChanged={() => setCollectionsReloadKey((key) => key + 1)}
           middlePanePanel={middlePanePanel}
           onContentListLiveReload={() => setListLiveReloadKey((key) => key + 1)}
           onSubscriptionsChanged={() => setSubscriptionsReloadKey((key) => key + 1)}
@@ -1172,6 +1203,7 @@ export default function AppShell(props: AppShellProps) {
           onSelectCreator={selectCreator}
           onSelectFeed={selectFeed}
           onSelectPlaylist={setSelectedPlaylistId}
+          onSelectCollection={setSelectedCollectionId}
           onSelectContent={selectContent}
           onOpenMiddlePanePanel={setMiddlePanePanel}
           onOpenSettings={() => setViewerMode("settings")}
@@ -1184,6 +1216,9 @@ export default function AppShell(props: AppShellProps) {
           selectedCreator={selectedCreator}
           selectedFeed={selectedFeed}
           selectedPlaylistId={selectedPlaylistId}
+          selectedCollectionId={selectedCollectionId}
+          onClearCollection={() => setSelectedCollectionId(null)}
+          collectionsReloadKey={collectionsReloadKey}
           selectedContentItemId={selectedContentItemId}
           catalogReloadKey={catalogReloadKey}
           subscriptionsReloadKey={subscriptionsReloadKey}

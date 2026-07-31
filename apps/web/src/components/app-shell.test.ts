@@ -45,6 +45,9 @@ import {
   playlistDescriptionInputId,
   playlistNameInputId,
   playlistSortInputId,
+  collectionNameInputId,
+  collectionDescriptionInputId,
+  collectionMemberSearchInputId,
   readerDensityInputId,
   readerDensitySettingKey,
   readerDensityValues,
@@ -278,21 +281,21 @@ test("content list builds bounded public catalog input", () => {
   expect(contentCatalogFiltersLabel).toBe("Catalog filters");
   expect(contentSearchInputId).toBe("content-list-search");
   expect(contentSourceFilterId).toBe("content-source-filter");
-  expect(toContentListInput("   ", null, null, null)).toEqual({ limit: contentListLimit, offset: firstPageOffset });
-  expect(toContentListInput("   ", null, "feed-1", null)).toEqual({ feedId: "feed-1", limit: contentListLimit, offset: firstPageOffset });
-  expect(toContentListInput(" livestream ", null, null, "peertube")).toEqual({
+  expect(toContentListInput("   ", null, null, null, null)).toEqual({ limit: contentListLimit, offset: firstPageOffset });
+  expect(toContentListInput("   ", null, "feed-1", null, null)).toEqual({ feedId: "feed-1", limit: contentListLimit, offset: firstPageOffset });
+  expect(toContentListInput(" livestream ", null, null, null, "peertube")).toEqual({
     search: "livestream",
     sourceType: "peertube",
     limit: contentListLimit,
     offset: firstPageOffset,
   });
-  expect(toContentListInput(" documentary ", "creator-2", null, null)).toEqual({
+  expect(toContentListInput(" documentary ", "creator-2", null, null, null)).toEqual({
     search: "documentary",
     creatorId: "creator-2",
     limit: contentListLimit,
     offset: firstPageOffset,
   });
-  expect(toContentListInput("  matrix  ", "creator-1", "feed-2", "youtube")).toEqual({
+  expect(toContentListInput("  matrix  ", "creator-1", "feed-2", null, "youtube")).toEqual({
     search: "matrix",
     creatorId: "creator-1",
     feedId: "feed-2",
@@ -300,7 +303,13 @@ test("content list builds bounded public catalog input", () => {
     limit: contentListLimit,
     offset: firstPageOffset,
   });
-  expect(toContentListInput("more", null, null, null, 100)).toEqual({ search: "more", limit: contentListLimit, offset: 100 });
+  expect(toContentListInput("collection-scoped", null, null, "collection-1", null)).toEqual({
+    search: "collection-scoped",
+    collectionId: "collection-1",
+    limit: contentListLimit,
+    offset: firstPageOffset,
+  });
+  expect(toContentListInput("more", null, null, null, null, 100)).toEqual({ search: "more", limit: contentListLimit, offset: 100 });
 });
 
 test("content selection updates shell state contract", () => {
@@ -421,7 +430,7 @@ test("content pane is wired to anonymous catalog content items", async () => {
   expect(showsCatalogFilters("history-opened")).toBe(false);
   expect(showsCatalogFilters("played")).toBe(false);
   expect(source).toContain("return client.catalog.contentItems(input)");
-  expect(source).toContain("toContentListInput(search(), props.selectedCreator()?.id ?? null, props.selectedFeed()?.id ?? null, sourceType())");
+  expect(source).toContain("toContentListInput(\n      search(),\n      props.selectedCreator()?.id ?? null,\n      props.selectedFeed()?.id ?? null,\n      props.selectedCollectionId(),\n      sourceType(),\n    ),");
   expect(source).toContain("type=\"search\"");
   expect(source).toContain("id={contentSourceFilterId}");
   expect(source).toContain("<Show when={showsCatalogFilters(viewMode()) || (props.isAuthenticated() && (viewMode() === \"favorites\" || viewMode() === \"history-opened\" || viewMode() === \"played\"))}>");
@@ -445,7 +454,7 @@ test("content filters are Solid state backed and avoid class-name filtering", as
 
   expect(source).toContain("const [search, setSearch] = createSignal(\"\")");
   expect(source).toContain("const [sourceType, setSourceType] = createSignal<SourceType | null>(null)");
-  expect(source).toContain("toContentListInput(search(), props.selectedCreator()?.id ?? null, props.selectedFeed()?.id ?? null, sourceType())");
+  expect(source).toContain("props.selectedCollectionId(),");
 
   for (const snippet of forbiddenDomFilteringSnippets) {
     expect(source).not.toContain(snippet);
@@ -963,6 +972,47 @@ test("playlist UI remains inside the approved three-pane shell", async () => {
   // The only permitted <dialog> is the refresh-status modal; no playlist pane
   // is rendered as a dialog.
   expect((source.match(/<dialog/g) ?? []).length).toBe(1);
+});
+
+test("collection UI uses real protected API procedures for full collection flow", async () => {
+  const source = await readAppShellSource();
+
+  expect(collectionNameInputId).toBe("collection-name");
+  expect(collectionDescriptionInputId).toBe("collection-description");
+  expect(collectionMemberSearchInputId).toBe("collection-member-search");
+  expect(source).toContain("client.overlays.collections()");
+  expect(source).toContain("client.overlays.createCollection({");
+  expect(source).toContain("client.overlays.updateCollection({");
+  expect(source).toContain("client.overlays.deleteCollection({ collectionId })");
+  expect(source).toContain("client.overlays.collectionMembers({ collectionId })");
+  expect(source).toContain("client.overlays.addCollectionMember({ collectionId, creatorId })");
+  expect(source).toContain("client.overlays.removeCollectionMember({ collectionId: member.collectionId, memberId: member.id })");
+});
+
+test("collection management is compact and collapsible and groups creators", async () => {
+  const source = await readAppShellSource();
+
+  expect(source).toContain("data-compact-collection-selector");
+  expect(source).toContain("data-collection-management-panel");
+  expect(source).toContain("data-collection-section");
+  expect(source).toContain("Manage collections");
+  expect(source).toContain("source-collection-selector");
+  expect(source).toContain("<CollectionColumnSection");
+  // A creator can be added by searching the public catalog from within the section.
+  expect(source).toContain("client.catalog.creators({ search, limit: creatorSearchLimit })");
+});
+
+test("collection selection scopes the content list via a collectionId filter", async () => {
+  const source = await readAppShellSource();
+
+  // The content column threads the selected collection into the list input.
+  expect(source).toContain("readonly selectedCollectionId: () => string | null;");
+  expect(source).toContain("props.selectedCollectionId(),");
+  // Collection id participates in the resource key so the list refetches on change.
+  expect(source).toContain("input.collectionId ?? \"\",");
+  // A clear affordance resets the collection filter from the content header.
+  expect(source).toContain("data-collection-filter-active");
+  expect(source).toContain("onClearCollection");
 });
 
 test("settings UI uses real protected API procedures for list save and delete", async () => {
@@ -1570,17 +1620,20 @@ test("left pane tabs use role tablist and role tab with aria-selected", async ()
   expect(source).toContain("aria-selected={props.activeTab() === \"library\"}");
   expect(source).toContain("aria-selected={props.activeTab() === \"feeds\"}");
   expect(source).toContain("aria-selected={props.activeTab() === \"playlists\"}");
+  expect(source).toContain("aria-selected={props.activeTab() === \"collections\"}");
   expect(source).toContain("{leftPaneTabLabels.feeds}");
   expect(source).toContain("{leftPaneTabLabels.playlists}");
+  expect(source).toContain("{leftPaneTabLabels.collections}");
 });
 
-test("LeftPaneTab type covers library feeds and playlists", () => {
-  const tabs: readonly LeftPaneTab[] = ["library", "feeds", "playlists"];
+test("LeftPaneTab type covers library feeds playlists and collections", () => {
+  const tabs: readonly LeftPaneTab[] = ["library", "feeds", "playlists", "collections"];
 
-  expect(tabs).toHaveLength(3);
+  expect(tabs).toHaveLength(4);
   expect(leftPaneTabLabels.library).toBe("Library");
   expect(leftPaneTabLabels.feeds).toBe("Feeds");
   expect(leftPaneTabLabels.playlists).toBe("Playlists");
+  expect(leftPaneTabLabels.collections).toBe("Collections");
 });
 
 test("MiddlePanePanel type covers add-source panel", () => {

@@ -40,6 +40,7 @@ export interface ContentListInput {
   readonly search?: string;
   readonly creatorId?: string;
   readonly feedId?: string;
+  readonly collectionId?: string;
   readonly sourceType?: SourceType;
   readonly limit: number;
   readonly offset: number;
@@ -47,7 +48,7 @@ export interface ContentListInput {
 
 export type ShellMode = "catalog" | "library";
 
-export type LeftPaneTab = "library" | "feeds" | "playlists";
+export type LeftPaneTab = "library" | "feeds" | "playlists" | "collections";
 
 export type MiddlePanePanel = "add-source";
 
@@ -57,6 +58,7 @@ export const leftPaneTabLabels: Record<LeftPaneTab, string> = {
   library: "Library",
   feeds: "Feeds",
   playlists: "Playlists",
+  collections: "Collections",
 };
 
 export type ReaderDensity = "comfortable" | "compact";
@@ -123,6 +125,12 @@ export const playlistNameInputId = "playlist-name";
 export const playlistDescriptionInputId = "playlist-description";
 
 export const playlistSortInputId = "playlist-sort";
+
+export const collectionNameInputId = "collection-name";
+
+export const collectionDescriptionInputId = "collection-description";
+
+export const collectionMemberSearchInputId = "collection-member-search";
 
 export const settingKeyInputId = "setting-key";
 
@@ -298,6 +306,7 @@ export function toContentListInput(
   search: string,
   creatorId: string | null,
   feedId: string | null,
+  collectionId: string | null,
   sourceType: SourceType | null,
   offset = firstPageOffset,
 ): ContentListInput {
@@ -306,6 +315,7 @@ export function toContentListInput(
     ...(trimmedSearch.length === 0 ? {} : { search: trimmedSearch }),
     ...(creatorId === null ? {} : { creatorId }),
     ...(feedId === null ? {} : { feedId }),
+    ...(collectionId === null ? {} : { collectionId }),
     ...(sourceType === null ? {} : { sourceType }),
     limit: contentListLimit,
     offset,

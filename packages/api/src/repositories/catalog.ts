@@ -145,6 +145,8 @@ export interface ListCatalogContentItemsInput {
   readonly search?: string;
   readonly creatorId?: string;
   readonly feedId?: string;
+  readonly collectionId?: string;
+  readonly collectionUserId?: string;
   readonly sourceType?: SourceType;
   readonly limit: number;
   readonly offset?: number;
@@ -449,9 +451,20 @@ export async function listCatalogContentItems(
   db: RepositoryDb,
   input: ListCatalogContentItemsInput = { limit: 50 },
 ): Promise<readonly CatalogContentListItem[]> {
+  // A collection is a user-owned overlay, so the collection filter only applies
+  // when both an owning userId and a collectionId are present. Anonymous callers
+  // (no userId) ignore it and browse the public catalog unscoped.
+  const collectionScoped = input.collectionId !== undefined && input.collectionUserId !== undefined;
+
   const conditions = [
     input.creatorId === undefined ? undefined : eq(schema.contentItem.creatorId, input.creatorId),
     input.feedId === undefined ? undefined : eq(schema.feedContent.feedId, input.feedId),
+    !collectionScoped
+      ? undefined
+      : and(
+          eq(schema.collectionMember.collectionId, input.collectionId as string),
+          eq(schema.collectionMember.userId, input.collectionUserId as string),
+        ),
     input.sourceType === undefined ? undefined : eq(schema.contentItem.sourceType, input.sourceType),
     input.search === undefined ? undefined : containsNormalized(schema.contentItem.title, input.search),
   ].filter(isDefined);
@@ -469,9 +482,21 @@ export async function listCatalogContentItems(
     .from(schema.contentItem)
     .innerJoin(schema.creator, eq(schema.contentItem.creatorId, schema.creator.id));
 
-  const rows = await (input.feedId === undefined
-    ? contentQuery
-    : contentQuery.innerJoin(schema.feedContent, eq(schema.feedContent.contentItemId, schema.contentItem.id)))
+  let joinedQuery = contentQuery;
+  if (input.feedId !== undefined) {
+    joinedQuery = joinedQuery.innerJoin(
+      schema.feedContent,
+      eq(schema.feedContent.contentItemId, schema.contentItem.id),
+    );
+  }
+  if (collectionScoped) {
+    joinedQuery = joinedQuery.innerJoin(
+      schema.collectionMember,
+      eq(schema.collectionMember.creatorId, schema.contentItem.creatorId),
+    );
+  }
+
+  const rows = await joinedQuery
     .where(conditions.length === 0 ? undefined : and(...conditions))
     .orderBy(desc(schema.contentItem.publishedAt), desc(schema.contentItem.createdAt), desc(schema.contentItem.id))
     .limit(input.limit)

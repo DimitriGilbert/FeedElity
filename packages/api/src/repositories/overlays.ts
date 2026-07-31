@@ -4,6 +4,9 @@ import * as schema from "@FeedElity/db/schema";
 
 import type { CatalogContentItem, CatalogContentListItem, CatalogCreatorSummary, ContentStatusKind, SourceType } from "../domain/catalog";
 import type {
+  CollectionMember,
+  CollectionMemberWithCreator,
+  CreatorCollection,
   MigrationMapping,
   MigrationRun,
   MigrationRunStatus,
@@ -32,6 +35,7 @@ export interface ListSubscribedContentItemsForUserInput {
   readonly search?: string;
   readonly creatorId?: string;
   readonly feedId?: string;
+  readonly collectionId?: string;
   readonly sourceType?: SourceType;
   readonly limit: number;
   readonly offset?: number;
@@ -79,6 +83,27 @@ export interface ReorderPlaylistItemsInput {
   readonly userId: string;
   readonly playlistId: string;
   readonly playlistItemIds: readonly string[];
+}
+
+export interface CreateCollectionInput {
+  readonly userId: string;
+  readonly name: string;
+  readonly description?: string | null;
+  readonly position?: number;
+}
+
+export interface UpdateCollectionInput {
+  readonly userId: string;
+  readonly collectionId: string;
+  readonly name: string;
+  readonly description?: string | null;
+  readonly position?: number;
+}
+
+export interface AddCollectionMemberInput {
+  readonly userId: string;
+  readonly collectionId: string;
+  readonly creatorId: string;
 }
 
 export interface SaveUserSettingInput {
@@ -191,6 +216,12 @@ export async function listSubscribedContentItemsForUser(
     eq(schema.subscription.userId, input.userId),
     input.creatorId === undefined ? undefined : eq(schema.contentItem.creatorId, input.creatorId),
     input.feedId === undefined ? undefined : eq(schema.feedContent.feedId, input.feedId),
+    input.collectionId === undefined
+      ? undefined
+      : and(
+          eq(schema.collectionMember.collectionId, input.collectionId),
+          eq(schema.collectionMember.userId, input.userId),
+        ),
     input.sourceType === undefined ? undefined : eq(schema.contentItem.sourceType, input.sourceType),
     input.search === undefined ? undefined : containsContentTitleNormalized(input.search),
   ].filter(isDefined);
@@ -209,9 +240,21 @@ export async function listSubscribedContentItemsForUser(
     .innerJoin(schema.creator, eq(schema.contentItem.creatorId, schema.creator.id))
     .innerJoin(schema.subscription, eq(schema.subscription.creatorId, schema.contentItem.creatorId));
 
-  const rows = await (input.feedId === undefined
-    ? contentQuery
-    : contentQuery.innerJoin(schema.feedContent, eq(schema.feedContent.contentItemId, schema.contentItem.id)))
+  let joinedQuery = contentQuery;
+  if (input.feedId !== undefined) {
+    joinedQuery = joinedQuery.innerJoin(
+      schema.feedContent,
+      eq(schema.feedContent.contentItemId, schema.contentItem.id),
+    );
+  }
+  if (input.collectionId !== undefined) {
+    joinedQuery = joinedQuery.innerJoin(
+      schema.collectionMember,
+      eq(schema.collectionMember.creatorId, schema.contentItem.creatorId),
+    );
+  }
+
+  const rows = await joinedQuery
     .where(and(...conditions))
     .orderBy(desc(schema.contentItem.publishedAt), desc(schema.contentItem.createdAt), desc(schema.contentItem.id))
     .limit(input.limit)
@@ -683,6 +726,182 @@ export async function reorderPlaylistItemsForUser(
   return listPlaylistItemsWithContentForUserPlaylist(db, input.userId, input.playlistId);
 }
 
+export async function createCollection(db: RepositoryDb, input: CreateCollectionInput): Promise<CreatorCollection> {
+  const id = crypto.randomUUID();
+
+  await db.insert(schema.creatorCollection).values({
+    id,
+    userId: input.userId,
+    name: input.name,
+    description: input.description ?? null,
+    position: input.position ?? 0,
+  });
+
+  const row = await db.query.creatorCollection.findFirst({ where: eq(schema.creatorCollection.id, id) });
+  if (row === undefined) {
+    throw new Error("Creator collection write did not produce a readable user overlay record.");
+  }
+  return toCreatorCollection(row);
+}
+
+export async function listCollectionsForUser(db: RepositoryDb, userId: string): Promise<readonly CreatorCollection[]> {
+  const rows = await db.query.creatorCollection.findMany({
+    where: eq(schema.creatorCollection.userId, userId),
+    orderBy: (creatorCollection, { asc }) => [asc(creatorCollection.position), asc(creatorCollection.createdAt)],
+  });
+
+  return rows.map(toCreatorCollection);
+}
+
+export async function getCollectionForUser(
+  db: RepositoryDb,
+  userId: string,
+  collectionId: string,
+): Promise<CreatorCollection | null> {
+  const row = await db.query.creatorCollection.findFirst({
+    where: and(eq(schema.creatorCollection.userId, userId), eq(schema.creatorCollection.id, collectionId)),
+  });
+
+  return row === undefined ? null : toCreatorCollection(row);
+}
+
+export async function updateCollectionForUser(
+  db: RepositoryDb,
+  input: UpdateCollectionInput,
+): Promise<CreatorCollection | null> {
+  const existing = await getCollectionForUser(db, input.userId, input.collectionId);
+  if (existing === null) {
+    return null;
+  }
+
+  await db
+    .update(schema.creatorCollection)
+    .set({
+      name: input.name,
+      description: input.description ?? null,
+      position: input.position ?? existing.position,
+    })
+    .where(
+      and(eq(schema.creatorCollection.userId, input.userId), eq(schema.creatorCollection.id, input.collectionId)),
+    );
+
+  return getCollectionForUser(db, input.userId, input.collectionId);
+}
+
+export async function deleteCollectionForUser(
+  db: RepositoryDb,
+  userId: string,
+  collectionId: string,
+): Promise<boolean> {
+  const collection = await getCollectionForUser(db, userId, collectionId);
+  if (collection === null) {
+    return false;
+  }
+
+  await db
+    .delete(schema.creatorCollection)
+    .where(and(eq(schema.creatorCollection.userId, userId), eq(schema.creatorCollection.id, collectionId)));
+  return true;
+}
+
+export async function addCollectionMember(
+  db: RepositoryDb,
+  input: AddCollectionMemberInput,
+): Promise<CollectionMember> {
+  const id = crypto.randomUUID();
+
+  await db
+    .insert(schema.collectionMember)
+    .values({
+      id,
+      userId: input.userId,
+      collectionId: input.collectionId,
+      creatorId: input.creatorId,
+    })
+    .onConflictDoNothing({
+      target: [schema.collectionMember.collectionId, schema.collectionMember.creatorId],
+    });
+
+  const row = await db.query.collectionMember.findFirst({
+    where: and(
+      eq(schema.collectionMember.userId, input.userId),
+      eq(schema.collectionMember.collectionId, input.collectionId),
+      eq(schema.collectionMember.creatorId, input.creatorId),
+    ),
+  });
+  if (row === undefined) {
+    throw new Error("Collection member write did not produce a readable user overlay record.");
+  }
+  return toCollectionMember(row);
+}
+
+export async function listCollectionMembersWithCreatorsForUserCollection(
+  db: RepositoryDb,
+  userId: string,
+  collectionId: string,
+): Promise<readonly CollectionMemberWithCreator[]> {
+  const collection = await getCollectionForUser(db, userId, collectionId);
+  if (collection === null) {
+    return [];
+  }
+
+  const rows = await db
+    .select({ collectionMember: schema.collectionMember, creator: schema.creator })
+    .from(schema.collectionMember)
+    .innerJoin(schema.creator, eq(schema.collectionMember.creatorId, schema.creator.id))
+    .where(
+      and(eq(schema.collectionMember.userId, userId), eq(schema.collectionMember.collectionId, collectionId)),
+    )
+    .orderBy(asc(schema.collectionMember.addedAt), asc(schema.collectionMember.id));
+
+  return rows.map((row) => ({
+    ...toCollectionMember(row.collectionMember),
+    creator: toCatalogCreatorSummary(row.creator),
+  }));
+}
+
+export async function removeCollectionMemberForUser(
+  db: RepositoryDb,
+  userId: string,
+  collectionId: string,
+  memberId: string,
+): Promise<boolean> {
+  const row = await db.query.collectionMember.findFirst({
+    where: and(
+      eq(schema.collectionMember.userId, userId),
+      eq(schema.collectionMember.collectionId, collectionId),
+      eq(schema.collectionMember.id, memberId),
+    ),
+  });
+  if (row === undefined) {
+    return false;
+  }
+
+  await db
+    .delete(schema.collectionMember)
+    .where(
+      and(
+        eq(schema.collectionMember.userId, userId),
+        eq(schema.collectionMember.collectionId, collectionId),
+        eq(schema.collectionMember.id, memberId),
+      ),
+    );
+  return true;
+}
+
+export async function listCollectionMembersForUserCollection(
+  db: RepositoryDb,
+  userId: string,
+  collectionId: string,
+): Promise<readonly CollectionMember[]> {
+  const rows = await db.query.collectionMember.findMany({
+    where: and(eq(schema.collectionMember.userId, userId), eq(schema.collectionMember.collectionId, collectionId)),
+    orderBy: (collectionMember, { asc }) => [asc(collectionMember.addedAt), asc(collectionMember.id)],
+  });
+
+  return rows.map(toCollectionMember);
+}
+
 export async function saveUserSetting(db: RepositoryDb, input: SaveUserSettingInput): Promise<UserSetting> {
   const id = crypto.randomUUID();
 
@@ -936,6 +1155,26 @@ function toPlaylistItem(row: typeof schema.playlistItem.$inferSelect): PlaylistI
     playlistId: row.playlistId,
     contentItemId: row.contentItemId,
     position: row.position,
+    addedAt: row.addedAt,
+  };
+}
+
+function toCreatorCollection(row: typeof schema.creatorCollection.$inferSelect): CreatorCollection {
+  return {
+    id: row.id,
+    userId: row.userId,
+    name: row.name,
+    description: row.description,
+    position: row.position,
+  };
+}
+
+function toCollectionMember(row: typeof schema.collectionMember.$inferSelect): CollectionMember {
+  return {
+    id: row.id,
+    userId: row.userId,
+    collectionId: row.collectionId,
+    creatorId: row.creatorId,
     addedAt: row.addedAt,
   };
 }
