@@ -50,10 +50,14 @@ coverage
 # Local SQLite/libSQL runtime databases
 local.db
 local.db-*
+local.db.backup-*
 /*.sqlite
 /*.sqlite-*
 /*.sqlite3
 /*.sqlite3-*
+
+# Large one-off export snapshots (not source)
+legacy-strapi-export.json
 
 # Misc
 *.tgz
@@ -62,3 +66,7 @@ local.db-*
 tmp
 temp
 .claude/settings.local.json
+
+# Creator classification generated data (API dump + subagent shards + SQL).
+# Reviewable but not source-controlled; regenerate via scripts/classify/.
+scripts/classify/data/
