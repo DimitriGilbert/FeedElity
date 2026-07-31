@@ -50,11 +50,8 @@ describe("global catalog schema", () => {
     expect(sourceTypeValues).toEqual(["youtube", "odysee", "peertube"]);
   });
 
-  test("source external identities are unique for creators, feeds, and content items", () => {
-    expect(indexColumnsByName(creator, "creator_source_identity_uidx")).toEqual([
-      "source_type",
-      "source_external_id",
-    ]);
+  test("creators are keyed cross-source by normalized name; feeds and content items keep source identity", () => {
+    expect(indexColumnsByName(creator, "creator_name_key_uidx")).toEqual(["name_key"]);
     expect(indexColumnsByName(feed, "feed_source_identity_uidx")).toEqual(["source_type", "source_external_id"]);
     expect(indexColumnsByName(contentItem, "content_item_source_identity_uidx")).toEqual([
       "source_type",

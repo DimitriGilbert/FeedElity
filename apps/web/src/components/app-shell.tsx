@@ -371,7 +371,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
       const subscribedCreators = (subscriptionsValue() ?? emptySubscriptions).map((subscription) => subscription.creator);
       return subscribedCreators.filter((creator) => {
         const matchesSearch = trimmedSearch.length === 0 || creator.displayName.toLowerCase().includes(trimmedSearch);
-        const matchesSourceType = sourceType() === null || creator.sourceType === sourceType();
+        const matchesSourceType = sourceType() === null || creator.sourceTypes.includes(sourceType() as SourceType);
         return matchesSearch && matchesSourceType;
       }).slice(0, libraryCreatorLimit());
     }
@@ -396,7 +396,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     const matchingCreators = (subscriptionsValue() ?? emptySubscriptions).filter((subscription) => {
       const creator = subscription.creator;
       const matchesSearch = trimmedSearch.length === 0 || creator.displayName.toLowerCase().includes(trimmedSearch);
-      const matchesSourceType = sourceType() === null || creator.sourceType === sourceType();
+      const matchesSourceType = sourceType() === null || creator.sourceTypes.includes(sourceType() as SourceType);
       return matchesSearch && matchesSourceType;
     });
 

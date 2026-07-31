@@ -19,8 +19,7 @@ export const creator = sqliteTable(
   "creator",
   {
     id: text("id").primaryKey(),
-    sourceType: text("source_type", { enum: sourceTypeValues }).notNull(),
-    sourceExternalId: text("source_external_id").notNull(),
+    nameKey: text("name_key").notNull(),
     displayName: text("display_name").notNull(),
     description: text("description"),
     imageUrl: text("image_url"),
@@ -33,7 +32,7 @@ export const creator = sqliteTable(
       .notNull(),
   },
   (table) => [
-    uniqueIndex("creator_source_identity_uidx").on(table.sourceType, table.sourceExternalId),
+    uniqueIndex("creator_name_key_uidx").on(table.nameKey),
     index("creator_display_name_idx").on(table.displayName),
   ],
 );

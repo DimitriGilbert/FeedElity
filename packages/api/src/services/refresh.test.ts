@@ -448,13 +448,9 @@ function refreshDependencies(
 
 async function seedFeeds(db: RepositoryDb): Promise<TestFeedSet> {
   const creatorOne = await findOrCreateCreator(db, {
-    sourceType: "youtube",
-    sourceExternalId: "creator-one",
     displayName: "Creator One",
   });
   const creatorTwo = await findOrCreateCreator(db, {
-    sourceType: "youtube",
-    sourceExternalId: "creator-two",
     displayName: "Creator Two",
   });
 
@@ -507,13 +503,9 @@ async function setNextRefreshAfter(db: RepositoryDb, feedId: string, nextRefresh
 
 async function seedInterleavedProviderFeeds(db: RepositoryDb): Promise<void> {
   const youtubeCreator = await findOrCreateCreator(db, {
-    sourceType: "youtube",
-    sourceExternalId: "interleaved-youtube",
     displayName: "Interleaved YouTube",
   });
   const odyseeCreator = await findOrCreateCreator(db, {
-    sourceType: "odysee",
-    sourceExternalId: "interleaved-odysee",
     displayName: "Interleaved Odysee",
   });
   await findOrCreateFeed(db, {
@@ -606,8 +598,6 @@ function payloadForFeed(sourceType: SourceType, feedExternalId: string, feedUrl:
   const itemExternalId = `${feedExternalId}-video`;
   return {
     creator: {
-      sourceType,
-      sourceExternalId: creatorExternalId,
       displayName: creatorExternalId,
       canonicalUrl: `https://refresh.example.test/${creatorExternalId}`,
     },
@@ -673,8 +663,7 @@ async function createTestDatabase(): Promise<TestDatabase> {
 const schemaStatements = [
   `CREATE TABLE creator (
     id TEXT PRIMARY KEY NOT NULL,
-    source_type TEXT NOT NULL,
-    source_external_id TEXT NOT NULL,
+    name_key TEXT NOT NULL,
     display_name TEXT NOT NULL,
     description TEXT,
     image_url TEXT,
@@ -683,7 +672,7 @@ const schemaStatements = [
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
   )`,
-  "CREATE UNIQUE INDEX creator_source_identity_uidx ON creator (source_type, source_external_id)",
+  "CREATE UNIQUE INDEX creator_name_key_uidx ON creator (name_key)",
   `CREATE TABLE feed (
     id TEXT PRIMARY KEY NOT NULL,
     creator_id TEXT NOT NULL REFERENCES creator(id) ON DELETE CASCADE,

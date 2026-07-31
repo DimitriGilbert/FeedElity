@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { LibSQLDatabase } from "drizzle-orm/libsql";
 
 import * as schema from "@FeedElity/db/schema";
@@ -19,12 +19,11 @@ import type {
   FeedContentLink,
   SourceType,
 } from "../domain/catalog";
+import { creatorNameKey } from "../domain/catalog";
 
 export type RepositoryDb = LibSQLDatabase<typeof schema>;
 
 export interface SaveCreatorInput {
-  readonly sourceType: SourceType;
-  readonly sourceExternalId: string;
   readonly displayName: string;
   readonly description?: string | null;
   readonly imageUrl?: string | null;
@@ -173,23 +172,23 @@ export interface ListRefreshFeedResultsForRunInput {
 }
 
 export async function findOrCreateCreator(db: RepositoryDb, input: SaveCreatorInput): Promise<CatalogCreator> {
+  const nameKey = creatorNameKey(input.displayName);
   const id = crypto.randomUUID();
 
   await db
     .insert(schema.creator)
     .values({
       id,
-      sourceType: input.sourceType,
-      sourceExternalId: input.sourceExternalId,
+      nameKey,
       displayName: input.displayName,
       description: input.description ?? null,
       imageUrl: input.imageUrl ?? null,
       canonicalUrl: input.canonicalUrl ?? null,
       metadataJson: input.metadataJson ?? null,
     })
-    .onConflictDoNothing({ target: [schema.creator.sourceType, schema.creator.sourceExternalId] });
+    .onConflictDoNothing({ target: [schema.creator.nameKey] });
 
-  const existing = await findCreatorBySourceIdentity(db, input);
+  const existing = await findCreatorByNameKey(db, nameKey);
   if (existing === null) {
     throw new Error("Creator write did not produce a readable catalog record.");
   }
@@ -205,15 +204,9 @@ export async function findOrCreateCreator(db: RepositoryDb, input: SaveCreatorIn
   return existing;
 }
 
-export async function findCreatorBySourceIdentity(
-  db: RepositoryDb,
-  identity: Pick<SaveCreatorInput, "sourceType" | "sourceExternalId">,
-): Promise<CatalogCreator | null> {
+export async function findCreatorByNameKey(db: RepositoryDb, nameKey: string): Promise<CatalogCreator | null> {
   const row = await db.query.creator.findFirst({
-    where: and(
-      eq(schema.creator.sourceType, identity.sourceType),
-      eq(schema.creator.sourceExternalId, identity.sourceExternalId),
-    ),
+    where: eq(schema.creator.nameKey, nameKey),
   });
 
   return row === undefined ? null : toCatalogCreator(row);
@@ -227,7 +220,56 @@ export async function getCatalogCreatorSummaryById(
     where: eq(schema.creator.id, creatorId),
   });
 
-  return row === undefined ? null : toCatalogCreatorSummary(row);
+  if (row === undefined) {
+    return null;
+  }
+  return toCatalogCreatorSummary(row, await loadSourceTypesForCreator(db, creatorId));
+}
+
+/**
+ * Return the distinct source types a creator publishes on, derived from its
+ * feeds. A creator is cross-source, so this is the only reliable source view.
+ */
+export async function loadSourceTypesForCreator(
+  db: RepositoryDb,
+  creatorId: string,
+): Promise<readonly SourceType[]> {
+  const rows = await db
+    .selectDistinct({ sourceType: sql<SourceType>`source_type` })
+    .from(
+      sql`(select source_type from feed where creator_id = ${creatorId}
+           union
+           select source_type from content_item where creator_id = ${creatorId})`,
+    );
+  return rows.map((row) => row.sourceType);
+}
+
+export async function loadSourceTypesByCreatorId(
+  db: RepositoryDb,
+  creatorIds: readonly string[],
+): Promise<Map<string, readonly SourceType[]>> {
+  const map = new Map<string, readonly SourceType[]>();
+  if (creatorIds.length === 0) {
+    return map;
+  }
+  const ids = [...new Set(creatorIds)];
+  const idList = ids.map((id) => sql`${id}`).reduce((acc, chunk) => sql`${acc}, ${chunk}`);
+  const rows = await db
+    .selectDistinct({ creatorId: sql<string>`creator_id`, sourceType: sql<SourceType>`source_type` })
+    .from(
+      sql`(select creator_id, source_type from feed where creator_id in (${idList})
+           union
+           select creator_id, source_type from content_item where creator_id in (${idList})) as creator_sources`,
+    );
+  for (const row of rows) {
+    const list = map.get(row.creatorId);
+    if (list === undefined) {
+      map.set(row.creatorId, [row.sourceType]);
+    } else if (!list.includes(row.sourceType)) {
+      map.set(row.creatorId, [...list, row.sourceType]);
+    }
+  }
+  return map;
 }
 
 export async function findOrCreateFeed(db: RepositoryDb, input: SaveFeedInput): Promise<CatalogFeed> {
@@ -433,8 +475,12 @@ export async function listCatalogCreators(
   db: RepositoryDb,
   input: ListCatalogCreatorsInput,
 ): Promise<readonly CatalogCreator[]> {
+  // Creators are cross-source, so the optional source-type filter selects
+  // creators that publish on that source via their feeds.
   const conditions = [
-    input.sourceType === undefined ? undefined : eq(schema.creator.sourceType, input.sourceType),
+    input.sourceType === undefined
+      ? undefined
+      : inArray(schema.creator.id, db.select({ id: schema.feed.creatorId }).from(schema.feed).where(eq(schema.feed.sourceType, input.sourceType))),
     input.search === undefined ? undefined : containsNormalized(schema.creator.displayName, input.search),
   ].filter(isDefined);
   const rows = await db.query.creator.findMany({
@@ -502,9 +548,11 @@ export async function listCatalogContentItems(
     .limit(input.limit)
     .offset(input.offset ?? 0);
 
+  const sourceTypesByCreator = await loadSourceTypesByCreatorId(db, rows.map((row) => row.creator.id));
+
   return rows.map((row) => ({
     ...toCatalogContentItem(row.contentItem),
-    creator: toCatalogCreatorSummary(row.creator),
+    creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
     sourceCount: row.sourceCount,
   }));
 }
@@ -566,7 +614,7 @@ export async function getCatalogContentDetail(
 
   return {
     ...toCatalogContentItem(firstRow.contentItem),
-    creator: toCatalogCreatorSummary(firstRow.creator),
+    creator: toCatalogCreatorSummary(firstRow.creator, await loadSourceTypesForCreator(db, firstRow.creator.id)),
     sources: sourceRows.map(toCatalogContentSource),
     feeds: feedRows.map((feedRow) => toCatalogFeed(feedRow.feed)),
   };
@@ -772,8 +820,6 @@ export async function listRefreshFeedResultsWithFeedsForRun(
 function toCatalogCreator(row: typeof schema.creator.$inferSelect): CatalogCreator {
   return {
     id: row.id,
-    sourceType: row.sourceType,
-    sourceExternalId: row.sourceExternalId,
     displayName: row.displayName,
     description: row.description,
     imageUrl: row.imageUrl,
@@ -782,14 +828,16 @@ function toCatalogCreator(row: typeof schema.creator.$inferSelect): CatalogCreat
   };
 }
 
-function toCatalogCreatorSummary(row: typeof schema.creator.$inferSelect): CatalogCreatorSummary {
+function toCatalogCreatorSummary(
+  row: typeof schema.creator.$inferSelect,
+  sourceTypes: readonly SourceType[],
+): CatalogCreatorSummary {
   return {
     id: row.id,
-    sourceType: row.sourceType,
-    sourceExternalId: row.sourceExternalId,
     displayName: row.displayName,
     imageUrl: row.imageUrl,
     canonicalUrl: row.canonicalUrl,
+    sourceTypes,
   };
 }
 

@@ -40,13 +40,9 @@ afterEach(() => {
 describe("catalog browsing router", () => {
   test("anonymous callers can list creators and bounded content items with filters", async () => {
     const firstCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "creator-alpha",
       displayName: "Alpha Creator",
     });
     const secondCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "odysee",
-      sourceExternalId: "creator-beta",
       displayName: "Beta Creator",
     });
     await findOrCreateContentItem(testDatabase.db, {
@@ -89,8 +85,6 @@ describe("catalog browsing router", () => {
 
   test("anonymous callers can filter catalog content by selected feed", async () => {
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "feed-filter-creator",
       displayName: "Feed Filter Creator",
     });
     const selectedFeed = await findOrCreateFeed(testDatabase.db, {
@@ -141,13 +135,9 @@ describe("catalog browsing router", () => {
 
   test("anonymous catalog browsing supports bounded offset pagination with stable ordering", async () => {
     const betaCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "pagination-beta",
       displayName: "Beta Pagination",
     });
     const alphaCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "pagination-alpha",
       displayName: "Alpha Pagination",
     });
     const alphaFirstFeed = await findOrCreateFeed(testDatabase.db, {
@@ -218,13 +208,9 @@ describe("catalog browsing router", () => {
   test("authenticated subscribed content paginates across subscribed creators with stable ordering", async () => {
     await insertUser(testDatabase.db, "library-user", "library-user@example.test");
     const firstCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "subscribed-pagination-first",
       displayName: "Subscribed Pagination First",
     });
     const secondCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "peertube",
-      sourceExternalId: "subscribed-pagination-second",
       displayName: "Subscribed Pagination Second",
     });
     const firstFeed = await findOrCreateFeed(testDatabase.db, {
@@ -298,13 +284,9 @@ describe("catalog browsing router", () => {
   test("authenticated subscribed content excludes unsubscribed creators", async () => {
     await insertUser(testDatabase.db, "scoped-user", "scoped-user@example.test");
     const subscribedCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "subscribed-scope-included",
       displayName: "Subscribed Scope Included",
     });
     const unsubscribedCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "odysee",
-      sourceExternalId: "subscribed-scope-excluded",
       displayName: "Subscribed Scope Excluded",
     });
     const includedItem = await findOrCreateContentItem(testDatabase.db, {
@@ -364,8 +346,6 @@ describe("catalog browsing router", () => {
 
   test("refresh status loads bounded runs and latest feed results at the API boundary", async () => {
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "refresh-status-bounds-creator",
       displayName: "Refresh Status Bounds Creator",
     });
     const firstFeed = await findOrCreateFeed(testDatabase.db, {
@@ -440,8 +420,6 @@ describe("catalog browsing router", () => {
   test("authenticated callers can run a per-creator normal or force refresh through the router", async () => {
     await insertUser(testDatabase.db, "active-user", "active-user@example.test");
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "refresh-creator",
       displayName: "Refresh Creator",
     });
 
@@ -458,8 +436,6 @@ describe("catalog browsing router", () => {
   test("authenticated callers can run a feed-scoped refresh through the router", async () => {
     await insertUser(testDatabase.db, "active-user", "active-user@example.test");
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "refresh-feed-creator",
       displayName: "Refresh Feed Creator",
     });
     const feed = await findOrCreateFeed(testDatabase.db, {
@@ -493,8 +469,6 @@ describe("catalog browsing router", () => {
   test("anonymous content detail includes creator, feeds, and playable sources without overlay leakage", async () => {
     await insertUser(testDatabase.db, "user-a", "user-a@example.test");
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "peertube",
-      sourceExternalId: "account@example.test",
       displayName: "Peer Creator",
       imageUrl: "https://peertube.example.test/avatar.png",
     });
@@ -634,8 +608,7 @@ const schemaStatements = [
   )`,
   `CREATE TABLE creator (
     id TEXT PRIMARY KEY NOT NULL,
-    source_type TEXT NOT NULL,
-    source_external_id TEXT NOT NULL,
+    name_key TEXT NOT NULL,
     display_name TEXT NOT NULL,
     description TEXT,
     image_url TEXT,
@@ -644,7 +617,7 @@ const schemaStatements = [
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
   )`,
-  "CREATE UNIQUE INDEX creator_source_identity_uidx ON creator (source_type, source_external_id)",
+  "CREATE UNIQUE INDEX creator_name_key_uidx ON creator (name_key)",
   `CREATE TABLE feed (
     id TEXT PRIMARY KEY NOT NULL,
     creator_id TEXT NOT NULL REFERENCES creator(id) ON DELETE CASCADE,

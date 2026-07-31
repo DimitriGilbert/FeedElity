@@ -35,8 +35,6 @@ describe("auth access rules", () => {
   test("anonymous users can read public catalog items without user overlays", async () => {
     await insertUser(testDatabase.db, "user-a", "catalog-owner@example.test", "active");
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "public-channel",
       displayName: "Public Creator",
     });
     await findOrCreateContentItem(testDatabase.db, {
@@ -104,8 +102,6 @@ describe("auth access rules", () => {
     await insertUser(testDatabase.db, "user-a", "user-a@example.test", "active");
     await insertUser(testDatabase.db, "user-b", "user-b@example.test", "active");
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "odysee",
-      sourceExternalId: "scoped-channel",
       displayName: "Scoped Creator",
     });
     await findOrCreateSubscription(testDatabase.db, {
@@ -213,8 +209,6 @@ describe("auth access rules", () => {
   test("authenticated users can idempotently subscribe to an existing catalog creator", async () => {
     await insertUser(testDatabase.db, "user-a", "user-a@example.test", "active");
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "idempotent-channel",
       displayName: "Idempotent Creator",
       imageUrl: "https://example.test/avatar.png",
       canonicalUrl: "https://example.test/channel",
@@ -236,8 +230,6 @@ describe("auth access rules", () => {
       creatorId: creator.id,
       creator: {
         id: creator.id,
-        sourceType: "youtube",
-        sourceExternalId: "idempotent-channel",
         displayName: "Idempotent Creator",
         imageUrl: "https://example.test/avatar.png",
         canonicalUrl: "https://example.test/channel",
@@ -250,8 +242,6 @@ describe("auth access rules", () => {
     await insertUser(testDatabase.db, "user-a", "user-a@example.test", "active");
     await insertUser(testDatabase.db, "user-b", "user-b@example.test", "active");
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "favorite-channel",
       displayName: "Favorite Creator",
       imageUrl: "https://example.test/favorite.png",
     });
@@ -308,8 +298,6 @@ describe("auth access rules", () => {
     await insertUser(testDatabase.db, "user-a", "user-a@example.test", "active");
     await insertUser(testDatabase.db, "user-b", "user-b@example.test", "active");
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "odysee",
-      sourceExternalId: "history-channel",
       displayName: "History Creator",
     });
     const contentItem = await findOrCreateContentItem(testDatabase.db, {
@@ -389,13 +377,9 @@ describe("auth access rules", () => {
     await insertUser(testDatabase.db, "user-a", "user-a@example.test", "active");
     await insertUser(testDatabase.db, "user-b", "user-b@example.test", "active");
     const sharedCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "peertube",
-      sourceExternalId: "shared-channel",
       displayName: "Shared Creator",
     });
     const userBCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "odysee",
-      sourceExternalId: "user-b-channel",
       displayName: "User B Creator",
     });
     await call(appRouter.overlays.subscribeToCreator, { creatorId: sharedCreator.id }, {
@@ -431,11 +415,10 @@ describe("auth access rules", () => {
     expect(unsubscribeResult).toEqual({
       creator: {
         id: sharedCreator.id,
-        sourceType: "peertube",
-        sourceExternalId: "shared-channel",
         displayName: "Shared Creator",
         imageUrl: null,
         canonicalUrl: null,
+        sourceTypes: [],
       },
       unsubscribed: true,
     });
@@ -446,8 +429,6 @@ describe("auth access rules", () => {
 
   test("anonymous users cannot call subscription mutation procedures", async () => {
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "anonymous-rejected-channel",
       displayName: "Anonymous Rejected Creator",
     });
 
@@ -555,8 +536,7 @@ const schemaStatements = [
   "CREATE INDEX account_userId_idx ON account (user_id)",
   `CREATE TABLE creator (
     id TEXT PRIMARY KEY NOT NULL,
-    source_type TEXT NOT NULL,
-    source_external_id TEXT NOT NULL,
+    name_key TEXT NOT NULL,
     display_name TEXT NOT NULL,
     description TEXT,
     image_url TEXT,
@@ -565,7 +545,23 @@ const schemaStatements = [
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
   )`,
-  "CREATE UNIQUE INDEX creator_source_identity_uidx ON creator (source_type, source_external_id)",
+  "CREATE UNIQUE INDEX creator_name_key_uidx ON creator (name_key)",
+  `CREATE TABLE feed (
+    id TEXT PRIMARY KEY NOT NULL,
+    creator_id TEXT NOT NULL REFERENCES creator(id) ON DELETE CASCADE,
+    source_type TEXT NOT NULL,
+    source_external_id TEXT NOT NULL,
+    url TEXT NOT NULL,
+    title TEXT,
+    description TEXT,
+    refresh_cadence_seconds INTEGER,
+    last_normal_refresh_at INTEGER,
+    next_refresh_after INTEGER,
+    adapter_metadata_json TEXT,
+    created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
+    updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
+  )`,
+  "CREATE UNIQUE INDEX feed_source_identity_uidx ON feed (source_type, source_external_id)",
   `CREATE TABLE content_item (
     id TEXT PRIMARY KEY NOT NULL,
     creator_id TEXT NOT NULL REFERENCES creator(id) ON DELETE CASCADE,

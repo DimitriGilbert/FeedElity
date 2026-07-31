@@ -173,8 +173,6 @@ export async function importStrapiCatalog(
     const creatorOptionSummary = summarizeCreatorOptions(creatorOptionsByCreatorId.get(creator.oldId) ?? []);
     reportedRecords.push(...creatorOptionSummary.reportedRecords);
     const importedCreator = await findOrCreateCreator(db, {
-      sourceType: anchor.sourceType,
-      sourceExternalId: anchor.sourceExternalId,
       displayName: creator.name,
       description: creator.description,
       imageUrl: creatorOptionSummary.imageUrl,

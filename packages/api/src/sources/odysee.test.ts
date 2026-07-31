@@ -140,8 +140,6 @@ describe("Odysee source adapter normalization", () => {
       throw new Error(result.error.message);
     }
     expect(result.value.creator).toMatchObject({
-      sourceType: "odysee",
-      sourceExternalId: "@fixture:abc123",
       displayName: "Fixture Owner",
       description: "Creator description with & entity.",
       imageUrl: "https://thumbs.odycdn.com/channel.png",
@@ -150,11 +148,13 @@ describe("Odysee source adapter normalization", () => {
     expect(result.value.feeds).toEqual([
       {
         sourceType: "odysee",
-        sourceExternalId: "@fixture:abc123",
+        // The revision is stripped from the feed identity so two revisions of the
+        // same channel share one feed; the fetch url keeps the resolved revision.
+        sourceExternalId: "@fixture",
         url: "https://odysee.com/$/rss/@fixture:abc123",
         title: "Fixture Odysee Channel",
         description: "Creator description with & entity.",
-        adapterMetadataJson: JSON.stringify({ format: "odysee-rss", channelClaim: "@fixture:abc123" }),
+        adapterMetadataJson: JSON.stringify({ format: "odysee-rss", channelClaim: "@fixture", resolvedClaim: "@fixture:abc123" }),
       },
     ]);
     expect(result.value.items).toHaveLength(1);
@@ -189,7 +189,35 @@ describe("Odysee source adapter normalization", () => {
       },
     ]);
   });
+
+  test("canonicalizes the channel claim so two revisions share one feed identity", async () => {
+    const revisionA = await resolveClaimPayload("@fixture:abc123");
+    const revisionB = await resolveClaimPayload("@fixture:def456");
+    // Two revisions of the same channel produce the same feed sourceExternalId,
+    // so ingestion lands on one feed row instead of one per revision.
+    expect(revisionA.feeds[0]?.sourceExternalId).toBe("@fixture");
+    expect(revisionB.feeds[0]?.sourceExternalId).toBe("@fixture");
+    // The fetch url keeps each resolved revision.
+    expect(revisionA.feeds[0]?.url).toBe("https://odysee.com/$/rss/@fixture:abc123");
+    expect(revisionB.feeds[0]?.url).toBe("https://odysee.com/$/rss/@fixture:def456");
+  });
 });
+
+async function resolveClaimPayload(claim: string) {
+  const detection = odyseeAdapter.detect(`https://odysee.com/$/rss/${claim}`);
+  if (!detection.ok || !isOdyseeDetection(detection.value)) {
+    throw new Error(`Expected Odysee detection for ${claim}.`);
+  }
+  const resolution = await odyseeAdapter.resolveInput(detection.value);
+  if (!resolution.ok || !isOdyseeResolution(resolution.value)) {
+    throw new Error(`Expected Odysee resolution for ${claim}.`);
+  }
+  const result = odyseeAdapter.normalizeCatalogPayload(resolution.value, odyseeRssFixture);
+  if (!result.ok) {
+    throw new Error(`Expected normalization to succeed for ${claim}.`);
+  }
+  return result.value;
+}
 
 function isOdyseeDetection(value: DetectedSourceInput): value is DetectedSourceInput & { readonly sourceType: "odysee" } {
   return value.sourceType === "odysee";

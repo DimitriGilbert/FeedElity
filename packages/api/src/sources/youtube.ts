@@ -181,8 +181,6 @@ function normalizeYouTubeRssPayload(
     ok: true,
     value: {
       creator: {
-        sourceType: YOUTUBE_SOURCE_TYPE,
-        sourceExternalId: channelId,
         displayName: creatorName,
         canonicalUrl: canonicalChannelUrl(channelId),
         metadataJson: stableJson({ channelId, feedTitle }),
@@ -325,19 +323,28 @@ function canonicalFeedUrl(channelId: string): string {
 }
 
 /**
- * Normalize a YouTube channel id to its modern "UC"-prefixed form. Modern
- * channel ids start with "UC"; older imports carried the raw 22-char legacy id,
- * which YouTube's RSS endpoint rejects with a 404. Any 22-char id without a
- * recognized playlist-prefix (UC/UU/FL/LL/PL/RD etc.) is treated as a legacy
- * channel id and prefixed. Returns the input unchanged when already canonical or
- * when the shape is not a recognisable legacy channel id.
+ * Normalize a YouTube channel id to its canonical form. Modern channel ids start
+ * with a two-letter prefix (UC for uploads, UU/FL/LL for playlists, etc.); older
+ * imports carried the raw 22-char legacy id, which YouTube's RSS endpoint rejects
+ * with a 404. Any 22-char id without a recognized prefix is treated as a legacy
+ * channel id and prefixed with UC. Prefixes are matched case-insensitively and
+ * uppercased, so a stray lowercase id ("uCkxo…") canonicalizes to its uppercase
+ * twin instead of spawning a separate creator/feed.
  */
 function normalizeYouTubeChannelId(channelId: string): string {
-  if (channelId.startsWith("UC") || channelId.length !== 22) {
-    return channelId;
+  const prefix = channelId.slice(0, 2).toUpperCase();
+  if (YOUTUBE_ID_PREFIXES.has(prefix)) {
+    // Recognised prefix (in any case): uppercase it so case variants collide.
+    return channelId.slice(0, 2) === prefix ? channelId : `${prefix}${channelId.slice(2)}`;
   }
-  return `UC${channelId}`;
+  // No recognised prefix on a 22-char id: treat as a legacy channel id.
+  if (channelId.length === 22) {
+    return `UC${channelId}`;
+  }
+  return channelId;
 }
+
+const YOUTUBE_ID_PREFIXES = new Set(["UC", "UU", "FL", "LL", "PL", "RD"]);
 
 function canonicalChannelUrl(channelId: string): string {
   return `https://www.youtube.com/channel/${encodeURIComponent(channelId)}`;

@@ -3,6 +3,7 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 import * as schema from "@FeedElity/db/schema";
 
 import type { CatalogContentItem, CatalogContentListItem, CatalogCreatorSummary, ContentStatusKind, SourceType } from "../domain/catalog";
+import { loadSourceTypesByCreatorId, loadSourceTypesForCreator } from "./catalog";
 import type {
   CollectionMember,
   CollectionMemberWithCreator,
@@ -202,9 +203,11 @@ export async function listSubscriptionsWithCreatorsForUser(
     .where(eq(schema.subscription.userId, userId))
     .orderBy(asc(schema.subscription.createdAt));
 
+  const sourceTypesByCreator = await loadSourceTypesByCreatorId(db, rows.map((row) => row.creator.id));
+
   return rows.map((row) => ({
     ...toUserSubscription(row.subscription),
-    creator: toCatalogCreatorSummary(row.creator),
+    creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
   }));
 }
 
@@ -260,9 +263,11 @@ export async function listSubscribedContentItemsForUser(
     .limit(input.limit)
     .offset(input.offset ?? 0);
 
+  const sourceTypesByCreator = await loadSourceTypesByCreatorId(db, rows.map((row) => row.creator.id));
+
   return rows.map((row) => ({
     ...toCatalogContentItem(row.contentItem),
-    creator: toCatalogCreatorSummary(row.creator),
+    creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
     sourceCount: row.sourceCount,
   }));
 }
@@ -286,7 +291,7 @@ export async function getSubscriptionWithCreatorForUser(
 
   return {
     ...toUserSubscription(row.subscription),
-    creator: toCatalogCreatorSummary(row.creator),
+    creator: toCatalogCreatorSummary(row.creator, await loadSourceTypesForCreator(db, row.creator.id)),
   };
 }
 
@@ -439,11 +444,13 @@ export async function listContentStatusWithContentForUser(
     .orderBy(desc(schema.contentStatus.createdAt))
     .limit(input.limit ?? 100);
 
+  const sourceTypesByCreator = await loadSourceTypesByCreatorId(db, rows.map((row) => row.creator.id));
+
   return rows.map((row) => ({
     ...toUserContentStatus(row.contentStatus),
     content: {
       ...toCatalogContentItem(row.contentItem),
-      creator: toCatalogCreatorSummary(row.creator),
+      creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
       sourceCount: row.sourceCount,
     },
   }));
@@ -638,11 +645,13 @@ export async function listPlaylistItemsWithContentForUserPlaylist(
     .where(and(eq(schema.playlistItem.userId, userId), eq(schema.playlistItem.playlistId, playlistId)))
     .orderBy(...orderBy);
 
+  const sourceTypesByCreator = await loadSourceTypesByCreatorId(db, rows.map((row) => row.creator.id));
+
   return rows.map((row) => ({
     ...toPlaylistItem(row.playlistItem),
     content: {
       ...toCatalogContentItem(row.contentItem),
-      creator: toCatalogCreatorSummary(row.creator),
+      creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
       sourceCount: row.sourceCount,
     },
   }));
@@ -854,9 +863,11 @@ export async function listCollectionMembersWithCreatorsForUserCollection(
     )
     .orderBy(asc(schema.collectionMember.addedAt), asc(schema.collectionMember.id));
 
+  const sourceTypesByCreator = await loadSourceTypesByCreatorId(db, rows.map((row) => row.creator.id));
+
   return rows.map((row) => ({
     ...toCollectionMember(row.collectionMember),
-    creator: toCatalogCreatorSummary(row.creator),
+    creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
   }));
 }
 
@@ -1091,14 +1102,16 @@ function toUserSubscription(row: typeof schema.subscription.$inferSelect): UserS
   };
 }
 
-function toCatalogCreatorSummary(row: typeof schema.creator.$inferSelect): CatalogCreatorSummary {
+function toCatalogCreatorSummary(
+  row: typeof schema.creator.$inferSelect,
+  sourceTypes: readonly SourceType[],
+): CatalogCreatorSummary {
   return {
     id: row.id,
-    sourceType: row.sourceType,
-    sourceExternalId: row.sourceExternalId,
     displayName: row.displayName,
     imageUrl: row.imageUrl,
     canonicalUrl: row.canonicalUrl,
+    sourceTypes,
   };
 }
 

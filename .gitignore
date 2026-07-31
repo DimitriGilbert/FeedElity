@@ -70,3 +70,6 @@ temp
 # Creator classification generated data (API dump + subagent shards + SQL).
 # Reviewable but not source-controlled; regenerate via scripts/classify/.
 scripts/classify/data/
+# One-time DB repair: track source, ignore copied prod snapshots and generated reports.
+scripts/db-repair/data/
+scripts/db-repair/*.db

@@ -136,12 +136,16 @@ function normalizeOdyseeRssPayload(
   // (input.sourceExternalId). Only fall back to the served <link> when the
   // canonical claim is absent, so a malformed/garbled link cannot spawn a
   // duplicate creator row \u2014 same hardening as the YouTube adapter.
-  const channelClaim = isNonEmptyText(input.sourceExternalId)
+  const resolvedClaim = isNonEmptyText(input.sourceExternalId)
     ? input.sourceExternalId
     : claimSegmentFromUrl(xmlText(channel, "link"));
-  if (!isNonEmptyText(channelClaim)) {
+  if (!isNonEmptyText(resolvedClaim)) {
     return failure("normalization-failed", "Odysee RSS payload is missing a creator claim.", input.canonicalUrl);
   }
+  // A claim may carry a ":<claimId>" revision (e.g. "@ScottManley:5"). Strip it
+  // for identity so the same channel added via two revisions lands on one feed,
+  // not two. The resolved claim is kept in metadata for provenance.
+  const channelClaim = canonicalOdyseeClaim(resolvedClaim);
 
   const ownerBlock = xmlChild(channel, "itunes:owner");
   const ownerName = xmlText(ownerBlock ?? undefined, "itunes:name");
@@ -161,22 +165,23 @@ function normalizeOdyseeRssPayload(
     ok: true,
     value: {
       creator: {
-        sourceType: ODYSEE_SOURCE_TYPE,
-        sourceExternalId: channelClaim,
         displayName: ownerName ?? feedTitle,
         description,
         imageUrl: channelImageUrl,
-        canonicalUrl: canonicalCreatorUrl(channelClaim),
-        metadataJson: stableJson({ channelClaim, format: "odysee-rss" }),
+        canonicalUrl: canonicalCreatorUrl(resolvedClaim),
+        metadataJson: stableJson({ channelClaim, resolvedClaim, format: "odysee-rss" }),
       },
       feeds: [
         {
           sourceType: ODYSEE_SOURCE_TYPE,
+          // Canonicalized so two revisions of the same channel (@name vs
+          // @name:rev) share one feed row. The fetch url keeps the resolved
+          // revision so refresh still targets a valid claim.
           sourceExternalId: channelClaim,
-          url: canonicalRssFeedUrl(channelClaim),
+          url: canonicalRssFeedUrl(resolvedClaim),
           title: feedTitle,
           description,
-          adapterMetadataJson: stableJson({ format: "odysee-rss", channelClaim }),
+          adapterMetadataJson: stableJson({ format: "odysee-rss", channelClaim, resolvedClaim }),
         },
       ],
       items,
@@ -414,6 +419,19 @@ function hasClaimId(claimSegment: string): boolean {
 function claimIdFromSegment(claimSegment: string): string {
   const claimId = claimSegment.split(":")[1];
   return isNonEmptyText(claimId) ? claimId : claimSegment;
+}
+
+/**
+ * Strip a trailing ":<claimId>" revision from a creator claim so "@ScottManley"
+ * and "@ScottManley:5" normalize to the same identity. Returns the claim
+ * unchanged when it has no revision.
+ */
+function canonicalOdyseeClaim(claim: string): string {
+  if (!claim.includes(":")) {
+    return claim;
+  }
+  const base = claim.slice(0, claim.indexOf(":"));
+  return isNonEmptyText(base) ? base : claim;
 }
 
 function encodePathSegment(value: string): string {

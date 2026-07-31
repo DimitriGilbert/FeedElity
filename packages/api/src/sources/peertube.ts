@@ -191,8 +191,6 @@ function normalizePeerTubeApiPayload(
     ok: true,
     value: {
       creator: {
-        sourceType: PEERTUBE_SOURCE_TYPE,
-        sourceExternalId: creatorExternalId,
         displayName: creatorActor.displayName ?? creatorActor.name,
         description: creatorActor.description,
         imageUrl: absolutePeerTubeUrl(hint.origin, creatorActor.avatarPath),

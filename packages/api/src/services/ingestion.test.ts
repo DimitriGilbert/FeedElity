@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import * as schema from "@FeedElity/db/schema";
 
 import type { RepositoryDb } from "../repositories/catalog";
-import { findFeedBySourceIdentity, listCatalogContentItems } from "../repositories/catalog";
+import { findFeedBySourceIdentity, listCatalogContentItems, listCatalogFeedsForCreator } from "../repositories/catalog";
 import { listSubscriptionsForUser } from "../repositories/overlays";
 import { createSourceAdapterRegistry, parseHttpUrl } from "../sources";
 import type {
@@ -46,7 +46,7 @@ describe("source ingestion service", () => {
     if (!result.ok) {
       throw new Error(result.error.message);
     }
-    expect(result.value.creator).toMatchObject({ sourceType: "youtube", sourceExternalId: "creator-one" });
+    expect(result.value.creator).toMatchObject({ displayName: "Creator One" });
     expect(result.value.feeds).toHaveLength(1);
     expect(result.value.feeds.at(0)?.refreshCadenceSeconds).toBe(7200);
     expect(result.value.contentItems).toHaveLength(2);
@@ -87,6 +87,26 @@ describe("source ingestion service", () => {
     expect(second.value.creator.id).toBe(first.value.creator.id);
     expect(second.value.created).toEqual({ creators: 0, feeds: 0, contentItems: 0, contentSources: 0 });
     expect(await listCatalogContentItems(testDatabase.db)).toHaveLength(2);
+  });
+
+  test("a creator mirrored across sources is deduplicated by display name into one creator with multiple feeds", async () => {
+    const registry = createSourceAdapterRegistry([createFixtureAdapter(), createOdyseeFixtureAdapter()]);
+    const dependencies = { db: testDatabase.db, sourceRegistry: registry };
+
+    const youtube = await addSource(dependencies, { sourceInput: "https://ingest.example.test/creator-one" });
+    const odysee = await addSource(dependencies, { sourceInput: "https://odysee.ingest.example.test/@CreatorOne" });
+
+    expect(youtube.ok).toBe(true);
+    expect(odysee.ok).toBe(true);
+    if (!youtube.ok || !odysee.ok) {
+      throw new Error("Expected both source adds to succeed.");
+    }
+    // Same channel name from two sources collapses onto one cross-source creator.
+    expect(odysee.value.creator.id).toBe(youtube.value.creator.id);
+    expect(odysee.value.created.creators).toBe(0);
+    // The creator now carries one feed per source.
+    const creatorFeeds = await listCatalogFeedsForCreator(testDatabase.db, youtube.value.creator.id);
+    expect(creatorFeeds.map((feed) => feed.sourceType).sort()).toEqual(["odysee", "youtube"]);
   });
 
   test("anonymous source add does not create user overlay records", async () => {
@@ -244,6 +264,78 @@ function createFixtureAdapter(): SourceAdapter {
   };
 }
 
+function createOdyseeFixtureAdapter(): SourceAdapter {
+  return {
+    sourceType: "odysee",
+    detect(input) {
+      const urlResult = parseHttpUrl(input);
+      if (!urlResult.ok || urlResult.value.hostname !== "odysee.ingest.example.test") {
+        return unsupported(input);
+      }
+      return detected({
+        sourceType: "odysee",
+        inputKind: "creator-url",
+        originalInput: input,
+        canonicalInput: urlResult.value.toString(),
+      });
+    },
+    async resolveInput(input) {
+      const url = new URL(input.canonicalInput);
+      return {
+        ok: true,
+        value: {
+          sourceType: "odysee",
+          sourceExternalId: url.pathname.slice(1),
+          canonicalUrl: input.canonicalInput,
+        },
+      };
+    },
+    normalizeCatalogPayload() {
+      return { ok: true, value: odyseeCreatorOnePayload };
+    },
+    async fetchCatalog() {
+      return { ok: true, value: odyseeCreatorOnePayload };
+    },
+  };
+}
+
+const odyseeCreatorOnePayload: NormalizedCatalogPayload = {
+  creator: {
+    // Same channel name as the YouTube fixture, so ingestion must merge them.
+    displayName: "Creator One",
+    canonicalUrl: "https://odysee.ingest.example.test/@CreatorOne",
+  },
+  feeds: [
+    {
+      sourceType: "odysee",
+      sourceExternalId: "@CreatorOne",
+      url: "https://odysee.ingest.example.test/$/rss/@CreatorOne",
+      title: "Creator One uploads",
+    },
+  ],
+  items: [
+    {
+      contentItem: {
+        sourceType: "odysee",
+        sourceExternalId: "creator-one-odysee-video-1",
+        title: "Creator One Odysee Video",
+        publishedAt: new Date("2026-01-02T00:00:00.000Z"),
+        canonicalUrl: "https://odysee.ingest.example.test/@CreatorOne:1",
+      },
+      feedContent: { sourceExternalId: "creator-one-odysee-video-1" },
+      sources: [
+        {
+          sourceType: "odysee",
+          sourceExternalId: "creator-one-odysee-video-1",
+          canonicalUrl: "https://odysee.ingest.example.test/@CreatorOne:1",
+          nativeMediaUrl: "https://odysee.ingest.example.test/stream/1.mp4",
+          priority: 0,
+        },
+      ],
+    },
+  ],
+};
+
 function payloadForSource(sourceExternalId: string): NormalizedCatalogPayload {
   if (sourceExternalId === "multi-feed") {
     return multiFeedPayload;
@@ -256,8 +348,6 @@ function payloadForSource(sourceExternalId: string): NormalizedCatalogPayload {
 
 const creatorOnePayload: NormalizedCatalogPayload = {
   creator: {
-    sourceType: "youtube",
-    sourceExternalId: "creator-one",
     displayName: "Creator One",
     canonicalUrl: "https://ingest.example.test/creator-one",
   },
@@ -312,8 +402,6 @@ const creatorOnePayload: NormalizedCatalogPayload = {
 
 const creatorTwoPayload: NormalizedCatalogPayload = {
   creator: {
-    sourceType: "youtube",
-    sourceExternalId: "creator-two",
     displayName: "Creator Two",
     canonicalUrl: "https://ingest.example.test/creator-two",
   },
@@ -349,8 +437,6 @@ const creatorTwoPayload: NormalizedCatalogPayload = {
 
 const multiFeedPayload: NormalizedCatalogPayload = {
   creator: {
-    sourceType: "youtube",
-    sourceExternalId: "multi-feed",
     displayName: "Multi Feed Creator",
     canonicalUrl: "https://ingest.example.test/multi-feed",
   },
@@ -449,8 +535,7 @@ const schemaStatements = [
   )`,
   `CREATE TABLE creator (
     id TEXT PRIMARY KEY NOT NULL,
-    source_type TEXT NOT NULL,
-    source_external_id TEXT NOT NULL,
+    name_key TEXT NOT NULL,
     display_name TEXT NOT NULL,
     description TEXT,
     image_url TEXT,
@@ -459,7 +544,7 @@ const schemaStatements = [
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
   )`,
-  "CREATE UNIQUE INDEX creator_source_identity_uidx ON creator (source_type, source_external_id)",
+  "CREATE UNIQUE INDEX creator_name_key_uidx ON creator (name_key)",
   `CREATE TABLE feed (
     id TEXT PRIMARY KEY NOT NULL,
     creator_id TEXT NOT NULL REFERENCES creator(id) ON DELETE CASCADE,

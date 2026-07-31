@@ -60,6 +60,30 @@ describe("YouTube source adapter detection", () => {
     expect(shortsResult.ok && shortsResult.value.canonicalInput).toBe("https://www.youtube.com/watch?v=abc123XYZ09");
   });
 
+  test("canonicalizes a lowercase-prefixed channel id so case variants share one feed", async () => {
+    // Real channel ids are 24 chars: "UC" + 22.
+    const lower = youtubeAdapter.detect("https://www.youtube.com/feeds/videos.xml?channel_id=uC1234567890abcdefghijkl");
+    const upper = youtubeAdapter.detect("https://www.youtube.com/feeds/videos.xml?channel_id=UC1234567890abcdefghijkl");
+    if (!lower.ok || !upper.ok) {
+      throw new Error("Expected both detections to succeed.");
+    }
+    if (!isYouTubeDetection(lower.value) || !isYouTubeDetection(upper.value)) {
+      throw new Error("Expected YouTube detections.");
+    }
+
+    const lowerResolution = await youtubeAdapter.resolveInput(lower.value);
+    const upperResolution = await youtubeAdapter.resolveInput(upper.value);
+
+    expect(lowerResolution.ok).toBe(true);
+    expect(upperResolution.ok).toBe(true);
+    if (!lowerResolution.ok || !upperResolution.ok) {
+      throw new Error("Expected both resolutions to succeed.");
+    }
+    // Same channel regardless of the case of the "UC" prefix — no twin creator/feed.
+    expect(lowerResolution.value.sourceExternalId).toBe("UC1234567890abcdefghijkl");
+    expect(lowerResolution.value.sourceExternalId).toBe(upperResolution.value.sourceExternalId);
+  });
+
   test("rejects individual video URLs during resolution", async () => {
     const detection = youtubeAdapter.detect("https://www.youtube.com/watch?v=abc123");
 
@@ -134,8 +158,6 @@ describe("YouTube source adapter normalization", () => {
       throw new Error(result.error.message);
     }
     expect(result.value.creator).toMatchObject({
-      sourceType: "youtube",
-      sourceExternalId: "UC1234567890abcdef",
       displayName: "Fixture Creator",
       canonicalUrl: "https://www.youtube.com/channel/UC1234567890abcdef",
     });

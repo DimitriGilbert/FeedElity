@@ -131,8 +131,6 @@ describe("PeerTube source adapter normalization", () => {
       throw new Error(result.error.message);
     }
     expect(result.value.creator).toMatchObject({
-      sourceType: "peertube",
-      sourceExternalId: "video.example.test/video-channels/fixture_channel",
       displayName: "Fixture Channel",
       description: "Fixture channel description.",
       imageUrl: "https://video.example.test/lazy-static/avatars/channel.png",
@@ -212,14 +210,12 @@ describe("PeerTube source adapter normalization", () => {
       throw new Error(result.error.message);
     }
     expect(result.value.creator).toMatchObject({
-      sourceType: "peertube",
-      sourceExternalId: "video.example.test/instance/video.example.test",
       displayName: "video.example.test",
       description: null,
       imageUrl: null,
       canonicalUrl: "https://video.example.test/",
     });
-    expect(result.value.creator.sourceExternalId).not.toBe("video.example.test/video-channels/fixture_channel");
+    expect(result.value.creator.displayName).toBe("video.example.test");
     expect(result.value.creator.metadataJson).toBe(
       JSON.stringify({ host: "video.example.test", resource: "instance", name: "video.example.test" }),
     );
@@ -278,7 +274,6 @@ describe("PeerTube source adapter normalization", () => {
       throw new Error(result.error.message);
     }
     expect(result.value.creator).toMatchObject({
-      sourceExternalId: "video.example.test/accounts/fixture",
       displayName: "Fixture Account",
       canonicalUrl: "https://video.example.test/a/fixture",
     });

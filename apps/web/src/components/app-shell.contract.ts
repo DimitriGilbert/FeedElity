@@ -268,7 +268,7 @@ export const shellColumns: readonly ShellColumnDefinition[] = [
   },
 ] as const;
 
-const sourceLabels: Record<CatalogCreator["sourceType"], string> = {
+const sourceLabels: Record<SourceType, string> = {
   youtube: "YouTube",
   odysee: "Odysee",
   peertube: "PeerTube",
@@ -522,7 +522,7 @@ export function toShellContentSelectionState(
   return { selectedCreatorId, selectedContentItemId };
 }
 
-export function formatSourceLabel(sourceType: CatalogCreator["sourceType"]): string {
+export function formatSourceLabel(sourceType: SourceType): string {
   return sourceLabels[sourceType];
 }
 

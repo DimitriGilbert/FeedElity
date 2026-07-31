@@ -73,13 +73,9 @@ describe("collection API", () => {
     await insertUser(testDatabase.db, "user-a", "user-a@example.test", "active");
     await insertUser(testDatabase.db, "user-b", "user-b@example.test", "active");
     const firstCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "collection-api-channel-1",
       displayName: "Collection API Creator One",
     });
     const secondCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "odysee",
-      sourceExternalId: "collection-api-channel-2",
       displayName: "Collection API Creator Two",
     });
     const collection = await call(appRouter.overlays.createCollection, { name: "Tech" }, {
@@ -128,8 +124,6 @@ describe("collection API", () => {
   test("a creator can be a member of multiple collections", async () => {
     await insertUser(testDatabase.db, "user-a", "user-a@example.test", "active");
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "multi-collection-channel",
       displayName: "Multi Collection Creator",
     });
     const firstCollection = await call(appRouter.overlays.createCollection, { name: "First" }, {
@@ -182,13 +176,9 @@ describe("collection API", () => {
   test("subscribed content can be scoped to a collection's member creators", async () => {
     await insertUser(testDatabase.db, "library-user", "library-user@example.test", "active");
     const inCollectionCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "collection-scoped-in",
       displayName: "Collection Scoped In",
     });
     const outCollectionCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "collection-scoped-out",
       displayName: "Collection Scoped Out",
     });
     const includedItem = await findOrCreateContentItem(testDatabase.db, {
@@ -233,13 +223,9 @@ describe("collection API", () => {
   test("catalog content can be scoped to a collection for an authenticated caller", async () => {
     await insertUser(testDatabase.db, "catalog-user", "catalog-user@example.test", "active");
     const inCollectionCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "catalog-collection-in",
       displayName: "Catalog Collection In",
     });
     const outCollectionCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "catalog-collection-out",
       displayName: "Catalog Collection Out",
     });
     const includedItem = await findOrCreateContentItem(testDatabase.db, {
@@ -351,8 +337,7 @@ const schemaStatements = [
   )`,
   `CREATE TABLE creator (
     id TEXT PRIMARY KEY NOT NULL,
-    source_type TEXT NOT NULL,
-    source_external_id TEXT NOT NULL,
+    name_key TEXT NOT NULL,
     display_name TEXT NOT NULL,
     description TEXT,
     image_url TEXT,
@@ -361,7 +346,23 @@ const schemaStatements = [
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
   )`,
-  "CREATE UNIQUE INDEX creator_source_identity_uidx ON creator (source_type, source_external_id)",
+  "CREATE UNIQUE INDEX creator_name_key_uidx ON creator (name_key)",
+  `CREATE TABLE feed (
+    id TEXT PRIMARY KEY NOT NULL,
+    creator_id TEXT NOT NULL REFERENCES creator(id) ON DELETE CASCADE,
+    source_type TEXT NOT NULL,
+    source_external_id TEXT NOT NULL,
+    url TEXT NOT NULL,
+    title TEXT,
+    description TEXT,
+    refresh_cadence_seconds INTEGER,
+    last_normal_refresh_at INTEGER,
+    next_refresh_after INTEGER,
+    adapter_metadata_json TEXT,
+    created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
+    updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
+  )`,
+  "CREATE UNIQUE INDEX feed_source_identity_uidx ON feed (source_type, source_external_id)",
   `CREATE TABLE content_item (
     id TEXT PRIMARY KEY NOT NULL,
     creator_id TEXT NOT NULL REFERENCES creator(id) ON DELETE CASCADE,

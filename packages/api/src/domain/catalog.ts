@@ -17,7 +17,22 @@ export interface SourceIdentity {
   readonly sourceExternalId: string;
 }
 
-export interface CatalogCreator extends SourceIdentity {
+/**
+ * Normalize a creator display name into a stable cross-source key. Two feeds
+ * describe the same channel when their display names normalize to the same key:
+ * case-insensitive, with a leading Odysee "@" handle prefix and any trailing
+ * ":<claimId>" revision stripped, and all whitespace removed. This collapses
+ * "@ScottManley", "@ScottManley:5", and "Scott Manley" onto one creator.
+ */
+export function creatorNameKey(displayName: string): string {
+  const withoutHandle = displayName.trim().replace(/^@+/, "");
+  const withoutClaimRevision = withoutHandle.includes(":")
+    ? withoutHandle.slice(0, withoutHandle.indexOf(":"))
+    : withoutHandle;
+  return withoutClaimRevision.replace(/\s+/g, "").toLowerCase();
+}
+
+export interface CatalogCreator {
   readonly id: string;
   readonly displayName: string;
   readonly description: string | null;
@@ -70,11 +85,10 @@ export interface CatalogContentListItem extends CatalogContentItem {
 
 export interface CatalogCreatorSummary {
   readonly id: string;
-  readonly sourceType: SourceType;
-  readonly sourceExternalId: string;
   readonly displayName: string;
   readonly imageUrl: string | null;
   readonly canonicalUrl: string | null;
+  readonly sourceTypes: readonly SourceType[];
 }
 
 export interface CatalogContentDetail extends CatalogContentItem {

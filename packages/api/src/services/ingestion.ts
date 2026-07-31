@@ -8,7 +8,7 @@ import type {
 import {
   findContentItemBySourceIdentity,
   findContentSourceByCanonicalUrl,
-  findCreatorBySourceIdentity,
+  findCreatorByNameKey,
   findFeedBySourceIdentity,
   findOrCreateContentItem,
   findOrCreateContentSource,
@@ -17,6 +17,7 @@ import {
   linkFeedContent,
   type RepositoryDb,
 } from "../repositories/catalog";
+import { creatorNameKey } from "../domain/catalog";
 import { findOrCreateSubscription } from "../repositories/overlays";
 import type { UserSubscription } from "../domain/overlays";
 import type { SourceAdapterError, SourceAdapterErrorCode } from "../sources";
@@ -172,7 +173,7 @@ export async function persistNormalizedCatalog(
   payload: NormalizedCatalogPayload,
   userId: string | undefined,
 ): Promise<AddSourceValue> {
-  const existingCreator = await findCreatorBySourceIdentity(db, payload.creator);
+  const existingCreator = await findCreatorByNameKey(db, creatorNameKey(payload.creator.displayName));
   const creator = await findOrCreateCreator(db, payload.creator);
   const feeds: CatalogFeed[] = [];
   const contentItems: CatalogContentItem[] = [];

@@ -56,8 +56,6 @@ afterEach(() => {
 describe("catalog and overlay repositories", () => {
   test("global catalog records can exist and be read without user ownership", async () => {
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "channel-1",
       displayName: "Global Creator",
     });
     const feed = await findOrCreateFeed(testDatabase.db, {
@@ -106,8 +104,6 @@ describe("catalog and overlay repositories", () => {
     await insertUser(testDatabase.db, "user-a", "user-a@example.test");
     await insertUser(testDatabase.db, "user-b", "user-b@example.test");
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "odysee",
-      sourceExternalId: "creator-1",
       displayName: "Scoped Creator",
     });
     const contentItem = await findOrCreateContentItem(testDatabase.db, {
@@ -149,14 +145,10 @@ describe("catalog and overlay repositories", () => {
 
   test("duplicate source records reuse existing catalog identities deterministically", async () => {
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "peertube",
-      sourceExternalId: "accounts/source@example.test",
       displayName: "Original Creator",
     });
     const duplicateCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "peertube",
-      sourceExternalId: "accounts/source@example.test",
-      displayName: "Renamed Creator",
+      displayName: "Original Creator",
     });
     const feed = await findOrCreateFeed(testDatabase.db, {
       creatorId: creator.id,
@@ -204,8 +196,6 @@ describe("catalog and overlay repositories", () => {
 
   test("content source priority collision returns the existing row", async () => {
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "priority-channel",
       displayName: "Priority Creator",
     });
     const contentItem = await findOrCreateContentItem(testDatabase.db, {
@@ -236,8 +226,6 @@ describe("catalog and overlay repositories", () => {
     await insertUser(testDatabase.db, "user-a", "playlist-a@example.test");
     await insertUser(testDatabase.db, "user-b", "playlist-b@example.test");
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "playlist-channel",
       displayName: "Playlist Creator",
     });
     const firstContentItem = await findOrCreateContentItem(testDatabase.db, {
@@ -297,8 +285,6 @@ describe("catalog and overlay repositories", () => {
   test("playlist item position replay reuses same content and rejects different content", async () => {
     await insertUser(testDatabase.db, "user-a", "playlist-position-a@example.test");
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "playlist-position-channel",
       displayName: "Playlist Position Creator",
     });
     const firstContentItem = await findOrCreateContentItem(testDatabase.db, {
@@ -440,8 +426,6 @@ describe("catalog and overlay repositories", () => {
 
   test("refresh runs and feed results are persisted without running refresh orchestration", async () => {
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "peertube",
-      sourceExternalId: "refresh-creator",
       displayName: "Refresh Creator",
     });
     const feed = await findOrCreateFeed(testDatabase.db, {
@@ -485,8 +469,6 @@ describe("catalog and overlay repositories", () => {
 
   test("refresh run and feed result listing applies repository limits", async () => {
     const creator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "bounded-refresh-creator",
       displayName: "Bounded Refresh Creator",
     });
     const feedOne = await findOrCreateFeed(testDatabase.db, {
@@ -539,13 +521,9 @@ describe("catalog and overlay repositories", () => {
 
   test("catalog repository pagination uses explicit offsets and stable tie-breakers", async () => {
     const alphaCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "repo-pagination-alpha",
       displayName: "Alpha Repository",
     });
     const betaCreator = await findOrCreateCreator(testDatabase.db, {
-      sourceType: "youtube",
-      sourceExternalId: "repo-pagination-beta",
       displayName: "Beta Repository",
     });
     const firstFeed = await findOrCreateFeed(testDatabase.db, {
@@ -621,8 +599,7 @@ const schemaStatements = [
   )`,
   `CREATE TABLE creator (
     id TEXT PRIMARY KEY NOT NULL,
-    source_type TEXT NOT NULL,
-    source_external_id TEXT NOT NULL,
+    name_key TEXT NOT NULL,
     display_name TEXT NOT NULL,
     description TEXT,
     image_url TEXT,
@@ -631,7 +608,7 @@ const schemaStatements = [
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
   )`,
-  "CREATE UNIQUE INDEX creator_source_identity_uidx ON creator (source_type, source_external_id)",
+  "CREATE UNIQUE INDEX creator_name_key_uidx ON creator (name_key)",
   `CREATE TABLE feed (
     id TEXT PRIMARY KEY NOT NULL,
     creator_id TEXT NOT NULL REFERENCES creator(id) ON DELETE CASCADE,
