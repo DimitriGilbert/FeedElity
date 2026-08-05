@@ -1247,17 +1247,15 @@ export default function AppShell(props: AppShellProps) {
           onPlaylistItemAdded={() => setPlaylistItemsReloadKey((key) => key + 1)}
         />
         </Suspense>
-        <Suspense>
         <SelectedContentViewer
           isAuthenticated={isAuthenticated}
           selectedContent={selectedContent}
           selectedPlaylistId={selectedPlaylistId}
-          favoritesReloadKey={favoritesReloadKey}
-          contentStatuses={() => contentStatuses() ?? emptyUserContentStatuses}
+          contentStatuses={() => contentStatuses.latest ?? emptyUserContentStatuses}
           contentStatusesLoading={() => contentStatuses.loading}
           statusSelectionError={statusSelectionError}
           viewerMode={viewerMode}
-          settings={() => settings() ?? emptyUserSettings}
+          settings={() => settings.latest ?? emptyUserSettings}
           settingsUnavailable={() => settings.error !== undefined}
           onCloseSettings={() => setViewerMode("content")}
           onSettingsChanged={async () => {
@@ -1270,7 +1268,6 @@ export default function AppShell(props: AppShellProps) {
           onMarkContentPlayed={markContentPlayed}
           onAutoMarkContentPlayed={autoMarkContentPlayed}
         />
-        </Suspense>
         <Show when={isDesktop()}>
           <div
             class="absolute inset-y-0 z-10"
