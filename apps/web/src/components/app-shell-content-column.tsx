@@ -87,6 +87,26 @@ function toContentItemsResourceKey(mode: ContentItemsResourceMode, input: Conten
   ].join("\u001f");
 }
 
+/**
+ * Query identity for the content list: mode + filter input, EXCLUDING reload
+ * ticks (catalogReloadKey / listLiveReloadKey / etc). The appended "load more"
+ * pages and the paging offset are keyed against THIS, not against the resource
+ * key. So a refresh live-reload ticks page 1 in place while preserving the
+ * deeper pages the user already loaded — previously the live-reload bump
+ * changed the resource key, which made pageItemsForKey() return [] for the
+ * appended page, so every load-more item vanished on the next refresh tick.
+ */
+function toContentItemsQueryKey(mode: ContentItemsResourceMode, input: ContentListInput): string {
+  return [
+    mode,
+    input.search ?? "",
+    input.creatorId ?? "",
+    input.feedId ?? "",
+    input.collectionId ?? "",
+    input.sourceType ?? "",
+  ].join("\u001f");
+}
+
 function appendUniqueContentItems(
   existingContentItems: readonly CatalogContentListItem[],
   nextContentItems: readonly CatalogContentListItem[],
@@ -365,6 +385,13 @@ export function ContentListColumn(props: ContentListColumnProps) {
     return readContentItems(mode, input);
   });
   const contentItemsValue = createMemo(() => contentItems.latest);
+  // Stable query identity used to key the appended "load more" page and the
+  // paging offset. It MUST NOT include reload ticks — otherwise a refresh
+  // live-reload bumps the key and wipes the user's loaded-more pages. See
+  // toContentItemsQueryKey.
+  const contentItemsQueryKey = createMemo(() =>
+    toContentItemsQueryKey(contentItemsResourceMode(), contentListInput()),
+  );
   const favoriteItemsResourceInput = createMemo(() => {
     if (!props.isAuthenticated() || contentItemsResourceMode() === "favorites") {
       return null;
@@ -398,14 +425,14 @@ export function ContentListColumn(props: ContentListColumnProps) {
   const loadedContentItems = createMemo(() => {
     const merged = appendUniqueContentItems(
       mergeStableItemReferences(contentItemsValue() ?? emptyCatalogContentItems, stableItemById),
-      pageItemsForKey(appendedContentPage(), contentItemsResourceKey()),
+      pageItemsForKey(appendedContentPage(), contentItemsQueryKey()),
     );
     stableItemById = new Map(merged.map((item) => [item.id, item]));
     return merged;
   });
   const contentPageHasMore = createMemo(() =>
     showsCatalogFilters(viewMode())
-      && pageHasMoreForKey(appendedContentPage(), contentItemsResourceKey(), (contentItemsValue() ?? emptyCatalogContentItems).length, contentListLimit),
+      && pageHasMoreForKey(appendedContentPage(), contentItemsQueryKey(), (contentItemsValue() ?? emptyCatalogContentItems).length, contentListLimit),
   );
   const displayedContentItems = createMemo(() => {
     const currentContentItems = loadedContentItems();
@@ -484,8 +511,8 @@ export function ContentListColumn(props: ContentListColumnProps) {
       return;
     }
 
-    const key = contentItemsResourceKey();
-    const nextOffset = nextOffsetForKey(contentOffset(), key, (contentItemsValue() ?? emptyCatalogContentItems).length);
+    const queryKey = contentItemsQueryKey();
+    const nextOffset = nextOffsetForKey(contentOffset(), queryKey, (contentItemsValue() ?? emptyCatalogContentItems).length);
     const input = { ...contentListInput(), offset: nextOffset };
     setContentPageBusy(true);
     setContentPageError(null);
@@ -493,15 +520,22 @@ export function ContentListColumn(props: ContentListColumnProps) {
       const nextContentItems = mode === "subscribed"
         ? await listSubscribedLibraryContentItems(input)
         : await client.catalog.contentItems(input);
-      if (contentItemsResourceKey() !== key) {
+      // Stale-load guard keys on QUERY identity, not the resource key: a refresh
+      // live-reload bumps the resource key (refetching page 1) but does NOT
+      // change the query, so a load-more in flight during a refresh still
+      // appends correctly — page 2 of the same query is still page 2. Only a
+      // real query change (search/creator/feed/collection/source/mode) drops
+      // the result, which is the dangerous case (appending page 2 of a different
+      // query onto the current page 1).
+      if (contentItemsQueryKey() !== queryKey) {
         return;
       }
       setAppendedContentPage((currentPage) => ({
-        key,
-        items: appendUniqueContentItems(pageItemsForKey(currentPage, key), nextContentItems),
+        key: queryKey,
+        items: appendUniqueContentItems(pageItemsForKey(currentPage, queryKey), nextContentItems),
         hasMore: nextContentItems.length === contentListLimit,
       }));
-      setContentOffset({ key, nextOffset: nextOffset + nextContentItems.length });
+      setContentOffset({ key: queryKey, nextOffset: nextOffset + nextContentItems.length });
     } catch (error) {
       setContentPageError(formatError(error));
     } finally {

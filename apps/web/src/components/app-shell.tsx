@@ -302,11 +302,13 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [refreshError, setRefreshError] = createSignal<string | null>(null);
   const [activeRefreshRunId, setActiveRefreshRunId] = createSignal<string | null>(null);
   const [refreshPollKey, setRefreshPollKey] = createSignal(0);
-  // High-water mark of ingested items seen during the current run. The content
-  // list refetches ONLY when this strictly increases — i.e. when the run
-  // actually created new content — never on every poll tick or every feed
-  // completion. Feeds that complete with zero new items trigger no refetch,
-  // so a force-refresh-all no longer pegs the CPU re-rendering on each poll.
+  // High-water mark of CREATED items seen during the current run. The content
+  // list refetches ONLY when itemsCreatedCount strictly increases — i.e. when
+  // the run actually persisted NEW content rows. itemsDiscoveredCount is the
+  // wrong counter: it tracks every remote item fetched, including duplicates,
+  // so feeds that return only already-known items would bump it and trigger a
+  // refetch on every 2.5s poll — re-rendering the whole list for the entire
+  // force-refresh-all run and pegging the CPU.
   const [refreshItemsSeen, setRefreshItemsSeen] = createSignal(0);
   // Snapshot of the last completed run so its full per-feed failure list stays
   // viewable after the run finishes — the status resource is nulled on
@@ -523,14 +525,14 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
       return;
     }
 
-    // Refetch the content list ONLY when the run has ingested new content since
-    // the last poll — i.e. itemsDiscoveredCount strictly increased. A feed that
-    // completes with zero new items must NOT trigger a refetch; otherwise a
-    // force-refresh-all re-renders the whole content list on every 2.5s poll for
-    // the entire run, pegging the CPU.
-    const discoveredItems = run.itemsDiscoveredCount;
-    if (discoveredItems > refreshItemsSeen()) {
-      setRefreshItemsSeen(discoveredItems);
+    // Refetch the content list ONLY when the run has CREATED new content since
+    // the last poll — i.e. itemsCreatedCount strictly increased. A feed that
+    // completes having only discovered already-known items must NOT trigger a
+    // refetch; otherwise a force-refresh-all re-renders the whole content list
+    // on every 2.5s poll for the entire run, pegging the CPU.
+    const createdItems = run.itemsCreatedCount;
+    if (createdItems > refreshItemsSeen()) {
+      setRefreshItemsSeen(createdItems);
       props.onContentListLiveReload();
     }
 

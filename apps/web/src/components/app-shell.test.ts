@@ -651,14 +651,17 @@ test("joinFeedResultsWithFeeds pairs results with their selected feed and drops 
 test("refresh heartbeat refetches the content list only when new items are ingested", async () => {
   const source = await readAppShellSource();
 
-  // The heartbeat tracks ingested items, not completed feeds. The content list
-  // refetches ONLY when itemsDiscoveredCount strictly increases, so feeds that
-  // complete with zero new items do not trigger a re-render — a force-refresh-all
-  // must not peg the CPU re-rendering on every 2.5s poll for the whole run.
-  expect(source).toContain("const discoveredItems = run.itemsDiscoveredCount;");
-  expect(source).toContain("if (discoveredItems > refreshItemsSeen()) {");
-  expect(source).toContain("setRefreshItemsSeen(discoveredItems);");
+  // The heartbeat tracks CREATED items, not completed feeds and not discovered
+  // items. The content list refetches ONLY when itemsCreatedCount strictly
+  // increases, so feeds that discover only already-known items do not trigger a
+  // re-render — a force-refresh-all must not peg the CPU re-rendering on every
+  // 2.5s poll for the whole run. itemsDiscoveredCount is wrong because it counts
+  // every remote item fetched, including duplicates.
+  expect(source).toContain("const createdItems = run.itemsCreatedCount;");
+  expect(source).toContain("if (createdItems > refreshItemsSeen()) {");
+  expect(source).toContain("setRefreshItemsSeen(createdItems);");
   expect(source).toContain("props.onContentListLiveReload();");
+  expect(source).not.toContain("run.itemsDiscoveredCount;");
   // The old per-feed-completion heartbeat is gone.
   expect(source).not.toContain("refreshCompletedFeedsSeen");
   // List-only reload signal, never the catalog key (which would nuke the viewer).
@@ -1275,7 +1278,7 @@ test("load-more controls page creators feeds and content without timers or obser
   expect(source).toContain("const nextCreators = await client.catalog.creators({ ...creatorListInput(), offset: nextOffset });");
   expect(source).toContain("const nextOffset = nextOffsetForKey(feedOffset(), key, (feedsValue() ?? emptyCatalogFeeds).length);");
   expect(source).toContain("const nextFeeds = await client.catalog.feeds({ ...input, offset: nextOffset });");
-  expect(source).toContain("const nextOffset = nextOffsetForKey(contentOffset(), key, (contentItemsValue() ?? emptyCatalogContentItems).length);");
+  expect(source).toContain("const nextOffset = nextOffsetForKey(contentOffset(), queryKey, (contentItemsValue() ?? emptyCatalogContentItems).length);");
   expect(source).toContain("const input = { ...contentListInput(), offset: nextOffset };");
   expect(source).toContain("setAppendedCatalogCreatorPage((currentPage) => ({");
   expect(source).toContain("setAppendedFeedPage((currentPage) => ({");
@@ -1285,7 +1288,12 @@ test("load-more controls page creators feeds and content without timers or obser
   expect(source).toContain("hasMore: nextContentItems.length === contentListLimit");
   expect(source).toContain("setCatalogCreatorOffset({ key, nextOffset: nextOffset + nextCreators.length });");
   expect(source).toContain("setFeedOffset({ key, nextOffset: nextOffset + nextFeeds.length });");
-  expect(source).toContain("setContentOffset({ key, nextOffset: nextOffset + nextContentItems.length });");
+  expect(source).toContain("setContentOffset({ key: queryKey, nextOffset: nextOffset + nextContentItems.length });");
+  // Content load-more keys its appended page and offset on QUERY identity
+  // (mode + filters), NOT the resource key — so a refresh live-reload tick
+  // (which changes the resource key) no longer wipes load-more pages.
+  expect(source).toContain("key: queryKey,");
+  expect(source).toContain("function toContentItemsQueryKey(mode: ContentItemsResourceMode, input: ContentListInput): string");
   expect(source).not.toContain("offset: loadedCreators.length");
   expect(source).not.toContain("offset: visibleFeeds().length");
   expect(source).not.toContain("offset: loadedContentItems().length");
