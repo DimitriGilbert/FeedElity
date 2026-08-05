@@ -1242,7 +1242,11 @@ test("resource reload dependencies use stable primitive source keys", async () =
   expect(source).toContain('return "content-statuses";');
   expect(source).toContain("const [statusReloadKey, setStatusReloadKey] = createSignal(0);");
   expect(source).toContain("statusReloadKey={statusReloadKey}");
-  expect(source).toContain("return `${contentItemId}\\u001f${props.favoritesReloadKey().toString()}`;");
+  // The viewer's favoriteItems source must NOT embed favoritesReloadKey: doing
+  // so re-suspends the viewer's resource and tears down the playing video on
+  // every favorite toggle. The viewer refetches in place instead.
+  expect(source).toContain("return contentItemId;");
+  expect(source).not.toContain("props.favoritesReloadKey().toString()");
   expect(source).not.toContain("statusReloadKey={() => 0}");
   expect(source).not.toContain("return { mode: \"catalog\", input: contentListInput(), reloadKey: props.catalogReloadKey() }");
   expect(source).not.toContain("return { mode: \"subscribed\", input: contentListInput(), reloadKey: props.catalogReloadKey() }");
@@ -1312,8 +1316,8 @@ test("app shell uses stable module-level empty arrays for fallback accessors", a
   expect(source).toContain("const emptyUserContentStatuses: readonly UserContentStatus[] = [];");
   expect(source).toContain("const emptyPlaylists: readonly Playlist[] = [];");
   expect(source).toContain("const emptyCatalogContentSources: readonly CatalogContentSource[] = [];");
-  expect(source).toContain("settings={() => settings() ?? emptyUserSettings}");
-  expect(source).toContain("contentStatuses={() => contentStatuses() ?? emptyUserContentStatuses}");
+  expect(source).toContain("settings={() => settings.latest ?? emptyUserSettings}");
+  expect(source).toContain("contentStatuses={() => contentStatuses.latest ?? emptyUserContentStatuses}");
   expect(source).toContain("playlists() ?? emptyPlaylists");
   expect(source).toContain("contentDetail.latest?.sources ?? emptyCatalogContentSources");
   expect(source).not.toContain("settings() ?? []");

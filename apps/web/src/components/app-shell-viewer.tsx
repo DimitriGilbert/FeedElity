@@ -39,7 +39,6 @@ export interface SelectedContentViewerProps {
   readonly isAuthenticated: () => boolean;
   readonly selectedContent: () => CatalogContentListItem | null;
   readonly selectedPlaylistId: () => string | null;
-  readonly favoritesReloadKey: () => number;
   readonly contentStatuses: () => readonly UserContentStatus[];
   readonly contentStatusesLoading: () => boolean;
   readonly statusSelectionError: () => string | null;
@@ -87,14 +86,18 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
       return null;
     }
 
-    return `${contentItemId}\u001f${props.favoritesReloadKey().toString()}`;
+    return contentItemId;
   });
   const [favoriteItems, { refetch: refetchFavoriteItems }] = createResource(selectedFavoriteSource, () =>
     client.overlays.favoriteContentItems(),
   );
+  // Read favoriteItems via .latest so a refetch never re-suspends up to the
+  // viewer's <Suspense> and tears down the playing video. The viewer refetches
+  // in place after a toggle (refetchFavoriteItems) instead of re-keying.
+  const favoriteItemsValue = createMemo(() => favoriteItems.latest);
   const selectedContentIsFavorite = createMemo(() => {
     const contentItemId = selectedContentItemId();
-    return contentItemId !== null && (favoriteItems() ?? emptyCatalogContentItems).some((contentItem) => contentItem.id === contentItemId);
+    return contentItemId !== null && (favoriteItemsValue() ?? emptyCatalogContentItems).some((contentItem) => contentItem.id === contentItemId);
   });
   const [favoriteActionError, setFavoriteActionError] = createSignal<string | null>(null);
   const [favoriteActionBusy, setFavoriteActionBusy] = createSignal(false);
