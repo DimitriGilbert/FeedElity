@@ -343,6 +343,7 @@ const schemaStatements = [
     image_url TEXT,
     canonical_url TEXT,
     metadata_json TEXT,
+    last_content_published_at INTEGER,
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
   )`,

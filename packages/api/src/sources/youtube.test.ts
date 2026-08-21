@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { youtubeAdapter } from "./youtube";
-import type { DetectedSourceInput, ResolvedSourceInput } from "./types";
+import type { CreatorMetadata, DetectedSourceInput, FetchCreatorMetadataInput, ResolvedSourceInput, SourceAdapterResult } from "./types";
 
 const youtubeRssFixture = `<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/" xmlns="http://www.w3.org/2005/Atom">
@@ -210,3 +210,137 @@ function isYouTubeDetection(value: DetectedSourceInput): value is DetectedSource
 function isYouTubeResolution(value: ResolvedSourceInput): value is ResolvedSourceInput & { readonly sourceType: "youtube" } {
   return value.sourceType === "youtube";
 }
+
+interface FetchStub {
+  readonly requestedUrls: readonly string[];
+  restore(): void;
+}
+
+function installFetchStub(handler: (url: string) => Response | Promise<Response>): FetchStub {
+  const originalFetch = globalThis.fetch;
+  const requestedUrls: string[] = [];
+  const stub = Object.assign(
+    (input: Parameters<typeof globalThis.fetch>[0]): Promise<Response> => {
+      const url = input instanceof URL ? input.toString() : String(input);
+      requestedUrls.push(url);
+      return Promise.resolve(handler(url));
+    },
+    { preconnect: originalFetch.preconnect },
+  );
+  globalThis.fetch = stub;
+  return {
+    requestedUrls,
+    restore() {
+      globalThis.fetch = originalFetch;
+    },
+  };
+}
+
+function callFetchCreatorMetadata(
+  input: FetchCreatorMetadataInput & { readonly sourceType: "youtube" },
+): Promise<SourceAdapterResult<CreatorMetadata>> {
+  if (youtubeAdapter.fetchCreatorMetadata === undefined) {
+    throw new Error("Youtube adapter does not implement fetchCreatorMetadata.");
+  }
+  return youtubeAdapter.fetchCreatorMetadata(input);
+}
+
+describe("YouTube source adapter creator metadata", () => {
+  test("fetches the channel page and extracts Open Graph metadata with a square avatar", async () => {
+    const channelHtml = `<!doctype html>
+<html>
+<head>
+<meta property="og:image" content="https://yt3.googleusercontent.com/ytc/AAA(fixture)=s46-c-k-c0x00ffffff-no-rj">
+<meta property="og:title" content="Fixture &amp; Channel">
+<meta property="og:description" content="Fixture channel description.">
+</head>
+<body></body>
+</html>`;
+    const stub = installFetchStub(() => new Response(channelHtml, { status: 200 }));
+    try {
+      const result = await callFetchCreatorMetadata({
+        sourceType: "youtube",
+        sourceExternalId: "UC1234567890abcdef",
+        feedUrl: "https://www.youtube.com/feeds/videos.xml?channel_id=UC1234567890abcdef",
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      expect(stub.requestedUrls).toEqual(["https://www.youtube.com/channel/UC1234567890abcdef"]);
+      expect(result.value).toEqual({
+        displayName: "Fixture & Channel",
+        imageUrl: "https://yt3.googleusercontent.com/ytc/AAA(fixture)=s176-c-k-c0x00ffffff-no-rj",
+        description: "Fixture channel description.",
+        canonicalUrl: "https://www.youtube.com/channel/UC1234567890abcdef",
+      });
+    } finally {
+      stub.restore();
+    }
+  });
+
+  test("derives the user page URL for legacy user feeds", async () => {
+    const stub = installFetchStub(() => new Response("<html><head></head><body></body></html>", { status: 200 }));
+    try {
+      const result = await callFetchCreatorMetadata({
+        sourceType: "youtube",
+        sourceExternalId: "legacy-user-feed",
+        feedUrl: "https://www.youtube.com/feeds/videos.xml?user=fixtureuser",
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      expect(stub.requestedUrls).toEqual(["https://www.youtube.com/user/fixtureuser"]);
+      expect(result.value).toEqual({ canonicalUrl: "https://www.youtube.com/user/fixtureuser" });
+    } finally {
+      stub.restore();
+    }
+  });
+
+  test("returns unset fields on a failed channel page fetch", async () => {
+    const stub = installFetchStub(() => new Response("Not Found", { status: 404 }));
+    try {
+      const result = await callFetchCreatorMetadata({
+        sourceType: "youtube",
+        sourceExternalId: "UC1234567890abcdef",
+        feedUrl: "https://www.youtube.com/feeds/videos.xml?channel_id=UC1234567890abcdef",
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      expect(result.value).toEqual({
+        canonicalUrl: "https://www.youtube.com/channel/UC1234567890abcdef",
+      });
+    } finally {
+      stub.restore();
+    }
+  });
+
+  test("returns unset fields when the fetch throws", async () => {
+    const stub = installFetchStub(() => {
+      throw new Error("network down");
+    });
+    try {
+      const result = await callFetchCreatorMetadata({
+        sourceType: "youtube",
+        sourceExternalId: "UC1234567890abcdef",
+        feedUrl: "https://www.youtube.com/feeds/videos.xml?channel_id=UC1234567890abcdef",
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      expect(result.value).toEqual({
+        canonicalUrl: "https://www.youtube.com/channel/UC1234567890abcdef",
+      });
+    } finally {
+      stub.restore();
+    }
+  });
+});

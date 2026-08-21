@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createClient } from "@libsql/client";
 import type { Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
+import { eq } from "drizzle-orm";
 
 import * as schema from "@FeedElity/db/schema";
 
@@ -212,6 +213,47 @@ describe("source ingestion service", () => {
     expect(result.value.contentItems).toHaveLength(8);
     expect(result.value.feedContents).toHaveLength(8);
     expect(feedContentRows).toHaveLength(8);
+  });
+
+  test("ingestion maintains creator last content published at as a never-regressing max", async () => {
+    const registry = createSourceAdapterRegistry([createFixtureAdapter(), createOdyseeFixtureAdapter()]);
+    const dependencies = { db: testDatabase.db, sourceRegistry: registry };
+
+    const youtube = await addSource(dependencies, { sourceInput: "https://ingest.example.test/creator-one" });
+    expect(youtube.ok).toBe(true);
+    if (!youtube.ok) {
+      throw new Error(youtube.error.message);
+    }
+    // creator-one items: one published 2026-01-01, one with NULL published_at.
+    expect(await readCreatorLastPublishedAt(testDatabase.db, youtube.value.creator.id)).toBe(
+      Date.parse("2026-01-01T00:00:00.000Z"),
+    );
+
+    // The mirrored Odysee feed publishes a newer item (2026-01-02).
+    const odysee = await addSource(dependencies, { sourceInput: "https://odysee.ingest.example.test/@CreatorOne" });
+    expect(odysee.ok).toBe(true);
+    if (!odysee.ok) {
+      throw new Error(odysee.error.message);
+    }
+    expect(odysee.value.creator.id).toBe(youtube.value.creator.id);
+    expect(await readCreatorLastPublishedAt(testDatabase.db, youtube.value.creator.id)).toBe(
+      Date.parse("2026-01-02T00:00:00.000Z"),
+    );
+
+    // Re-ingesting the older YouTube payload must not regress the value.
+    const again = await addSource(dependencies, { sourceInput: "https://ingest.example.test/creator-one" });
+    expect(again.ok).toBe(true);
+    expect(await readCreatorLastPublishedAt(testDatabase.db, youtube.value.creator.id)).toBe(
+      Date.parse("2026-01-02T00:00:00.000Z"),
+    );
+
+    // A creator whose only item has NULL published_at stays NULL.
+    const creatorTwo = await addSource(dependencies, { sourceInput: "https://ingest.example.test/creator-two" });
+    expect(creatorTwo.ok).toBe(true);
+    if (!creatorTwo.ok) {
+      throw new Error(creatorTwo.error.message);
+    }
+    expect(await readCreatorLastPublishedAt(testDatabase.db, creatorTwo.value.creator.id)).toBeNull();
   });
 });
 
@@ -501,6 +543,11 @@ function unsupported(input: string): SourceDetectionFailure {
   };
 }
 
+async function readCreatorLastPublishedAt(db: RepositoryDb, creatorId: string): Promise<number | null> {
+  const row = await db.query.creator.findFirst({ where: eq(schema.creator.id, creatorId) });
+  return row === undefined || row.lastContentPublishedAt === null ? null : row.lastContentPublishedAt.getTime();
+}
+
 async function insertUser(db: RepositoryDb, id: string, email: string): Promise<void> {
   await db.insert(schema.user).values({
     id,
@@ -541,6 +588,7 @@ const schemaStatements = [
     image_url TEXT,
     canonical_url TEXT,
     metadata_json TEXT,
+    last_content_published_at INTEGER,
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
   )`,

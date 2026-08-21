@@ -20,6 +20,9 @@ import {
   contentViewModePlayedId,
   contentViewModeSubscribedId,
   creatorListLimit,
+  creatorListSortInputId,
+  creatorListSortSettingKey,
+  creatorListSortValues,
   creatorSearchInputId,
   creatorSourceFilterId,
   defaultLeftFraction,
@@ -70,6 +73,7 @@ import {
   toDesktopColumnTemplate,
   toFeedListInput,
   toPlayableSources,
+  toCreatorListSortFromSettings,
   toReaderDensityFromSettings,
   toSafePlaybackUrl,
   toShellContentSelectionState,
@@ -248,16 +252,18 @@ test("creator search builds bounded public catalog input", () => {
   expect(creatorSearchInputId).toBe("creator-source-search");
   expect(creatorSourceFilterId).toBe("creator-source-type-filter");
   expect(firstPageOffset).toBe(0);
-  expect(toCreatorListInput("   ")).toEqual({ limit: creatorListLimit, offset: firstPageOffset });
-  expect(toCreatorListInput("   ", "youtube")).toEqual({ sourceType: "youtube", limit: creatorListLimit, offset: firstPageOffset });
-  expect(toCreatorListInput("  alpha creator  ")).toEqual({ search: "alpha creator", limit: creatorListLimit, offset: firstPageOffset });
+  expect(toCreatorListInput("   ")).toEqual({ sort: "name", limit: creatorListLimit, offset: firstPageOffset });
+  expect(toCreatorListInput("   ", "youtube")).toEqual({ sort: "name", sourceType: "youtube", limit: creatorListLimit, offset: firstPageOffset });
+  expect(toCreatorListInput("  alpha creator  ")).toEqual({ search: "alpha creator", sort: "name", limit: creatorListLimit, offset: firstPageOffset });
   expect(toCreatorListInput("  alpha creator  ", "peertube")).toEqual({
     search: "alpha creator",
     sourceType: "peertube",
+    sort: "name",
     limit: creatorListLimit,
     offset: firstPageOffset,
   });
-  expect(toCreatorListInput("next", null, 50)).toEqual({ search: "next", limit: creatorListLimit, offset: 50 });
+  expect(toCreatorListInput("next", null, "name", 50)).toEqual({ search: "next", sort: "name", limit: creatorListLimit, offset: 50 });
+  expect(toCreatorListInput("next", null, "lastUpdate")).toEqual({ search: "next", sort: "lastUpdate", limit: creatorListLimit, offset: firstPageOffset });
 });
 
 test("selected creator feed list builds bounded paginated input", () => {
@@ -335,7 +341,7 @@ test("creator source-type filter scopes the creator list without changing playba
   const source = await readAppShellSource();
 
   expect(source).toContain("const [sourceType, setSourceType] = createSignal<SourceType | null>(null)");
-  expect(source).toContain("() => toCreatorListInput(search(), sourceType())");
+  expect(source).toContain("() => toCreatorListInput(search(), sourceType(), props.creatorSort())");
   expect(source).toContain(`id={creatorSourceFilterId}`);
   expect(source).toContain(`aria-label="Creator source-type filter"`);
   expect(source).toContain(`title="Filters creator rows by catalog source type. Select a creator to inspect all feeds."`);
@@ -1737,4 +1743,67 @@ test("viewer source switcher uses button group with SourceTypeIcon instead of se
   expect(source).toContain("role=\"group\"");
   expect(source).toContain("aria-pressed={isActive()}");
   expect(source).toContain("aria-label={source.label}");
+});
+
+test("creator list sort select persists a typed setting and refetches the list", async () => {
+  const source = await readAppShellSource();
+  const lastUpdateSetting: UserSetting = {
+    id: "setting-2",
+    userId: "user-1",
+    key: creatorListSortSettingKey,
+    valueJson: JSON.stringify("lastUpdate"),
+  };
+
+  expect(creatorListSortInputId).toBe("creator-list-sort");
+  expect(creatorListSortSettingKey).toBe("creator.list.sort");
+  expect(creatorListSortValues).toEqual(["name", "lastUpdate"]);
+  expect(toCreatorListSortFromSettings([])).toBe("name");
+  expect(toCreatorListSortFromSettings([lastUpdateSetting])).toBe("lastUpdate");
+  // Invalid stored values fall back to "name" safely.
+  expect(toCreatorListSortFromSettings([{ ...lastUpdateSetting, valueJson: JSON.stringify("bogus") }])).toBe("name");
+  expect(toCreatorListSortFromSettings([{ ...lastUpdateSetting, valueJson: "not json" }])).toBe("name");
+  // The select sits beside the search box with exactly the two approved orders.
+  expect(source).toContain("id={creatorListSortInputId}");
+  expect(source).toContain("aria-label=\"Creator list sort order\"");
+  expect(source).toContain('<option value="name">By name</option>');
+  expect(source).toContain('<option value="lastUpdate">By last video update</option>');
+  // Anonymous browsing stays usable: the persisted control is gated on auth.
+  expect(source).toContain("disabled={!props.isAuthenticated()}");
+  // Changes flow through the typed settings overlay, then back into the list input.
+  expect(source).toContain("const saveCreatorSortSetting = async (sort: CreatorListSort) => {");
+  expect(source).toContain("await client.overlays.saveSetting({ key: creatorListSortSettingKey, value: sort });");
+  expect(source).toContain("const creatorSort = createMemo(() => toCreatorListSortFromSettings(settings() ?? emptyUserSettings));");
+  expect(source).toContain("creatorSort={creatorSort}");
+  // Sort participates in the resource key so changing it refetches the list.
+  expect(source).toContain("input.sort,");
+  // Sort persistence failures surface explicitly instead of being swallowed.
+  expect(source).toContain("setCreatorSortError(formatError(error));");
+});
+
+test("settings expose a guarded force-refresh creator metadata action with real polling", async () => {
+  const source = await readAppShellSource();
+
+  expect(source).toContain("data-creator-metadata-refresh");
+  expect(source).toContain("Force refresh creator metadata");
+  expect(source).toContain("await client.creatorMetadata.start();");
+  expect(source).toContain("await client.creatorMetadata.status();");
+  // Mirrors the header-refresh polling pattern: setTimeout (~2.5s), no setInterval.
+  expect(source).toContain("metadataPollTimer = setTimeout(() => {");
+  // A concurrent run (started:false with a running status) switches straight into polling.
+  expect(source).toContain("if (started.status.status === \"running\") {");
+  // The button is disabled while a run is in progress.
+  expect(source).toContain("disabled={metadataRefreshBusy()}");
+  // Progress/result counts come from the status shape.
+  expect(source).toContain("run.feedsProcessed}/${run.feedsTotal} feeds processed");
+  expect(source).toContain("run.creatorsUpdatedCount} creators updated, ${run.creatorsUnchangedCount} unchanged, ${run.feedsFailedCount} feeds failed");
+  // Errors surface explicitly.
+  expect(source).toContain("setMetadataRefreshError(formatError(error));");
+});
+
+test("creator rows render an initials fallback avatar when no icon exists", async () => {
+  const source = await readAppShellSource();
+
+  expect(source).toContain("function creatorInitials(displayName: string): string");
+  expect(source).toContain("data-creator-avatar-fallback");
+  expect(source).toContain("flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-muted");
 });

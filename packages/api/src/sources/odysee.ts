@@ -1,7 +1,9 @@
 import type { SourceType } from "../domain/catalog";
 import { parseHttpUrl } from "./registry";
 import type {
+  CreatorMetadata,
   DetectedSourceInput,
+  FetchCreatorMetadataInput,
   NormalizedCatalogContentItem,
   NormalizedCatalogPayload,
   NormalizedContentSourceInput,
@@ -50,6 +52,10 @@ export const odyseeAdapter: SourceAdapter<"odysee"> = {
     } catch (error: unknown) {
       return failure("remote-fetch-failed", `Odysee feed fetch failed for ${input.canonicalUrl}: ${errorMessage(error)}.`, input.canonicalUrl, error);
     }
+  },
+
+  async fetchCreatorMetadata(input) {
+    return fetchOdyseeCreatorMetadata(input);
   },
 };
 
@@ -114,6 +120,65 @@ function resolveOdyseeInput(
     "This Odysee URL cannot be resolved to a stable claim ID without a network lookup.",
     input.originalInput,
   );
+}
+
+async function fetchOdyseeCreatorMetadata(
+  input: FetchCreatorMetadataInput & { readonly sourceType: "odysee" },
+): Promise<SourceAdapterResult<CreatorMetadata>> {
+  // Re-fetch the channel RSS and reuse the same image/description extraction as
+  // catalog normalization. Any fetch/parse failure degrades to a result with
+  // unset fields so a metadata refresh loop is never broken by it.
+  const feedUrl = isNonEmptyText(input.feedUrl) ? input.feedUrl : canonicalRssFeedUrl(input.sourceExternalId);
+  try {
+    const response: unknown = await fetch(feedUrl);
+    if (!isFetchTextResponse(response) || !response.ok) {
+      return { ok: true, value: {} };
+    }
+    const payload = await response.text();
+    return odyseeCreatorMetadataFromRss(feedUrl, payload, input.sourceExternalId);
+  } catch {
+    return { ok: true, value: {} };
+  }
+}
+
+function odyseeCreatorMetadataFromRss(
+  feedUrl: string,
+  payload: string,
+  fallbackClaim: string,
+): SourceAdapterResult<CreatorMetadata> {
+  const parsed = parseXmlPayload(payload);
+  if (!parsed.ok) {
+    return { ok: true, value: {} };
+  }
+  const channel = xmlChild(parsed.document.rss, "channel");
+  if (channel === null) {
+    return { ok: true, value: {} };
+  }
+
+  const feedTitle = xmlText(channel, "title");
+  const ownerBlock = xmlChild(channel, "itunes:owner");
+  const ownerName = xmlText(ownerBlock ?? undefined, "itunes:name");
+  const imageBlock = xmlChild(channel, "image");
+  const imageUrl = xmlText(imageBlock ?? undefined, "url") ?? xmlAttribute(channel, "itunes:image", "href");
+  const channelClaim = odyseeRssChannelClaimFromFeedUrl(feedUrl) ?? (isNonEmptyText(fallbackClaim) ? fallbackClaim : null);
+
+  return {
+    ok: true,
+    value: {
+      displayName: ownerName ?? feedTitle ?? undefined,
+      imageUrl: imageUrl ?? undefined,
+      description: xmlText(channel, "description") ?? undefined,
+      canonicalUrl: channelClaim !== null ? canonicalCreatorUrl(channelClaim) : undefined,
+    },
+  };
+}
+
+function odyseeRssChannelClaimFromFeedUrl(feedUrl: string): string | null {
+  try {
+    return odyseeRssChannelClaim(new URL(feedUrl));
+  } catch {
+    return null;
+  }
 }
 
 function normalizeOdyseeRssPayload(

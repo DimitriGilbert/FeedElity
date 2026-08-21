@@ -9,6 +9,7 @@ import {
   createRefreshRun,
   findOrCreateContentItem,
   findOrCreateContentSource,
+  findCreatorByNameKey,
   findOrCreateCreator,
   findOrCreateFeed,
   linkFeedContent,
@@ -19,6 +20,7 @@ import {
   listRefreshRuns,
   recordRefreshFeedResult,
   type RepositoryDb,
+  updateCreatorMetadata,
 } from "./catalog";
 import {
   addPlaylistItem,
@@ -98,6 +100,40 @@ describe("catalog and overlay repositories", () => {
     });
     expect(contentSource.contentItemId).toBe(contentItem.id);
     expect(feedContent.feedId).toBe(feed.id);
+  });
+
+  test("updateCreatorMetadata overwrites only supplied fields and never wipes stored values", async () => {
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Metadata Creator",
+      description: "Stored description",
+      imageUrl: "https://icons.example.test/stored.png",
+      canonicalUrl: "https://canonical.example.test/stored",
+    });
+
+    const unchanged = await updateCreatorMetadata(testDatabase.db, {
+      creatorId: creator.id,
+      imageUrl: "https://icons.example.test/stored.png",
+      description: null,
+      canonicalUrl: undefined,
+    });
+    expect(unchanged.changed).toBe(false);
+    expect(unchanged.creator.description).toBe("Stored description");
+    expect(unchanged.creator.imageUrl).toBe("https://icons.example.test/stored.png");
+    expect(unchanged.creator.canonicalUrl).toBe("https://canonical.example.test/stored");
+
+    const updated = await updateCreatorMetadata(testDatabase.db, {
+      creatorId: creator.id,
+      imageUrl: "https://icons.example.test/fresh.png",
+      canonicalUrl: "https://canonical.example.test/fresh",
+    });
+    expect(updated.changed).toBe(true);
+    expect(updated.creator.imageUrl).toBe("https://icons.example.test/fresh.png");
+    expect(updated.creator.canonicalUrl).toBe("https://canonical.example.test/fresh");
+    expect(updated.creator.description).toBe("Stored description");
+    expect(updated.creator.displayName).toBe("Metadata Creator");
+
+    const byStoredNameKey = await findCreatorByNameKey(testDatabase.db, "metadatacreator");
+    expect(byStoredNameKey?.id).toBe(creator.id);
   });
 
   test("user overlays are created and read only for the requested userId", async () => {
@@ -605,6 +641,7 @@ const schemaStatements = [
     image_url TEXT,
     canonical_url TEXT,
     metadata_json TEXT,
+    last_content_published_at INTEGER,
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
   )`,

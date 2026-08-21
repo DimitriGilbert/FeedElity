@@ -25,6 +25,7 @@ export const creator = sqliteTable(
     imageUrl: text("image_url"),
     canonicalUrl: text("canonical_url"),
     metadataJson: text("metadata_json"),
+    lastContentPublishedAt: integer("last_content_published_at", { mode: "timestamp_ms" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).default(currentTimestampMs).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" })
       .default(currentTimestampMs)
@@ -34,6 +35,7 @@ export const creator = sqliteTable(
   (table) => [
     uniqueIndex("creator_name_key_uidx").on(table.nameKey),
     index("creator_display_name_idx").on(table.displayName),
+    index("creator_last_content_published_at_idx").on(table.lastContentPublishedAt),
   ],
 );
 

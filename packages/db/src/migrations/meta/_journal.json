@@ -15,6 +15,13 @@
       "when": 1785458233148,
       "tag": "0001_gifted_pixie",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787325127358,
+      "tag": "0002_creator_last_published",
+      "breakpoints": true
     }
   ]
 }

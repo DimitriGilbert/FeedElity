@@ -6,6 +6,7 @@ import type {
   FeedContentLink,
 } from "../domain/catalog";
 import {
+  advanceCreatorLastContentPublishedAt,
   findContentItemBySourceIdentity,
   findContentSourceByCanonicalUrl,
   findCreatorByNameKey,
@@ -232,6 +233,11 @@ export async function persistNormalizedCatalog(
 
   const subscription = userId === undefined ? null : await findOrCreateSubscription(db, { userId, creatorId: creator.id });
 
+  const latestPublishedAt = maxPublishedAt(contentItems);
+  if (latestPublishedAt !== null) {
+    await advanceCreatorLastContentPublishedAt(db, { creatorId: creator.id, publishedAt: latestPublishedAt });
+  }
+
   return {
     creator,
     feeds,
@@ -246,6 +252,19 @@ export async function persistNormalizedCatalog(
       contentSources: createdContentSources,
     },
   };
+}
+
+function maxPublishedAt(items: readonly CatalogContentItem[]): Date | null {
+  let latest: Date | null = null;
+  for (const item of items) {
+    if (item.publishedAt === null || item.publishedAt === undefined) {
+      continue;
+    }
+    if (latest === null || item.publishedAt.getTime() > latest.getTime()) {
+      latest = item.publishedAt;
+    }
+  }
+  return latest;
 }
 
 function fromAdapterError(input: string, error: SourceAdapterError): IngestionError {

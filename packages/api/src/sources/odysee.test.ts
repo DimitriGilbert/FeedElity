@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { odyseeAdapter } from "./odysee";
-import type { DetectedSourceInput, ResolvedSourceInput } from "./types";
+import type { CreatorMetadata, DetectedSourceInput, FetchCreatorMetadataInput, ResolvedSourceInput, SourceAdapterResult } from "./types";
 
 const odyseeRssFixture = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:content="http://purl.org/rss/1.0/modules/content/">
@@ -226,3 +226,123 @@ function isOdyseeDetection(value: DetectedSourceInput): value is DetectedSourceI
 function isOdyseeResolution(value: ResolvedSourceInput): value is ResolvedSourceInput & { readonly sourceType: "odysee" } {
   return value.sourceType === "odysee";
 }
+
+interface FetchStub {
+  readonly requestedUrls: readonly string[];
+  restore(): void;
+}
+
+function installFetchStub(handler: (url: string) => Response | Promise<Response>): FetchStub {
+  const originalFetch = globalThis.fetch;
+  const requestedUrls: string[] = [];
+  const stub = Object.assign(
+    (input: Parameters<typeof globalThis.fetch>[0]): Promise<Response> => {
+      const url = input instanceof URL ? input.toString() : String(input);
+      requestedUrls.push(url);
+      return Promise.resolve(handler(url));
+    },
+    { preconnect: originalFetch.preconnect },
+  );
+  globalThis.fetch = stub;
+  return {
+    requestedUrls,
+    restore() {
+      globalThis.fetch = originalFetch;
+    },
+  };
+}
+
+function callFetchCreatorMetadata(
+  input: FetchCreatorMetadataInput & { readonly sourceType: "odysee" },
+): Promise<SourceAdapterResult<CreatorMetadata>> {
+  if (odyseeAdapter.fetchCreatorMetadata === undefined) {
+    throw new Error("Odysee adapter does not implement fetchCreatorMetadata.");
+  }
+  return odyseeAdapter.fetchCreatorMetadata(input);
+}
+
+describe("Odysee source adapter creator metadata", () => {
+  const odyseeMetadataFixture = `<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" version="2.0">
+  <channel>
+    <title>Fixture Odysee Channel</title>
+    <description>Fixture Odysee channel description.</description>
+    <link>https://odysee.com/@fixture:5</link>
+    <image>
+      <url>https://broker.example.test/avatar/fixture.png</url>
+    </image>
+    <itunes:owner>
+      <itunes:name>Fixture Odysee Owner</itunes:name>
+    </itunes:owner>
+    <item>
+      <guid>lbry://@fixture:5/fixture-video:7</guid>
+      <title>Fixture Video</title>
+    </item>
+  </channel>
+</rss>`;
+
+  test("re-fetches the feed and extracts channel image, owner name, and description", async () => {
+    const stub = installFetchStub(() => new Response(odyseeMetadataFixture, { status: 200 }));
+    try {
+      const result = await callFetchCreatorMetadata({
+        sourceType: "odysee",
+        sourceExternalId: "@fixture",
+        feedUrl: "https://odysee.com/$/rss/@fixture:5",
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      expect(stub.requestedUrls).toEqual(["https://odysee.com/$/rss/@fixture:5"]);
+      expect(result.value).toEqual({
+        displayName: "Fixture Odysee Owner",
+        imageUrl: "https://broker.example.test/avatar/fixture.png",
+        description: "Fixture Odysee channel description.",
+        canonicalUrl: "https://odysee.com/@fixture:5",
+      });
+    } finally {
+      stub.restore();
+    }
+  });
+
+  test("returns unset fields on a failed feed fetch", async () => {
+    const stub = installFetchStub(() => {
+      throw new Error("network down");
+    });
+    try {
+      const result = await callFetchCreatorMetadata({
+        sourceType: "odysee",
+        sourceExternalId: "@fixture",
+        feedUrl: "https://odysee.com/$/rss/@fixture:5",
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      expect(result.value).toEqual({});
+    } finally {
+      stub.restore();
+    }
+  });
+
+  test("returns unset fields when the payload is not valid RSS", async () => {
+    const stub = installFetchStub(() => new Response("not xml", { status: 200 }));
+    try {
+      const result = await callFetchCreatorMetadata({
+        sourceType: "odysee",
+        sourceExternalId: "@fixture",
+        feedUrl: "https://odysee.com/$/rss/@fixture:5",
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      expect(result.value).toEqual({});
+    } finally {
+      stub.restore();
+    }
+  });
+});

@@ -30,6 +30,9 @@ import {
 } from "./app-shell-source-sections";
 import {
   creatorListLimit,
+  creatorListSortInputId,
+  creatorListSortSettingKey,
+  creatorListSortValues,
   creatorSearchInputId,
   creatorSourceFilterId,
   defaultLeftFraction,
@@ -59,10 +62,12 @@ import {
   toDesktopColumnTemplate,
   toFeedListInput,
   toCreatorListInput,
+  toCreatorListSortFromSettings,
   toReaderDensityFromSettings,
   type AppendedPageState,
   type BrowsableCreator,
   type CreatorListInput,
+  type CreatorListSort,
   type FeedListInput,
   type LeftPaneTab,
   type MiddlePanePanel,
@@ -91,6 +96,9 @@ export {
   contentViewModePlayedId,
   contentViewModeSubscribedId,
   creatorListLimit,
+  creatorListSortInputId,
+  creatorListSortSettingKey,
+  creatorListSortValues,
   creatorSearchInputId,
   creatorSourceFilterId,
   desktopShellGridClass,
@@ -124,6 +132,7 @@ export {
   toContentListInput,
   toFeedListInput,
   toCreatorListInput,
+  toCreatorListSortFromSettings,
   toReaderDensityFromSettings,
   toRefreshStatusResourceKey,
   toPlayableSources,
@@ -133,6 +142,7 @@ export {
   viewerColumnClass,
   viewerScrollRegionClass,
   type ContentViewMode,
+  type CreatorListSort,
   type LeftPaneTab,
   type MiddlePanePanel,
   type PlayableSource,
@@ -169,6 +179,7 @@ function toCreatorListResourceKey(input: CreatorListInput, reloadKey: number): s
     reloadKey.toString(),
     input.search ?? "",
     input.sourceType ?? "",
+    input.sort,
     input.limit.toString(),
     input.offset.toString(),
   ].join("\u001f");
@@ -214,6 +225,8 @@ interface CreatorSourceColumnProps {
   readonly activeTab: () => LeftPaneTab;
   readonly setActiveTab: (tab: LeftPaneTab) => void;
   readonly readerDensity: () => ReaderDensity;
+  readonly creatorSort: () => CreatorListSort;
+  readonly onCreatorSortChange: (sort: CreatorListSort) => Promise<void>;
   readonly selectedCreatorId: () => string | null;
   readonly selectedCreator: () => BrowsableCreator | null;
   readonly selectedFeed: () => CatalogFeed | null;
@@ -300,6 +313,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [refreshBusy, setRefreshBusy] = createSignal<"normal" | "force" | null>(null);
   const [scopedRefreshBusy, setScopedRefreshBusy] = createSignal<string | null>(null);
   const [refreshError, setRefreshError] = createSignal<string | null>(null);
+  const [creatorSortError, setCreatorSortError] = createSignal<string | null>(null);
   const [activeRefreshRunId, setActiveRefreshRunId] = createSignal<string | null>(null);
   const [refreshPollKey, setRefreshPollKey] = createSignal(0);
   // High-water mark of CREATED items seen during the current run. The content
@@ -319,7 +333,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     readonly results: readonly RefreshFeedResultWithFeed[];
   } | null>(null);
   const [libraryCreatorLimit, setLibraryCreatorLimit] = createSignal(creatorListLimit);
-  const creatorListInput = createMemo(() => toCreatorListInput(search(), sourceType()));
+  const creatorListInput = createMemo(() => toCreatorListInput(search(), sourceType(), props.creatorSort()));
   const creatorListResourceKey = createMemo(() => toCreatorListResourceKey(creatorListInput(), props.catalogReloadKey()));
   const [creators] = createResource(
     creatorListResourceKey,
@@ -472,6 +486,18 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
       setFeedPageError(formatError(error));
     } finally {
       setFeedPageBusy(false);
+    }
+  };
+
+  // Sort changes persist through the authenticated settings overlay; the list
+  // refetches when the refreshed setting flows back through props.creatorSort().
+  const changeCreatorSort = async (nextSort: CreatorListSort) => {
+    setCreatorSortError(null);
+    setLibraryCreatorLimit(creatorListLimit);
+    try {
+      await props.onCreatorSortChange(nextSort);
+    } catch (error) {
+      setCreatorSortError(formatError(error));
     }
   };
 
@@ -755,6 +781,26 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
               setLibraryCreatorLimit(creatorListLimit);
             }}
           />
+          <label class="sr-only" for={creatorListSortInputId}>
+            Sort creators
+          </label>
+          <select
+            id={creatorListSortInputId}
+            class="shrink-0 rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+            value={props.creatorSort()}
+            aria-label="Creator list sort order"
+            title="Sorts the creator list by name or by the most recent video update."
+            disabled={!props.isAuthenticated()}
+            onChange={(event) => {
+              const nextSort = creatorListSortValues.find((value) => value === event.currentTarget.value);
+              if (nextSort !== undefined) {
+                void changeCreatorSort(nextSort);
+              }
+            }}
+          >
+            <option value="name">By name</option>
+            <option value="lastUpdate">By last video update</option>
+          </select>
           <label class="sr-only" for={creatorSourceFilterId}>
             Filter creators by source type
           </label>
@@ -775,6 +821,9 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
             </For>
           </select>
         </div>
+        <Show when={creatorSortError()}>
+          {(message) => <p class="mt-1 text-xs text-destructive" data-creator-sort-error>{message()}</p>}
+        </Show>
       </div>
       <div class={sourceCatalogRegionClass} data-source-catalog-region>
         <Show when={props.activeTab() === "library"}>
@@ -990,6 +1039,12 @@ export default function AppShell(props: AppShellProps) {
   });
   const [settings, { refetch: refetchSettings }] = createResource(settingsResourceInput, () => client.overlays.settings());
   const readerDensity = createMemo(() => toReaderDensityFromSettings(settings() ?? emptyUserSettings));
+  const creatorSort = createMemo(() => toCreatorListSortFromSettings(settings() ?? emptyUserSettings));
+
+  const saveCreatorSortSetting = async (sort: CreatorListSort) => {
+    await client.overlays.saveSetting({ key: creatorListSortSettingKey, value: sort });
+    await refetchSettings();
+  };
   const contentStatusesResourceInput = createMemo(() => {
     if (!isAuthenticated()) {
       return null;
@@ -1184,6 +1239,8 @@ export default function AppShell(props: AppShellProps) {
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           readerDensity={readerDensity}
+          creatorSort={creatorSort}
+          onCreatorSortChange={saveCreatorSortSetting}
           selectedCreatorId={selectedCreatorId}
           selectedCreator={selectedCreator}
           selectedFeed={selectedFeed}

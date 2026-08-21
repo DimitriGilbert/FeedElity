@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { peertubeAdapter } from "./peertube";
-import type { DetectedSourceInput, ResolvedSourceInput } from "./types";
+import type { CreatorMetadata, DetectedSourceInput, FetchCreatorMetadataInput, ResolvedSourceInput, SourceAdapterResult } from "./types";
 
 const peertubeListFixture = {
   total: 1,
@@ -323,3 +323,111 @@ function isPeerTubeDetection(value: DetectedSourceInput): value is DetectedSourc
 function isPeerTubeResolution(value: ResolvedSourceInput): value is ResolvedSourceInput & { readonly sourceType: "peertube" } {
   return value.sourceType === "peertube";
 }
+
+interface FetchStub {
+  readonly requestedUrls: readonly string[];
+  restore(): void;
+}
+
+function installFetchStub(handler: (url: string) => Response | Promise<Response>): FetchStub {
+  const originalFetch = globalThis.fetch;
+  const requestedUrls: string[] = [];
+  const stub = Object.assign(
+    (input: Parameters<typeof globalThis.fetch>[0]): Promise<Response> => {
+      const url = input instanceof URL ? input.toString() : String(input);
+      requestedUrls.push(url);
+      return Promise.resolve(handler(url));
+    },
+    { preconnect: originalFetch.preconnect },
+  );
+  globalThis.fetch = stub;
+  return {
+    requestedUrls,
+    restore() {
+      globalThis.fetch = originalFetch;
+    },
+  };
+}
+
+function callFetchCreatorMetadata(
+  input: FetchCreatorMetadataInput & { readonly sourceType: "peertube" },
+): Promise<SourceAdapterResult<CreatorMetadata>> {
+  if (peertubeAdapter.fetchCreatorMetadata === undefined) {
+    throw new Error("Peertube adapter does not implement fetchCreatorMetadata.");
+  }
+  return peertubeAdapter.fetchCreatorMetadata(input);
+}
+
+describe("PeerTube source adapter creator metadata", () => {
+  test("re-fetches the channel actor API and resolves the avatar to an absolute URL", async () => {
+    const actorFixture = JSON.stringify({
+      name: "fixture_channel",
+      displayName: "Fixture Channel",
+      description: "Fixture channel description.",
+      host: "video.example.test",
+      url: "https://video.example.test/c/fixture_channel",
+      avatar: { path: "/lazy-static/avatars/channel.png" },
+    });
+    const stub = installFetchStub(() => new Response(actorFixture, { status: 200 }));
+    try {
+      const result = await callFetchCreatorMetadata({
+        sourceType: "peertube",
+        sourceExternalId: "video.example.test/video-channels/fixture_channel",
+        feedUrl: "https://video.example.test/api/v1/video-channels/fixture_channel/videos",
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      expect(stub.requestedUrls).toEqual(["https://video.example.test/api/v1/video-channels/fixture_channel"]);
+      expect(result.value).toEqual({
+        displayName: "Fixture Channel",
+        imageUrl: "https://video.example.test/lazy-static/avatars/channel.png",
+        description: "Fixture channel description.",
+        canonicalUrl: "https://video.example.test/c/fixture_channel",
+      });
+    } finally {
+      stub.restore();
+    }
+  });
+
+  test("returns unset fields without fetching for instance-kind feeds", async () => {
+    const stub = installFetchStub(() => new Response("{}", { status: 200 }));
+    try {
+      const result = await callFetchCreatorMetadata({
+        sourceType: "peertube",
+        sourceExternalId: "video.example.test/instance/video.example.test",
+        feedUrl: "https://video.example.test/api/v1/videos",
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      expect(result.value).toEqual({});
+      expect(stub.requestedUrls).toEqual([]);
+    } finally {
+      stub.restore();
+    }
+  });
+
+  test("returns unset fields on a failed actor fetch", async () => {
+    const stub = installFetchStub(() => new Response("server error", { status: 500 }));
+    try {
+      const result = await callFetchCreatorMetadata({
+        sourceType: "peertube",
+        sourceExternalId: "video.example.test/video-channels/fixture_channel",
+        feedUrl: "https://video.example.test/api/v1/video-channels/fixture_channel/videos",
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      expect(result.value).toEqual({});
+    } finally {
+      stub.restore();
+    }
+  });
+});

@@ -1,7 +1,9 @@
 import type { SourceType } from "../domain/catalog";
 import { parseHttpUrl } from "./registry";
 import type {
+  CreatorMetadata,
   DetectedSourceInput,
+  FetchCreatorMetadataInput,
   NormalizedCatalogContentItem,
   NormalizedCatalogPayload,
   ResolvedSourceInput,
@@ -19,6 +21,7 @@ const YOUTUBE_SOURCE_TYPE = "youtube" satisfies SourceType;
 const YOUTUBE_WATCH_BASE_URL = "https://www.youtube.com/watch";
 const YOUTUBE_FEED_BASE_URL = "https://www.youtube.com/feeds/videos.xml";
 const YOUTUBE_NOCOOKIE_EMBED_BASE_URL = "https://www.youtube-nocookie.com/embed/";
+const YOUTUBE_CHANNEL_PAGE_TIMEOUT_MS = 10_000;
 
 export const youtubeAdapter: SourceAdapter<"youtube"> = {
   sourceType: YOUTUBE_SOURCE_TYPE,
@@ -54,6 +57,10 @@ export const youtubeAdapter: SourceAdapter<"youtube"> = {
     } catch (error: unknown) {
       return failure("remote-fetch-failed", `YouTube feed fetch failed for ${input.canonicalUrl}: ${errorMessage(error)}.`, input.canonicalUrl, error);
     }
+  },
+
+  async fetchCreatorMetadata(input) {
+    return fetchYouTubeCreatorMetadata(input);
   },
 };
 
@@ -137,6 +144,117 @@ function resolveYouTubeInput(
     "This YouTube URL cannot be resolved to a stable channel or video ID without a network lookup.",
     input.originalInput,
   );
+}
+
+async function fetchYouTubeCreatorMetadata(
+  input: FetchCreatorMetadataInput & { readonly sourceType: "youtube" },
+): Promise<SourceAdapterResult<CreatorMetadata>> {
+  // Channel RSS carries no avatar, so fetch the channel page HTML once and read
+  // its Open Graph metadata. Any fetch/parse failure degrades to a result with
+  // unset fields so a metadata refresh loop is never broken by it.
+  const channelPageUrl = youTubeChannelPageUrl(input);
+  if (channelPageUrl === null) {
+    return { ok: true, value: {} };
+  }
+  try {
+    const response: unknown = await fetch(channelPageUrl, { signal: AbortSignal.timeout(YOUTUBE_CHANNEL_PAGE_TIMEOUT_MS) });
+    if (!isFetchTextResponse(response) || !response.ok) {
+      return { ok: true, value: { canonicalUrl: channelPageUrl } };
+    }
+    const html = await response.text();
+    return { ok: true, value: creatorMetadataFromChannelHtml(html, channelPageUrl) };
+  } catch {
+    return { ok: true, value: { canonicalUrl: channelPageUrl } };
+  }
+}
+
+function youTubeChannelPageUrl(input: FetchCreatorMetadataInput): string | null {
+  const channelId = isNonEmptyText(input.sourceExternalId) ? normalizeYouTubeChannelId(input.sourceExternalId) : null;
+  if (channelId !== null && channelId.startsWith("UC")) {
+    return canonicalChannelUrl(channelId);
+  }
+
+  const urlResult = parseHttpUrl(input.feedUrl);
+  if (!urlResult.ok) {
+    return null;
+  }
+  const url = urlResult.value;
+  if (url.pathname !== "/feeds/videos.xml") {
+    return null;
+  }
+  const feedChannelId = url.searchParams.get("channel_id");
+  if (isNonEmptyText(feedChannelId)) {
+    const normalized = normalizeYouTubeChannelId(feedChannelId);
+    return normalized.startsWith("UC") ? canonicalChannelUrl(normalized) : null;
+  }
+  const userName = url.searchParams.get("user");
+  if (isNonEmptyText(userName)) {
+    return `https://www.youtube.com/user/${encodeURIComponent(userName)}`;
+  }
+  return null;
+}
+
+function creatorMetadataFromChannelHtml(html: string, channelPageUrl: string): CreatorMetadata {
+  return {
+    displayName: trimmedOrNull(extractMetaContent(html, "og:title")) ?? undefined,
+    imageUrl: avatarUrlOrNull(extractMetaContent(html, "og:image")) ?? undefined,
+    description: trimmedOrNull(extractMetaContent(html, "og:description")) ?? undefined,
+    canonicalUrl: channelPageUrl,
+  };
+}
+
+// Targeted meta-tag extraction only; a full HTML parser is not worth a new
+// dependency for three attributes. The property name is a compile-time constant.
+function extractMetaContent(html: string, property: string): string | null {
+  const tagPattern = new RegExp(`<meta[^>]+(?:property|name)=["']${property}["'][^>]*>`, "i");
+  const tag = html.match(tagPattern)?.[0];
+  if (tag === undefined) {
+    return null;
+  }
+  const content = tag.match(/\bcontent=["']([^"']*)["']/i)?.[1];
+  return content === undefined ? null : decodeHtmlEntities(content);
+}
+
+/**
+ * Normalize a YouTube-served avatar to a stable square thumbnail: googleusercontent
+ * avatar URLs carry a sizing suffix segment ("=s46-c-k-…") that varies per page
+ * render, so it is replaced with a fixed 176px square crop.
+ */
+function avatarUrlOrNull(url: string | null): string | null {
+  if (url === null || !isNonEmptyText(url)) {
+    return null;
+  }
+  const parsed = parseHttpUrl(url);
+  if (!parsed.ok) {
+    return null;
+  }
+  const host = normalizeHost(parsed.value.hostname);
+  if ((host === "yt3.googleusercontent.com" || host === "yt4.ggpht.com") && parsed.value.pathname.includes("=")) {
+    const basePath = parsed.value.pathname.slice(0, parsed.value.pathname.lastIndexOf("="));
+    return `https://${host}${basePath}=s176-c-k-c0x00ffffff-no-rj`;
+  }
+  return parsed.value.toString();
+}
+
+function trimmedOrNull(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&#(\d+);/g, (match, code: string) => {
+      const codePoint = Number(code);
+      return codePoint >= 0 && codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : match;
+    })
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
 }
 
 function normalizeYouTubeRssPayload(

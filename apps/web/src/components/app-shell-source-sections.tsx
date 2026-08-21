@@ -11,9 +11,10 @@ import type {
   PlaylistSortMode,
   UserSetting,
 } from "@FeedElity/api";
-import { For, Match, Show, Switch, createMemo, createResource, createSignal } from "solid-js";
+import { For, Match, Show, Switch, createMemo, createResource, createSignal, onCleanup } from "solid-js";
 import Plus from "lucide-solid/icons/plus";
 import RotateCcw from "lucide-solid/icons/rotate-ccw";
+import RefreshCw from "lucide-solid/icons/refresh-cw";
 import Save from "lucide-solid/icons/save";
 import Trash2 from "lucide-solid/icons/trash-2";
 import UserMinus from "lucide-solid/icons/user-minus";
@@ -30,6 +31,7 @@ import {
   collectionNameInputId,
   formatError,
   formatSettingValue,
+  formatSourceLabel,
   playlistDescriptionInputId,
   playlistNameInputId,
   playlistSortInputId,
@@ -45,6 +47,8 @@ import {
 import { PlaylistItemRow } from "./app-shell-rows";
 
 type SubscriptionAction = "subscribe" | "unsubscribe";
+
+type CreatorMetadataRun = NonNullable<Awaited<ReturnType<typeof client.creatorMetadata.status>>["run"]>;
 
 const emptyPlaylists: readonly Playlist[] = [];
 
@@ -241,6 +245,76 @@ export function SettingsColumnSection(props: SettingsColumnSectionProps) {
   const [formBusy, setFormBusy] = createSignal(false);
   const [readerDensityBusy, setReaderDensityBusy] = createSignal(false);
   const readerDensity = createMemo(() => toReaderDensityFromSettings(props.settings()));
+  const [metadataRefreshBusy, setMetadataRefreshBusy] = createSignal(false);
+  const [metadataRefreshRun, setMetadataRefreshRun] = createSignal<CreatorMetadataRun | null>(null);
+  const [metadataRefreshError, setMetadataRefreshError] = createSignal<string | null>(null);
+  let metadataPollTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearMetadataPollTimer = () => {
+    if (metadataPollTimer !== null) {
+      clearTimeout(metadataPollTimer);
+      metadataPollTimer = null;
+    }
+  };
+  onCleanup(clearMetadataPollTimer);
+
+  const scheduleMetadataPoll = () => {
+    clearMetadataPollTimer();
+    metadataPollTimer = setTimeout(() => {
+      void pollCreatorMetadataStatus();
+    }, 2_500);
+  };
+
+  const pollCreatorMetadataStatus = async () => {
+    try {
+      const status = await client.creatorMetadata.status();
+      const run = status.run;
+      if (run === null || run.status !== "running") {
+        if (run !== null) {
+          setMetadataRefreshRun(run);
+        }
+        setMetadataRefreshBusy(false);
+        return;
+      }
+
+      setMetadataRefreshRun(run);
+      scheduleMetadataPoll();
+    } catch (error) {
+      setMetadataRefreshError(formatError(error));
+      setMetadataRefreshBusy(false);
+    }
+  };
+
+  const startCreatorMetadataRefresh = async () => {
+    setMetadataRefreshBusy(true);
+    setMetadataRefreshError(null);
+    setMetadataRefreshRun(null);
+    try {
+      const started = await client.creatorMetadata.start();
+      setMetadataRefreshRun(started.status);
+      if (started.status.status === "running") {
+        scheduleMetadataPoll();
+        return;
+      }
+
+      setMetadataRefreshBusy(false);
+    } catch (error) {
+      setMetadataRefreshError(formatError(error));
+      setMetadataRefreshBusy(false);
+    }
+  };
+
+  const metadataRefreshSummaryText = createMemo(() => {
+    const run = metadataRefreshRun();
+    if (run === null) {
+      return null;
+    }
+
+    if (run.status === "running") {
+      return `Refreshing: ${run.feedsProcessed}/${run.feedsTotal} feeds processed`;
+    }
+
+    return `${run.status}: ${run.creatorsUpdatedCount} creators updated, ${run.creatorsUnchangedCount} unchanged, ${run.feedsFailedCount} feeds failed`;
+  });
 
   const saveSetting = async () => {
     const key = settingKey().trim();
@@ -326,6 +400,27 @@ export function SettingsColumnSection(props: SettingsColumnSectionProps) {
         </select>
         <p class="mt-1 text-[0.68rem] leading-5 text-muted-foreground">{readerDensityOptions.find((option) => option.value === readerDensity())?.helper}</p>
         <button type="button" class="mt-2 w-full inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-card p-1 text-[0.68rem] font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" aria-label="Use app default" title="Use app default" disabled={readerDensityBusy() || props.settingsUnavailable()} onClick={useReaderDensityDefault}><RotateCcw size={14} /></button>
+      </section>
+      <section class="mt-2 border-t border-border p-2" aria-labelledby="creator-metadata-refresh-title" data-creator-metadata-refresh>
+        <p id="creator-metadata-refresh-title" class="text-[0.72rem] font-semibold text-foreground">Creator metadata</p>
+        <p class="mt-1 text-[0.68rem] leading-5 text-muted-foreground">Re-fetches creator icons, descriptions, and canonical URLs from every catalog source, overwriting stale values.</p>
+        <button type="button" class="mt-2 w-full inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-card px-2 py-1.5 text-xs font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" disabled={metadataRefreshBusy()} onClick={async () => { await startCreatorMetadataRefresh(); }}>
+          <RefreshCw size={14} class={metadataRefreshBusy() ? "animate-spin" : ""} />
+          {metadataRefreshBusy() ? "Refreshing creator metadata" : "Force refresh creator metadata"}
+        </button>
+        <Show when={metadataRefreshSummaryText()}>
+          {(summary) => <p class="mt-1 text-[0.68rem] leading-5 text-muted-foreground" role="status">{summary()}</p>}
+        </Show>
+        <Show when={metadataRefreshError()}>
+          {(message) => <p class="mt-1 border border-destructive px-2 py-1.5 text-[0.72rem] leading-5 text-destructive">{message()}</p>}
+        </Show>
+        <Show when={(metadataRefreshRun()?.failures.length ?? 0) > 0}>
+          <ul class="mt-1 space-y-1" aria-label="Creator metadata refresh failures">
+            <For each={metadataRefreshRun()?.failures ?? []}>
+              {(failure) => <li class="truncate text-[0.68rem] leading-5 text-destructive" title={failure.message}>{formatSourceLabel(failure.sourceType)} {failure.feedId}: {failure.code} — {failure.message}</li>}
+            </For>
+          </ul>
+        </Show>
       </section>
       <details class="mt-2 border-t border-border p-2" data-advanced-settings>
         <summary class="cursor-pointer text-[0.72rem] font-semibold text-foreground">Advanced settings</summary>

@@ -20,6 +20,25 @@ function readerDensityPaddingClass(readerDensity: ReaderDensity): string {
   return readerDensity === "compact" ? "px-2 py-1" : "px-2 py-1.5";
 }
 
+function creatorInitials(displayName: string): string {
+  const parts = displayName.trim().split(/\s+/).filter((part) => part.length > 0);
+  if (parts.length === 0) {
+    return "?";
+  }
+
+  if (parts.length === 1) {
+    return parts[0]?.slice(0, 2).toUpperCase() ?? "?";
+  }
+
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  if (first === undefined || last === undefined) {
+    return "?";
+  }
+
+  return `${first.slice(0, 1)}${last.slice(0, 1)}`.toUpperCase();
+}
+
 function formatFeedDateTime(value: Date | null): string {
   if (value === null) {
     return "Not completed";
@@ -79,7 +98,18 @@ export function CreatorSourceRow(props: CreatorSourceRowProps) {
           aria-pressed={props.isSelected}
           onClick={() => props.onSelectCreator(props.creator)}
         >
-          <Show when={props.creator.imageUrl}>
+          <Show
+            when={props.creator.imageUrl}
+            fallback={
+              <span
+                class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-muted text-[0.6rem] font-semibold text-muted-foreground"
+                aria-hidden="true"
+                data-creator-avatar-fallback
+              >
+                {creatorInitials(props.creator.displayName)}
+              </span>
+            }
+          >
             {(imageUrl) => (
               <span class="h-6 w-6 shrink-0 overflow-hidden rounded-full border border-border bg-muted">
                 <img class="h-full w-full object-cover" src={imageUrl()} alt="" loading="lazy" />

@@ -55,6 +55,10 @@ import {
   updateCollectionForUser,
   updatePlaylistForUser,
 } from "../repositories/overlays";
+import {
+  getCreatorMetadataRefreshStatus,
+  startCreatorMetadataRefresh,
+} from "../services/creator-metadata";
 import { addSource, batchAddSources } from "../services/ingestion";
 import { refreshAll, refreshCreator, refreshFeed, startRefreshAll } from "../services/refresh";
 
@@ -147,14 +151,19 @@ const boundedSearchInput = z.string().trim().min(1).max(120);
 
 const catalogLimitInput = z.number().int().min(1).max(100).default(50);
 
+const creatorListLimitInput = z.number().int().min(1).max(100).default(100);
+
 const catalogOffsetInput = z.number().int().min(0).max(100_000).default(0);
+
+const creatorListSortInput = z.enum(["name", "lastUpdate"]).default("name");
 
 const creatorListInput = z
   .object({
     search: boundedSearchInput.optional(),
     sourceType: sourceTypeInput.optional(),
-    limit: catalogLimitInput,
+    limit: creatorListLimitInput,
     offset: catalogOffsetInput,
+    sort: creatorListSortInput,
   })
   .optional();
 
@@ -349,7 +358,7 @@ export const appRouter = {
   },
   catalog: {
     creators: publicProcedure.input(creatorListInput).handler(({ input, context }) => {
-      return listCatalogCreators(context.db, input ?? { limit: 50 });
+      return listCatalogCreators(context.db, input ?? { limit: 100 });
     }),
     feeds: publicProcedure.input(feedListInput).handler(({ input, context }) => {
       return listCatalogFeedsForBrowsing(context.db, input ?? { limit: 50 });
@@ -446,6 +455,18 @@ export const appRouter = {
         },
         { feedId: input.feedId, force: input.force ?? false },
       );
+    }),
+  },
+  creatorMetadata: {
+    start: protectedProcedure.handler(({ context }) => {
+      return startCreatorMetadataRefresh({
+        db: context.db,
+        sourceRegistry: context.sourceRegistry,
+        now: () => new Date(),
+      });
+    }),
+    status: protectedProcedure.handler(() => {
+      return { run: getCreatorMetadataRefreshStatus() };
     }),
   },
   ingestion: {

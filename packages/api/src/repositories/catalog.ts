@@ -133,11 +133,26 @@ export interface UpdateFeedRefreshMetadataInput {
   readonly nextRefreshAfter: Date | null;
 }
 
+export interface UpdateCreatorMetadataInput {
+  readonly creatorId: string;
+  readonly imageUrl?: string | null;
+  readonly description?: string | null;
+  readonly canonicalUrl?: string | null;
+}
+
+export interface UpdateCreatorMetadataResult {
+  readonly creator: CatalogCreator;
+  readonly changed: boolean;
+}
+
+export type CreatorListSort = "name" | "lastUpdate";
+
 export interface ListCatalogCreatorsInput {
   readonly search?: string;
   readonly sourceType?: SourceType;
   readonly limit: number;
   readonly offset?: number;
+  readonly sort?: CreatorListSort;
 }
 
 export interface ListCatalogContentItemsInput {
@@ -210,6 +225,23 @@ export async function findCreatorByNameKey(db: RepositoryDb, nameKey: string): P
   });
 
   return row === undefined ? null : toCatalogCreator(row);
+}
+
+/**
+ * Advance the creator's denormalized latest-publish marker to the given
+ * timestamp, but never backwards and never back to NULL once set. Ingestion
+ * calls this with the max published_at among the creator's persisted items.
+ */
+export async function advanceCreatorLastContentPublishedAt(
+  db: RepositoryDb,
+  input: { creatorId: string; publishedAt: Date },
+): Promise<void> {
+  await db
+    .update(schema.creator)
+    .set({
+      lastContentPublishedAt: sql`max(coalesce(${schema.creator.lastContentPublishedAt}, 0), ${input.publishedAt.getTime()})`,
+    })
+    .where(eq(schema.creator.id, input.creatorId));
 }
 
 export async function getCatalogCreatorSummaryById(
@@ -485,7 +517,14 @@ export async function listCatalogCreators(
   ].filter(isDefined);
   const rows = await db.query.creator.findMany({
     where: conditions.length === 0 ? undefined : and(...conditions),
-    orderBy: (creator, { asc }) => [asc(creator.displayName), asc(creator.createdAt), asc(creator.id)],
+    orderBy: (creator, { asc }) =>
+      input.sort === "lastUpdate"
+        ? [
+            sql`${creator.lastContentPublishedAt} desc nulls last`,
+            asc(creator.displayName),
+            asc(creator.id),
+          ]
+        : [asc(creator.displayName), asc(creator.createdAt), asc(creator.id)],
     limit: input.limit,
     offset: input.offset ?? 0,
   });
@@ -749,6 +788,48 @@ export async function updateFeedRefreshMetadata(
     throw new Error("Feed refresh metadata update did not produce a readable catalog record.");
   }
   return toCatalogFeed(row);
+}
+
+/**
+ * Overwrite creator presentation metadata with freshly fetched values. Only
+ * fields the caller supplied (non-null, non-undefined) are written; unsupplied
+ * fields keep their stored value and `name_key` / `display_name` are never
+ * touched. Returns whether any column actually changed so callers can
+ * distinguish updated from unchanged creators.
+ */
+export async function updateCreatorMetadata(
+  db: RepositoryDb,
+  input: UpdateCreatorMetadataInput,
+): Promise<UpdateCreatorMetadataResult> {
+  const row = await db.query.creator.findFirst({ where: eq(schema.creator.id, input.creatorId) });
+  if (row === undefined) {
+    throw new Error("Creator metadata update referenced an unknown creator.");
+  }
+
+  const updates: Partial<Pick<typeof schema.creator.$inferInsert, "imageUrl" | "description" | "canonicalUrl">> = {};
+  if (isSuppliedValue(input.imageUrl) && input.imageUrl !== row.imageUrl) {
+    updates.imageUrl = input.imageUrl;
+  }
+  if (isSuppliedValue(input.description) && input.description !== row.description) {
+    updates.description = input.description;
+  }
+  if (isSuppliedValue(input.canonicalUrl) && input.canonicalUrl !== row.canonicalUrl) {
+    updates.canonicalUrl = input.canonicalUrl;
+  }
+  if (Object.keys(updates).length === 0) {
+    return { creator: toCatalogCreator(row), changed: false };
+  }
+
+  await db.update(schema.creator).set(updates).where(eq(schema.creator.id, input.creatorId));
+  const updatedRow = await db.query.creator.findFirst({ where: eq(schema.creator.id, input.creatorId) });
+  if (updatedRow === undefined) {
+    throw new Error("Creator metadata update did not produce a readable catalog record.");
+  }
+  return { creator: toCatalogCreator(updatedRow), changed: true };
+}
+
+function isSuppliedValue(value: string | null | undefined): value is string {
+  return value !== null && value !== undefined;
 }
 
 export async function recordRefreshFeedResult(

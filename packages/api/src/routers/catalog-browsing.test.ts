@@ -527,6 +527,74 @@ describe("catalog browsing router", () => {
     expect("playlist" in detail).toBe(false);
   });
 
+  test("creator list sort lastUpdate orders by newest publish with NULLs last and stable tiebreakers", async () => {
+    const newestCreator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Zulu Newest",
+    });
+    const middleCreator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Yankee Middle",
+    });
+    const tiedFirstCreator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Alpha Tied",
+    });
+    const tiedSecondCreator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Bravo Tied",
+    });
+    const nullCreator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Aardvark Null",
+    });
+    await setCreatorLastContentPublishedAt(newestCreator.id, new Date("2026-06-03T00:00:00.000Z"));
+    await setCreatorLastContentPublishedAt(middleCreator.id, new Date("2026-06-02T00:00:00.000Z"));
+    await setCreatorLastContentPublishedAt(tiedFirstCreator.id, new Date("2026-06-02T00:00:00.000Z"));
+    await setCreatorLastContentPublishedAt(tiedSecondCreator.id, new Date("2026-06-02T00:00:00.000Z"));
+
+    const sorted = await call(
+      appRouter.catalog.creators,
+      { limit: 10, sort: "lastUpdate" },
+      { context: anonymousContext(testDatabase.db) },
+    );
+    const secondPage = await call(
+      appRouter.catalog.creators,
+      { limit: 2, offset: 3, sort: "lastUpdate" },
+      { context: anonymousContext(testDatabase.db) },
+    );
+    const searchSorted = await call(
+      appRouter.catalog.creators,
+      { search: "tied", limit: 10, sort: "lastUpdate" },
+      { context: anonymousContext(testDatabase.db) },
+    );
+
+    expect(sorted.map((creator) => creator.id)).toEqual([
+      newestCreator.id,
+      tiedFirstCreator.id,
+      tiedSecondCreator.id,
+      middleCreator.id,
+      nullCreator.id,
+    ]);
+    expect(secondPage.map((creator) => creator.id)).toEqual([middleCreator.id, nullCreator.id]);
+    expect(searchSorted.map((creator) => creator.id)).toEqual([tiedFirstCreator.id, tiedSecondCreator.id]);
+  });
+
+  test("creator list defaults to name sort", async () => {
+    const betaCreator = await findOrCreateCreator(testDatabase.db, { displayName: "Sort Beta" });
+    const alphaCreator = await findOrCreateCreator(testDatabase.db, { displayName: "Sort Alpha" });
+    await setCreatorLastContentPublishedAt(betaCreator.id, new Date("2026-06-03T00:00:00.000Z"));
+
+    const byDefault = await call(
+      appRouter.catalog.creators,
+      { limit: 10 },
+      { context: anonymousContext(testDatabase.db) },
+    );
+    const explicitName = await call(
+      appRouter.catalog.creators,
+      { limit: 10, sort: "name" },
+      { context: anonymousContext(testDatabase.db) },
+    );
+
+    expect(byDefault.map((creator) => creator.id)).toEqual([alphaCreator.id, betaCreator.id]);
+    expect(explicitName.map((creator) => creator.id)).toEqual(byDefault.map((creator) => creator.id));
+  });
+
   test("invalid catalog browsing input is rejected before repository access", async () => {
     await expect(
       call(appRouter.catalog.contentItems, { limit: 101 }, { context: anonymousContext(testDatabase.db) }),
@@ -573,6 +641,13 @@ function authenticatedContext(db: RepositoryDb, userId: string): Context {
   };
 }
 
+async function setCreatorLastContentPublishedAt(creatorId: string, publishedAt: Date): Promise<void> {
+  await testDatabase.db
+    .update(schema.creator)
+    .set({ lastContentPublishedAt: publishedAt })
+    .where(eq(schema.creator.id, creatorId));
+}
+
 async function insertUser(db: RepositoryDb, id: string, email: string): Promise<void> {
   await db.insert(schema.user).values({
     id,
@@ -614,6 +689,7 @@ const schemaStatements = [
     image_url TEXT,
     canonical_url TEXT,
     metadata_json TEXT,
+    last_content_published_at INTEGER,
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
   )`,

@@ -1,7 +1,9 @@
 import type { SourceType } from "../domain/catalog";
 import { parseHttpUrl } from "./registry";
 import type {
+  CreatorMetadata,
   DetectedSourceInput,
+  FetchCreatorMetadataInput,
   NormalizedCatalogContentItem,
   NormalizedCatalogPayload,
   NormalizedContentSourceInput,
@@ -86,6 +88,10 @@ export const peertubeAdapter: SourceAdapter<"peertube"> = {
       return failure("remote-fetch-failed", `PeerTube API fetch failed for ${input.canonicalUrl}: ${errorMessage(error)}.`, input.canonicalUrl, error);
     }
   },
+
+  async fetchCreatorMetadata(input) {
+    return fetchPeerTubeCreatorMetadata(input);
+  },
 };
 
 function detectPeerTubeInput(input: string): SourceDetectionResult {
@@ -149,6 +155,57 @@ function resolvePeerTubeInput(
   }
 
   return resolved(sourceExternalId(hint.host, "instance", hint.nameOrId), `${hint.origin}/api/v1/videos`, `PeerTube instance ${hint.host}`);
+}
+
+async function fetchPeerTubeCreatorMetadata(
+  input: FetchCreatorMetadataInput & { readonly sourceType: "peertube" },
+): Promise<SourceAdapterResult<CreatorMetadata>> {
+  // Re-fetch the channel/account actor API and reuse the same avatar resolution
+  // as catalog normalization. Instance-kind feeds have no channel avatar, so
+  // they yield a result with unset fields; any fetch/parse failure does the
+  // same so a metadata refresh loop is never broken by it.
+  const hint = resourceHintFromApiUrl(input.feedUrl);
+  if (hint === null || hint.kind === "instance" || hint.kind === "video") {
+    return { ok: true, value: {} };
+  }
+
+  const resource = hint.kind === "account" ? "accounts" : "video-channels";
+  const actorUrl = `${hint.origin}/api/v1/${resource}/${encodePathSegment(hint.nameOrId)}`;
+  try {
+    const response: unknown = await fetch(actorUrl);
+    if (!isFetchTextResponse(response) || !response.ok) {
+      return { ok: true, value: {} };
+    }
+    const payload = await response.text();
+    return peertubeCreatorMetadataFromActor(payload, hint);
+  } catch {
+    return { ok: true, value: {} };
+  }
+}
+
+function peertubeCreatorMetadataFromActor(
+  payload: string,
+  hint: PeerTubeResourceHint,
+): SourceAdapterResult<CreatorMetadata> {
+  const parsed = parseJsonPayload(payload);
+  if (!parsed.ok || !isRecord(parsed.value)) {
+    return { ok: true, value: {} };
+  }
+  const actor = parseActor(parsed.value);
+  if (actor === null) {
+    return { ok: true, value: {} };
+  }
+
+  const resource = hint.kind === "account" ? "accounts" : "video-channels";
+  return {
+    ok: true,
+    value: {
+      displayName: actor.displayName ?? actor.name,
+      imageUrl: absolutePeerTubeUrl(hint.origin, actor.avatarPath) ?? undefined,
+      description: actor.description ?? undefined,
+      canonicalUrl: actor.url ?? webCreatorUrl(hint.origin, resource, actor.name),
+    },
+  };
 }
 
 function normalizePeerTubeApiPayload(

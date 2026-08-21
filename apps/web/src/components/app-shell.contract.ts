@@ -22,9 +22,12 @@ export interface ShellColumnDefinition {
 
 export type ShellPaneId = ShellColumnDefinition["id"];
 
+export type CreatorListSort = "name" | "lastUpdate";
+
 export interface CreatorListInput {
   readonly search?: string;
   readonly sourceType?: SourceType;
+  readonly sort: CreatorListSort;
   readonly limit: number;
   readonly offset: number;
 }
@@ -92,7 +95,7 @@ export const addSourceInputId = "creator-source-add-input";
 
 export const addSourceHelpId = "creator-source-add-help";
 
-export const creatorListLimit = 50;
+export const creatorListLimit = 100;
 
 export const feedListLimit = 25;
 
@@ -141,6 +144,12 @@ export const readerDensityInputId = "reader-density";
 export const readerDensitySettingKey = "reader.density";
 
 export const readerDensityValues: readonly ReaderDensity[] = ["comfortable", "compact"];
+
+export const creatorListSortInputId = "creator-list-sort";
+
+export const creatorListSortSettingKey = "creator.list.sort";
+
+export const creatorListSortValues: readonly CreatorListSort[] = ["name", "lastUpdate"];
 
 export const refreshStatusRegionId = "refresh-status-history";
 
@@ -278,12 +287,18 @@ export function getShellColumnCount() {
   return shellColumns.length;
 }
 
-export function toCreatorListInput(search: string, sourceType: SourceType | null = null, offset = firstPageOffset): CreatorListInput {
+export function toCreatorListInput(
+  search: string,
+  sourceType: SourceType | null = null,
+  sort: CreatorListSort = "name",
+  offset = firstPageOffset,
+): CreatorListInput {
   const trimmedSearch = search.trim();
 
   return {
     ...(trimmedSearch.length === 0 ? {} : { search: trimmedSearch }),
     ...(sourceType === null ? {} : { sourceType }),
+    sort,
     limit: creatorListLimit,
     offset,
   };
@@ -565,6 +580,24 @@ export function toReaderDensityFromSettings(settings: readonly UserSetting[]): R
   }
 
   return "comfortable";
+}
+
+export function toCreatorListSortFromSettings(settings: readonly UserSetting[]): CreatorListSort {
+  const setting = settings.find((candidate) => candidate.key === creatorListSortSettingKey);
+  if (setting === undefined) {
+    return "name";
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(setting.valueJson);
+    if (parsed === "name" || parsed === "lastUpdate") {
+      return parsed;
+    }
+  } catch {
+    return "name";
+  }
+
+  return "name";
 }
 
 export function toSafePlaybackUrl(value: string | null): string | null {

@@ -86,6 +86,28 @@ export interface NormalizedCatalogPayload {
   readonly items: readonly NormalizedCatalogContentItem[];
 }
 
+/**
+ * Input for the optional creator-metadata capability. Built from what the
+ * catalog already stores on a feed row: the feed's source identity and its
+ * canonical URL. Source-specific identifiers stay inside adapters; generic
+ * service code only ever sees this normalized shape.
+ */
+export interface FetchCreatorMetadataInput extends SourceIdentity {
+  readonly feedUrl: string;
+}
+
+/**
+ * Creator metadata fields an adapter can determine beyond what the catalog
+ * payload provides. Every field is optional: a source that cannot determine a
+ * value (or fails to fetch it) simply leaves it unset.
+ */
+export interface CreatorMetadata {
+  readonly displayName?: string;
+  readonly imageUrl?: string;
+  readonly description?: string;
+  readonly canonicalUrl?: string;
+}
+
 export interface SourceAdapter<TSourceType extends SourceType = SourceType> {
   readonly sourceType: TSourceType;
   detect(input: string): SourceDetectionResult;
@@ -95,4 +117,7 @@ export interface SourceAdapter<TSourceType extends SourceType = SourceType> {
     payload: string,
   ): SourceAdapterResult<NormalizedCatalogPayload>;
   fetchCatalog(input: ResolvedSourceInput & { readonly sourceType: TSourceType }): Promise<SourceAdapterResult<NormalizedCatalogPayload>>;
+  fetchCreatorMetadata?(
+    input: FetchCreatorMetadataInput & { readonly sourceType: TSourceType },
+  ): Promise<SourceAdapterResult<CreatorMetadata>>;
 }
