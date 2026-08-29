@@ -18,7 +18,7 @@ same-channel mirror).
 
 ## Files
 
-- `merge-plan.ts` — pure, unit-tested merge logic (`bun test scripts/db-repair/merge-plan.test.ts`).
+- `packages/db/src/creator-merge-plan.ts` — pure, unit-tested merge logic (moved here so the migration runner and this script share it; tests: `bun test packages/db`).
 - `repair.ts` — loads rows from a DB, prints the plan, applies it (dry-run by default).
 
 ## What the repair does
@@ -68,3 +68,27 @@ Production already contains **2734 orphaned rows** unrelated to this bug:
 This repair does **not** touch them and does not fail because of them — the
 post-merge gate only aborts if the merge itself introduces *new* orphans. They are
 reported in the run output. Clean them up separately if desired.
+
+## `bun run db:repair` — the maintained migration command
+
+`repair.ts` is kept as a standalone manual tool, but the supported way to run the
+same convergence is the catalog data-migration CLI in `packages/db`:
+
+```bash
+bun run db:repair --db /path/to/database.db          # dry run (default)
+bun run db:repair --db /path/to/database.db --yes    # write
+bun run db:repair --yes                              # uses DATABASE_URL from .env
+```
+
+- Implemented by `packages/db/src/migrations/catalog-data-migrations.ts` (runner +
+  `creator_cross_source_merge` step) and `apply-catalog-migrations.ts` (CLI).
+- Idempotent: each step is recorded in `__feedelity_migrations` and skipped on
+  re-run; re-running against an already-converged database reports zero applied
+  steps. It also re-points `collection_member` rows (which `repair.ts` predates).
+- **Do not use `drizzle-kit generate` for the creator change.** The drizzle
+  migration journal is deliberately behind the schema files here: its snapshot
+  still has the legacy per-source creator (`source_type`, no `name_key`), so a
+  generated migration would create the unique `name_key` index over
+  still-duplicated rows and fail. This divergence is intentional; the data
+  migration above performs the schema convergence instead, and fresh databases
+  get the current schema via `db:push`/bootstrap.

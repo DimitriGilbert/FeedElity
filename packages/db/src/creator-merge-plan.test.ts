@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildMergePlan, creatorNameKey, summarizePlan } from "./merge-plan";
+import { buildMergePlan, creatorNameKey, summarizePlan } from "./creator-merge-plan";
 
 interface RowOverrides {
   id?: string;
@@ -10,7 +10,7 @@ interface RowOverrides {
   subscriptionCount?: number;
 }
 
-function row(overrides: RowOverrides = {}): import("./merge-plan").CreatorRow {
+function row(overrides: RowOverrides = {}): import("./creator-merge-plan").CreatorRow {
   return {
     id: overrides.id ?? "id",
     sourceType: "youtube",

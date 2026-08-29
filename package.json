@@ -43,6 +43,7 @@
     "db:generate": "turbo -F @FeedElity/db db:generate",
     "db:migrate": "turbo -F @FeedElity/db db:migrate",
     "db:local": "turbo -F @FeedElity/db db:local",
+    "db:repair": "bun run packages/db/src/migrations/apply-catalog-migrations.ts",
     "deploy:docs": "bun run scripts/deploy-pages.ts",
     "serve": "bun run scripts/feedelity.ts",
     "feedelity": "bun run scripts/feedelity.ts"

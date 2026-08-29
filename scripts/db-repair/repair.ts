@@ -23,7 +23,7 @@
 
 import { Database } from "bun:sqlite";
 
-import { buildMergePlan, summarizePlan, type CreatorRow } from "./merge-plan";
+import { buildMergePlan, summarizePlan, type CreatorRow } from "@FeedElity/db/creator-merge-plan";
 
 interface Args {
   db: string | null;
