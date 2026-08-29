@@ -76,6 +76,11 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
   const [playlists, { refetch: refetchPlaylists }] = createResource(authenticatedPlaylistSource, () =>
     client.overlays.playlists(),
   );
+  // Read playlists via .latest so refetchPlaylists (after adding a video to a
+  // playlist) never re-suspends: the viewer column is not wrapped in any
+  // <Suspense>, so a plain read would bubble to the route-level boundary and
+  // blank the app.
+  const playlistsValue = createMemo(() => playlists.latest);
   const [selectedSourceId, setSelectedSourceId] = createSignal<string | null>(null);
   const [targetPlaylistId, setTargetPlaylistId] = createSignal<string | null>(null);
   const [playlistActionError, setPlaylistActionError] = createSignal<string | null>(null);
@@ -126,7 +131,7 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
     playableSources().some((source) => source.sourceType === "youtube"),
   );
   const effectiveTargetPlaylistId = createMemo(() => {
-    const loadedPlaylists = playlists() ?? emptyPlaylists;
+    const loadedPlaylists = playlistsValue() ?? emptyPlaylists;
     const explicitTargetId = targetPlaylistId();
     const selectedPlaylistId = props.selectedPlaylistId();
 
@@ -336,7 +341,7 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                     >
                       <Heart size={14} />
                     </button>
-                    <Show when={(playlists() ?? emptyPlaylists).length > 0}>
+                    <Show when={(playlistsValue() ?? emptyPlaylists).length > 0}>
                       <label class="sr-only" for="viewer-playlist-target">Save to playlist</label>
                       <select
                         id="viewer-playlist-target"
@@ -344,7 +349,7 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                         value={effectiveTargetPlaylistId() ?? ""}
                         onChange={(event) => setTargetPlaylistId(event.currentTarget.value)}
                       >
-                        <For each={playlists() ?? emptyPlaylists}>{(playlist) => <option value={playlist.id}>{playlist.name}</option>}</For>
+                        <For each={playlistsValue() ?? emptyPlaylists}>{(playlist) => <option value={playlist.id}>{playlist.name}</option>}</For>
                       </select>
                       <button
                         type="button"
@@ -442,7 +447,7 @@ function PlaybackSurface(props: PlaybackSurfaceProps) {
         </Match>
         <Match when={props.source?.kind === "native" && props.source !== null}>
           <video class="h-full w-full" src={props.source?.url ?? ""} controls preload="metadata" onPlay={props.onNativePlay}>
-            <a class="text-primary underline" href={props.source?.url ?? ""}>
+            <a class="text-primary underline" href={props.source?.url ?? ""} rel="noreferrer" target="_blank">
               Open video source
             </a>
           </video>

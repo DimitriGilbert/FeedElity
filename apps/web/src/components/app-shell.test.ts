@@ -1064,7 +1064,8 @@ test("reader density setting is applied to real row spacing", async () => {
   const source = await readAppShellSource();
 
   expect(source).toContain("const emptyUserSettings: readonly UserSetting[] = [];");
-  expect(source).toContain("const readerDensity = createMemo(() => toReaderDensityFromSettings(settings() ?? emptyUserSettings));");
+  expect(source).toContain("const settingsValue = createMemo(() => settings.latest);");
+  expect(source).toContain("const readerDensity = createMemo(() => toReaderDensityFromSettings(settingsValue() ?? emptyUserSettings));");
   expect(source).toContain("data-reader-density={readerDensity()}");
   expect(source).toContain("function readerDensityPaddingClass(readerDensity: ReaderDensity): string");
   expect(source).toContain("readerDensityPaddingClass(props.readerDensity)");
@@ -1322,10 +1323,19 @@ test("app shell uses stable module-level empty arrays for fallback accessors", a
   expect(source).toContain("const emptyUserContentStatuses: readonly UserContentStatus[] = [];");
   expect(source).toContain("const emptyPlaylists: readonly Playlist[] = [];");
   expect(source).toContain("const emptyCatalogContentSources: readonly CatalogContentSource[] = [];");
-  expect(source).toContain("settings={() => settings.latest ?? emptyUserSettings}");
+  expect(source).toContain("settings={() => settingsValue() ?? emptyUserSettings}");
   expect(source).toContain("contentStatuses={() => contentStatuses.latest ?? emptyUserContentStatuses}");
-  expect(source).toContain("playlists() ?? emptyPlaylists");
+  expect(source).toContain("playlistsValue() ?? emptyPlaylists");
+  expect(source).toContain("const playlistsValue = createMemo(() => playlists.latest);");
   expect(source).toContain("contentDetail.latest?.sources ?? emptyCatalogContentSources");
+  // Plain resource reads would suspend on refetch and blank the app (no
+  // column-level <Suspense> fallbacks); the shell and the viewer read only
+  // .latest-backed memos. Scoped to these two files: the content column and
+  // the left-pane panels convert their own reads in later phases.
+  const shellSource = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const viewerSource = await Bun.file(new URL("./app-shell-viewer.tsx", import.meta.url)).text();
+  expect(shellSource).not.toContain("settings() ?? emptyUserSettings");
+  expect(viewerSource).not.toContain("playlists() ?? emptyPlaylists");
   expect(source).not.toContain("settings() ?? []");
   expect(source).not.toContain("contentStatuses() ?? []");
   expect(source).not.toContain("playlists() ?? []");
@@ -1772,7 +1782,7 @@ test("creator list sort select persists a typed setting and refetches the list",
   // Changes flow through the typed settings overlay, then back into the list input.
   expect(source).toContain("const saveCreatorSortSetting = async (sort: CreatorListSort) => {");
   expect(source).toContain("await client.overlays.saveSetting({ key: creatorListSortSettingKey, value: sort });");
-  expect(source).toContain("const creatorSort = createMemo(() => toCreatorListSortFromSettings(settings() ?? emptyUserSettings));");
+  expect(source).toContain("const creatorSort = createMemo(() => toCreatorListSortFromSettings(settingsValue() ?? emptyUserSettings));");
   expect(source).toContain("creatorSort={creatorSort}");
   // Sort participates in the resource key so changing it refetches the list.
   expect(source).toContain("input.sort,");

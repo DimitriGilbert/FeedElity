@@ -1038,8 +1038,13 @@ export default function AppShell(props: AppShellProps) {
     return "settings";
   });
   const [settings, { refetch: refetchSettings }] = createResource(settingsResourceInput, () => client.overlays.settings());
-  const readerDensity = createMemo(() => toReaderDensityFromSettings(settings() ?? emptyUserSettings));
-  const creatorSort = createMemo(() => toCreatorListSortFromSettings(settings() ?? emptyUserSettings));
+  // Read settings via .latest so a refetch (reader-density change, raw setting
+  // save/delete, creator sort change) never re-suspends: the shell root grid
+  // consumes readerDensity outside every column <Suspense>, so a plain read
+  // would bubble to the route-level boundary and blank the whole app.
+  const settingsValue = createMemo(() => settings.latest);
+  const readerDensity = createMemo(() => toReaderDensityFromSettings(settingsValue() ?? emptyUserSettings));
+  const creatorSort = createMemo(() => toCreatorListSortFromSettings(settingsValue() ?? emptyUserSettings));
 
   const saveCreatorSortSetting = async (sort: CreatorListSort) => {
     await client.overlays.saveSetting({ key: creatorListSortSettingKey, value: sort });
@@ -1314,7 +1319,7 @@ export default function AppShell(props: AppShellProps) {
           contentStatusesLoading={() => contentStatuses.loading}
           statusSelectionError={statusSelectionError}
           viewerMode={viewerMode}
-          settings={() => settings.latest ?? emptyUserSettings}
+          settings={() => settingsValue() ?? emptyUserSettings}
           settingsUnavailable={() => settings.error !== undefined}
           onCloseSettings={() => setViewerMode("content")}
           onSettingsChanged={async () => {
