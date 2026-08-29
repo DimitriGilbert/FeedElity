@@ -17,7 +17,7 @@
     "build:stable": "bun run prepare:linux-native && VITE_RUNTIME_MODE=desktop-local VITE_SERVER_URL=http://127.0.0.1:3217 turbo -F web build && NODE_PATH=$(pwd)/../../node_modules/.bun/@libsql+linux-x64-gnu@0.5.22/node_modules:$(pwd)/../../node_modules LD_LIBRARY_PATH=$(pwd)/../../.native/linux-x64/extracted/usr/lib64:${LD_LIBRARY_PATH:-} electrobun build --env=stable && bun run patch:linux-bundle",
     "build:canary": "bun run prepare:linux-native && VITE_RUNTIME_MODE=desktop-local VITE_SERVER_URL=http://127.0.0.1:3217 turbo -F web build && NODE_PATH=$(pwd)/../../node_modules/.bun/@libsql+linux-x64-gnu@0.5.22/node_modules:$(pwd)/../../node_modules LD_LIBRARY_PATH=$(pwd)/../../.native/linux-x64/extracted/usr/lib64:${LD_LIBRARY_PATH:-} electrobun build --env=canary && bun run patch:linux-bundle",
     "check-types": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test src"
   },
   "dependencies": {
     "@FeedElity/db": "workspace:*",
