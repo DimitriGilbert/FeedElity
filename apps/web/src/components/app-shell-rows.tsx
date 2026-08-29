@@ -83,11 +83,15 @@ export interface CreatorSourceRowProps {
 
 export function CreatorSourceRow(props: CreatorSourceRowProps) {
   const creatorRowClass = createMemo(() =>
-    `group relative border-b border-border ${readerDensityPaddingClass(props.readerDensity)} transition hover:bg-accent hover:text-accent-foreground ${props.isSelected ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : "text-card-foreground"}`,
+    `group relative border-b border-border ${readerDensityPaddingClass(props.readerDensity)} transition hover:bg-accent hover:text-accent-foreground ${props.isSelected ? "bg-selected text-selected-foreground ring-1 ring-ring ring-inset hover:bg-selected hover:text-selected-foreground" : "text-card-foreground"}`,
   );
 
   return (
-    <div class={creatorRowClass()} data-selected={props.isSelected ? "true" : "false"}>
+    <div
+      class={creatorRowClass()}
+      data-selected={props.isSelected ? "true" : "false"}
+      aria-current={props.isSelected ? "true" : undefined}
+    >
       <Show when={props.isSelected}>
         <span class="absolute inset-y-1 left-0 w-0.5 rounded-full bg-ring" aria-hidden="true" />
       </Show>

@@ -8,15 +8,17 @@ import type {
   UserSetting,
   UserSubscriptionWithCreator,
 } from "@FeedElity/api";
-import { For, Match, Show, Suspense, Switch, createEffect, createMemo, createResource, createSignal, onCleanup, onMount, untrack } from "solid-js";
+import { For, Match, Show, Suspense, Switch, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
 import TriangleAlert from "lucide-solid/icons/triangle-alert";
 import ChevronDown from "lucide-solid/icons/chevron-down";
 import Plus from "lucide-solid/icons/plus";
 import RefreshCw from "lucide-solid/icons/refresh-cw";
 import Settings from "lucide-solid/icons/settings";
+import X from "lucide-solid/icons/x";
 import Zap from "lucide-solid/icons/zap";
 
 import { authClient } from "@/lib/auth-client";
+import { createDebouncedValue } from "@/utils/debounce";
 import { client } from "@/utils/orpc";
 
 import { ContentListColumn } from "./app-shell-content-column";
@@ -210,6 +212,27 @@ function appendUniqueCreators(
   return [...creatorById.values()];
 }
 
+// Moves the currently selected creator to index 0 of the display list so the
+// selection stays findable regardless of the dynamic lastUpdate sort, while
+// preserving the relative order of every other row. Pure derivation over the
+// merged display array only — pagination state and the underlying pages are
+// untouched.
+function pinSelectedCreatorFirst(
+  creators: readonly BrowsableCreator[],
+  selectedCreatorId: string | null,
+): readonly BrowsableCreator[] {
+  if (selectedCreatorId === null) {
+    return creators;
+  }
+
+  const selected = creators.find((creator) => creator.id === selectedCreatorId);
+  if (selected === undefined) {
+    return creators;
+  }
+
+  return [selected, ...creators.filter((creator) => creator.id !== selectedCreatorId)];
+}
+
 function appendUniqueFeeds(existingFeeds: readonly CatalogFeed[], nextFeeds: readonly CatalogFeed[]): readonly CatalogFeed[] {
   const feedById = new Map(existingFeeds.map((feed) => [feed.id, feed]));
   for (const feed of nextFeeds) {
@@ -301,6 +324,12 @@ function LoadMoreControl(props: LoadMoreControlProps) {
 
 function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [search, setSearch] = createSignal("");
+  // User-typed input debounce: the creator list (the catalog fetch input and
+  // the client-side library filter) follows the search field only after typing
+  // has settled for 300 ms, so catalog search no longer refetches per
+  // keystroke. The input itself stays controlled by the immediate signal. This
+  // reacts only to typed input — it is not a background refresh.
+  const debouncedSearch = createDebouncedValue(search, 300);
   const [sourceType, setSourceType] = createSignal<SourceType | null>(null);
   const [appendedCatalogCreatorPage, setAppendedCatalogCreatorPage] = createSignal<AppendedPageState<BrowsableCreator>>(emptyAppendedPageState());
   const [catalogCreatorOffset, setCatalogCreatorOffset] = createSignal<PaginationOffsetState>({ key: "", nextOffset: 0 });
@@ -333,7 +362,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     readonly results: readonly RefreshFeedResultWithFeed[];
   } | null>(null);
   const [libraryCreatorLimit, setLibraryCreatorLimit] = createSignal(creatorListLimit);
-  const creatorListInput = createMemo(() => toCreatorListInput(search(), sourceType(), props.creatorSort()));
+  const creatorListInput = createMemo(() => toCreatorListInput(debouncedSearch(), sourceType(), props.creatorSort()));
   const creatorListResourceKey = createMemo(() => toCreatorListResourceKey(creatorListInput(), props.catalogReloadKey()));
   const [creators] = createResource(
     creatorListResourceKey,
@@ -383,16 +412,16 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const subscriptionCreatorIds = createMemo(() => new Set((subscriptionsValue() ?? emptySubscriptions).map((subscription) => subscription.creator.id)));
   const listedCreators = createMemo<readonly BrowsableCreator[]>(() => {
     if (props.mode === "library") {
-      const trimmedSearch = search().trim().toLowerCase();
+      const trimmedSearch = debouncedSearch().trim().toLowerCase();
       const subscribedCreators = (subscriptionsValue() ?? emptySubscriptions).map((subscription) => subscription.creator);
-      return subscribedCreators.filter((creator) => {
+      return pinSelectedCreatorFirst(subscribedCreators.filter((creator) => {
         const matchesSearch = trimmedSearch.length === 0 || creator.displayName.toLowerCase().includes(trimmedSearch);
         const matchesSourceType = sourceType() === null || creator.sourceTypes.includes(sourceType() as SourceType);
         return matchesSearch && matchesSourceType;
-      }).slice(0, libraryCreatorLimit());
+      }).slice(0, libraryCreatorLimit()), props.selectedCreatorId());
     }
 
-    return appendUniqueCreators(creatorsValue() ?? emptyBrowsableCreators, pageItemsForKey(appendedCatalogCreatorPage(), creatorListResourceKey()));
+    return pinSelectedCreatorFirst(appendUniqueCreators(creatorsValue() ?? emptyBrowsableCreators, pageItemsForKey(appendedCatalogCreatorPage(), creatorListResourceKey())), props.selectedCreatorId());
   });
   const creatorCount = createMemo(() => listedCreators().length);
   const catalogCreatorHasMore = createMemo(() =>
@@ -408,7 +437,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
       return false;
     }
 
-    const trimmedSearch = search().trim().toLowerCase();
+    const trimmedSearch = debouncedSearch().trim().toLowerCase();
     const matchingCreators = (subscriptionsValue() ?? emptySubscriptions).filter((subscription) => {
       const creator = subscription.creator;
       const matchesSearch = trimmedSearch.length === 0 || creator.displayName.toLowerCase().includes(trimmedSearch);
@@ -428,6 +457,33 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
 
     return pageHasMoreForKey(appendedFeedPage(), key, (feedsValue() ?? emptyCatalogFeeds).length, feedListLimit);
   });
+
+  // Keep the selected creator row visible: scroll it into view whenever the
+  // selection changes. The lookup iterates the row elements and compares
+  // data-creator-id, so the creator id never gets interpolated into a CSS
+  // selector. The element lookups are guarded — the region or the row may not
+  // exist mid-render.
+  let creatorListRegionEl: HTMLDivElement | undefined;
+  createEffect(
+    on(props.selectedCreatorId, (creatorId) => {
+      if (creatorId === null) {
+        return;
+      }
+
+      const region = creatorListRegionEl;
+      if (region === undefined) {
+        return;
+      }
+
+      const rows = region.querySelectorAll<HTMLElement>("[data-creator-id]");
+      for (const row of rows) {
+        if (row.dataset.creatorId === creatorId) {
+          row.scrollIntoView({ block: "nearest" });
+          return;
+        }
+      }
+    }),
+  );
 
   const loadMoreCreators = async () => {
     if (props.mode === "library") {
@@ -827,13 +883,13 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
       </div>
       <div class={sourceCatalogRegionClass} data-source-catalog-region>
         <Show when={props.activeTab() === "library"}>
-        <div class={sourceCreatorListRegionClass} data-source-scroll-region>
+        <div class={sourceCreatorListRegionClass} data-source-scroll-region ref={(el) => { creatorListRegionEl = el; }}>
           <Switch>
-            <Match when={props.mode === "library" && subscriptions.loading}>
+            <Match when={props.mode === "library" && subscriptions.loading && subscriptionsValue() === undefined}>
               <p class="text-xs font-semibold text-foreground">Loading Library</p>
               <p class="mt-2 text-xs leading-5 text-muted-foreground">Loading your subscribed sources.</p>
             </Match>
-            <Match when={props.mode === "catalog" && creators.loading}>
+            <Match when={props.mode === "catalog" && creators.loading && creatorsValue() === undefined}>
               <p class="text-xs font-semibold text-foreground">Loading sources</p>
               <p class="mt-2 text-xs leading-5 text-muted-foreground">Loading the public catalog.</p>
             </Match>
@@ -861,7 +917,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
                 <ol aria-label="Creator sources">
                   <For each={loadedCreators()}>
                     {(creator) => (
-                      <li>
+                      <li data-creator-id={creator.id}>
                         <CreatorSourceRow
                           creator={creator}
                           isAuthenticated={props.isAuthenticated()}
@@ -906,6 +962,16 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
               <div class="flex items-center justify-between gap-2">
                 <p class="min-w-0 truncate text-xs font-semibold text-foreground">{creator().displayName}</p>
                 <div class="flex items-center gap-1">
+                  <button
+                    type="button"
+                    class="shrink-0 rounded-md border border-border bg-background p-1 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                    aria-label={`Clear selected creator ${creator().displayName}`}
+                    title="Clear selected creator"
+                    data-clear-selected-creator
+                    onClick={() => props.onClearCreator()}
+                  >
+                    <X size={12} />
+                  </button>
                   <Show when={props.isAuthenticated()}>
                     <button
                       type="button"

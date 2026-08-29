@@ -341,11 +341,16 @@ test("creator source-type filter scopes the creator list without changing playba
   const source = await readAppShellSource();
 
   expect(source).toContain("const [sourceType, setSourceType] = createSignal<SourceType | null>(null)");
-  expect(source).toContain("() => toCreatorListInput(search(), sourceType(), props.creatorSort())");
+  // Catalog search is debounced: the list input reads the 300 ms debounced
+  // mirror of the search signal, not the raw keystroke value.
+  expect(source).toContain("() => toCreatorListInput(debouncedSearch(), sourceType(), props.creatorSort())");
   expect(source).toContain(`id={creatorSourceFilterId}`);
   expect(source).toContain(`aria-label="Creator source-type filter"`);
   expect(source).toContain(`title="Filters creator rows by catalog source type. Select a creator to inspect all feeds."`);
-  expect(source).toContain("creator.sourceType === sourceType()");
+  // Multi-source creators belong to every source they publish on, so the
+  // filter checks membership in sourceTypes (a creator must stay visible for
+  // each of its sources, not a single legacy sourceType field).
+  expect(source).toContain("creator.sourceTypes.includes(sourceType()");
   expect(source).toContain("id=\"viewer-source-switcher\"");
   expect(source).toContain("onClick={() => setSelectedSourceId(source.id)}");
 });
@@ -449,8 +454,12 @@ test("content pane is wired to anonymous catalog content items", async () => {
 
 test("content filters are Solid state backed and avoid class-name filtering", async () => {
   const source = await readAppShellSource();
+  // Filtering must stay Solid-state driven: no DOM class/tag sniffing, no
+  // attribute-styled filtering, no hidden-element toggling. A bare
+  // querySelector is not banned outright because the selected-creator row
+  // lookup (scrollIntoView targeting, a static [data-creator-id] query) is a
+  // legitimate imperative DOM read that filters nothing.
   const forbiddenDomFilteringSnippets = [
-    "querySelector",
     "getElementsByClassName",
     "classList",
     "dataset.sourceType",
@@ -1159,7 +1168,10 @@ test("hide played is state filtering and not DOM filtering", async () => {
   expect(source).toContain("const [hidePlayed, setHidePlayed] = createSignal<boolean>(readPersistedHidePlayed() ?? false)");
   expect(source).toContain("locallyFilteredItems.filter((contentItem) => !toContentStatusFlags(statuses, contentItem.id).played)");
   expect(source).toContain("<For each={displayedContentItems()}>");
-  expect(source).not.toContain("querySelector");
+  // The selected-creator scrollIntoView lookup reads the DOM with a static
+  // [data-creator-id] query; hide-played itself never touches the DOM
+  // (no class/tag sniffing, no hidden-element toggling).
+  expect(source).not.toContain("getElementsByClassName");
   expect(source).not.toContain("classList");
   expect(source).not.toContain("hidden =");
 });
