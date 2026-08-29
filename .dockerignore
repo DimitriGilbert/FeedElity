@@ -4,6 +4,8 @@
 node_modules
 local.db*
 *.db.before-*
+*.db
+*.db-*
 # Exclude the desktop app sources (Electrobun/native build, not used by the
 # container images), but keep its package.json so the workspace install matches
 # bun.lock and --frozen-lockfile stays valid.
