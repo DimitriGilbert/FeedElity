@@ -1024,7 +1024,6 @@ export default function AppShell(props: AppShellProps) {
   const [catalogReloadKey, setCatalogReloadKey] = createSignal(0);
   const [subscriptionsReloadKey, setSubscriptionsReloadKey] = createSignal(0);
   const [favoritesReloadKey, setFavoritesReloadKey] = createSignal(0);
-  const [statusReloadKey, setStatusReloadKey] = createSignal(0);
   const [listLiveReloadKey, setListLiveReloadKey] = createSignal(0);
   const [statusSelectionError, setStatusSelectionError] = createSignal<string | null>(null);
   const [activeTab, setActiveTab] = createSignal<LeftPaneTab>("library");
@@ -1078,6 +1077,15 @@ export default function AppShell(props: AppShellProps) {
     setSelectedFeed(feed);
   };
 
+  // Shared unselect affordance (creator-column rows, subscription-triggered
+  // clears, and the content-column filter chip): clears creator + feed + viewer
+  // content in one place so every entry point behaves identically.
+  const clearSelectedCreator = () => {
+    setSelectedCreator(null);
+    setSelectedFeed(null);
+    setSelectedContent(null);
+  };
+
   const patchContentStatus = (status: UserContentStatus) => {
     mutateContentStatuses((currentStatuses = emptyUserContentStatuses) => [
       ...currentStatuses.filter((item) => item.contentItemId !== status.contentItemId || item.status !== status.status),
@@ -1091,6 +1099,11 @@ export default function AppShell(props: AppShellProps) {
     );
   };
 
+  // Opened/played markers propagate through local status patches only. History
+  // views are snapshots: refetching the list on every open/played would reorder
+  // it under the user's cursor (and vanish the clicked row with "hide played"),
+  // so there is deliberately no reload key here. New entries join history
+  // views on the next fetch (mode switch, filter change, revisit).
   const markContentOpened = async (contentItemId: string) => {
     if (!isAuthenticated()) {
       return;
@@ -1099,11 +1112,9 @@ export default function AppShell(props: AppShellProps) {
     const result = await client.overlays.toggleContentOpened({ contentItemId });
     if (result.status === null) {
       removeContentStatus(contentItemId, "opened");
-      setStatusReloadKey((key) => key + 1);
       return;
     }
     patchContentStatus(result.status);
-    setStatusReloadKey((key) => key + 1);
   };
 
   const markContentPlayed = async (contentItemId: string) => {
@@ -1114,11 +1125,9 @@ export default function AppShell(props: AppShellProps) {
     const result = await client.overlays.toggleContentPlayed({ contentItemId });
     if (result.status === null) {
       removeContentStatus(contentItemId, "played");
-      setStatusReloadKey((key) => key + 1);
       return;
     }
     patchContentStatus(result.status);
-    setStatusReloadKey((key) => key + 1);
   };
 
   const autoMarkContentPlayed = async (contentItemId: string) => {
@@ -1129,7 +1138,6 @@ export default function AppShell(props: AppShellProps) {
     const result = await client.overlays.markContentPlayed({ contentItemId });
     if (result.status !== null) {
       patchContentStatus(result.status);
-      setStatusReloadKey((key) => key + 1);
     }
   };
 
@@ -1140,7 +1148,6 @@ export default function AppShell(props: AppShellProps) {
 
     const result = await client.overlays.markContentOpened({ contentItemId });
     patchContentStatus(result.status);
-    setStatusReloadKey((key) => key + 1);
   };
 
   const selectContent = async (contentItem: CatalogContentListItem) => {
@@ -1259,11 +1266,7 @@ export default function AppShell(props: AppShellProps) {
           middlePanePanel={middlePanePanel}
           onContentListLiveReload={() => setListLiveReloadKey((key) => key + 1)}
           onSubscriptionsChanged={() => setSubscriptionsReloadKey((key) => key + 1)}
-          onClearCreator={() => {
-            setSelectedCreator(null);
-            setSelectedFeed(null);
-            setSelectedContent(null);
-          }}
+          onClearCreator={clearSelectedCreator}
           onSelectCreator={selectCreator}
           onSelectFeed={selectFeed}
           onSelectPlaylist={setSelectedPlaylistId}
@@ -1282,6 +1285,7 @@ export default function AppShell(props: AppShellProps) {
           selectedPlaylistId={selectedPlaylistId}
           selectedCollectionId={selectedCollectionId}
           onClearCollection={() => setSelectedCollectionId(null)}
+          onClearCreator={clearSelectedCreator}
           collectionsReloadKey={collectionsReloadKey}
           selectedContentItemId={selectedContentItemId}
           catalogReloadKey={catalogReloadKey}
@@ -1289,7 +1293,6 @@ export default function AppShell(props: AppShellProps) {
           favoritesReloadKey={favoritesReloadKey}
           readerDensity={readerDensity}
           contentStatuses={() => contentStatuses() ?? emptyUserContentStatuses}
-          statusReloadKey={statusReloadKey}
           listLiveReloadKey={listLiveReloadKey}
           middlePanePanel={middlePanePanel}
           onCloseMiddlePanePanel={() => setMiddlePanePanel(null)}

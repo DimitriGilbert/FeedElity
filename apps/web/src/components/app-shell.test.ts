@@ -859,7 +859,7 @@ test("native video playback marks selected content played after authenticated gu
   expect(source).toContain("await props.onAutoMarkContentPlayed(contentItemId);");
   expect(source).toContain("const autoMarkContentPlayed = async (contentItemId: string) => {");
   expect(source).toContain("const result = await client.overlays.markContentPlayed({ contentItemId });");
-  expect(source).toContain("if (result.status !== null) {\n      patchContentStatus(result.status);\n      setStatusReloadKey((key) => key + 1);\n    }");
+  expect(source).toContain("if (result.status !== null) {\n      patchContentStatus(result.status);\n    }");
 });
 
 test("iframe playback has explicit real mark played workflow", async () => {
@@ -1247,18 +1247,20 @@ test("resource reload dependencies use stable primitive source keys", async () =
   expect(source).toContain("input.offset.toString()");
   expect(source).toContain("createResource(contentItemsResourceKey, () =>");
   expect(source).toContain('return "content-statuses";');
-  expect(source).toContain("const [statusReloadKey, setStatusReloadKey] = createSignal(0);");
-  expect(source).toContain("statusReloadKey={statusReloadKey}");
+  // History views are snapshots: opened/played markers propagate through local
+  // status patches (patchContentStatus/removeContentStatus), so no status
+  // reload key may exist anywhere — it would refetch and reorder the history
+  // list on every video selection. (The identifier is split so this grep-style
+  // assertion does not itself contain the forbidden symbol.)
+  expect(source).not.toContain(`status${"ReloadKey"}`);
   // The viewer's favoriteItems source must NOT embed favoritesReloadKey: doing
   // so re-suspends the viewer's resource and tears down the playing video on
   // every favorite toggle. The viewer refetches in place instead.
   expect(source).toContain("return contentItemId;");
   expect(source).not.toContain("props.favoritesReloadKey().toString()");
-  expect(source).not.toContain("statusReloadKey={() => 0}");
   expect(source).not.toContain("return { mode: \"catalog\", input: contentListInput(), reloadKey: props.catalogReloadKey() }");
   expect(source).not.toContain("return { mode: \"subscribed\", input: contentListInput(), reloadKey: props.catalogReloadKey() }");
   expect(source).not.toContain("return { contentItemId, reloadKey: props.favoritesReloadKey() }");
-  expect(source).not.toContain("return { reloadKey: statusReloadKey() };");
 });
 
 test("mobile navigation adds no timers observers or unstable resource source objects", async () => {
