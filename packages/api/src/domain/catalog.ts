@@ -32,8 +32,27 @@ export function creatorNameKey(displayName: string): string {
   return withoutClaimRevision.replace(/\s+/g, "").toLowerCase();
 }
 
+/**
+ * Derive the deterministic cross-source mirror key for a content item:
+ * `<creator name_key>:<title lowercased with every character that is not a
+ * Unicode letter or number stripped>`. Two items of the same creator whose
+ * titles normalize to the same value are mirrors of one video across sources.
+ * Returns null when the title carries no letters or numbers, so callers never
+ * persist a garbage key. Mirrored (without importing this package) by
+ * packages/db/src/cross-source-key.ts for the backfill migration; both
+ * implementations are pinned to the same case table by parity tests.
+ */
+export function contentCrossSourceKey(nameKey: string, title: string): string | null {
+  const normalizedTitle = title.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  if (normalizedTitle.length === 0) {
+    return null;
+  }
+  return `${nameKey}:${normalizedTitle}`;
+}
+
 export interface CatalogCreator {
   readonly id: string;
+  readonly nameKey: string;
   readonly displayName: string;
   readonly description: string | null;
   readonly imageUrl: string | null;

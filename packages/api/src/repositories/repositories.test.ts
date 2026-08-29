@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createClient } from "@libsql/client";
 import type { Client } from "@libsql/client";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/libsql";
 
 import * as schema from "@FeedElity/db/schema";
@@ -228,6 +229,104 @@ describe("catalog and overlay repositories", () => {
     expect(duplicateContentItem).toEqual(contentItem);
     expect(duplicateContentSource).toEqual(contentSource);
     expect(await listCatalogContentItems(testDatabase.db)).toHaveLength(1);
+  });
+
+  test("persisting a source identity under a merged creator re-points stale feed and content rows", async () => {
+    const staleCreator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Stale Creator",
+    });
+    const mergedCreator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Merged Creator",
+    });
+    const staleFeed = await findOrCreateFeed(testDatabase.db, {
+      creatorId: staleCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "heal-feed",
+      url: "https://youtube.example.test/heal.xml",
+    });
+    const staleItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: staleCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "heal-video",
+      title: "Heal video",
+    });
+
+    const healedFeed = await findOrCreateFeed(testDatabase.db, {
+      creatorId: mergedCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "heal-feed",
+      url: "https://youtube.example.test/heal.xml",
+    });
+    const healedItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: mergedCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "heal-video",
+      title: "Heal video",
+    });
+
+    // Same source identity, new owner: the existing rows are re-pointed, not duplicated.
+    expect(healedFeed.id).toBe(staleFeed.id);
+    expect(healedFeed.creatorId).toBe(mergedCreator.id);
+    expect(healedItem.id).toBe(staleItem.id);
+    expect(healedItem.creatorId).toBe(mergedCreator.id);
+    expect(await listCatalogContentItems(testDatabase.db)).toHaveLength(1);
+
+    const feedRow = await testDatabase.db.query.feed.findFirst({ where: eq(schema.feed.id, staleFeed.id) });
+    const itemRow = await testDatabase.db.query.contentItem.findFirst({
+      where: eq(schema.contentItem.id, staleItem.id),
+    });
+    expect(feedRow?.creatorId).toBe(mergedCreator.id);
+    expect(itemRow?.creatorId).toBe(mergedCreator.id);
+  });
+
+  test("cross_source_key is set on create and backfilled on conflict alongside the thumbnail backfill", async () => {
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Mirror Creator",
+    });
+
+    const created = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "odysee",
+      sourceExternalId: "mirror-video",
+      title: "Mirror video",
+      thumbnailUrl: "https://icons.example.test/mirror.png",
+      crossSourceKey: "mirrorcreator:mirrorvideo",
+    });
+    expect((await readContentItemRow(created.id))?.crossSourceKey).toBe("mirrorcreator:mirrorvideo");
+
+    // Repeating the same identity without a key changes nothing.
+    await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "odysee",
+      sourceExternalId: "mirror-video",
+      title: "Mirror video",
+    });
+    expect((await readContentItemRow(created.id))?.crossSourceKey).toBe("mirrorcreator:mirrorvideo");
+
+    // A row created before keys existed (NULL key) gets the key backfilled in
+    // the same update as the thumbnail backfill on the next conflict.
+    const legacyItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "peertube",
+      sourceExternalId: "legacy-video",
+      title: "Legacy video",
+    });
+    expect((await readContentItemRow(legacyItem.id))?.crossSourceKey).toBeNull();
+    expect((await readContentItemRow(legacyItem.id))?.thumbnailUrl).toBeNull();
+
+    const backfilled = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "peertube",
+      sourceExternalId: "legacy-video",
+      title: "Legacy video",
+      thumbnailUrl: "https://icons.example.test/legacy.png",
+      crossSourceKey: "mirrorcreator:legacyvideo",
+    });
+    expect(backfilled.id).toBe(legacyItem.id);
+    expect(backfilled.thumbnailUrl).toBe("https://icons.example.test/legacy.png");
+    const legacyRow = await readContentItemRow(legacyItem.id);
+    expect(legacyRow?.crossSourceKey).toBe("mirrorcreator:legacyvideo");
+    expect(legacyRow?.thumbnailUrl).toBe("https://icons.example.test/legacy.png");
   });
 
   test("content source priority collision returns the existing row", async () => {
@@ -610,6 +709,12 @@ async function insertUser(db: RepositoryDb, id: string, email: string): Promise<
   });
 }
 
+async function readContentItemRow(contentItemId: string) {
+  return testDatabase.db.query.contentItem.findFirst({
+    where: eq(schema.contentItem.id, contentItemId),
+  });
+}
+
 async function createTestDatabase(): Promise<TestDatabase> {
   const client = createClient({ url: ":memory:" });
   const db = drizzle({ client, schema });
@@ -674,6 +779,7 @@ const schemaStatements = [
     duration_seconds INTEGER,
     thumbnail_url TEXT,
     canonical_url TEXT,
+    cross_source_key TEXT,
     metadata_json TEXT,
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))

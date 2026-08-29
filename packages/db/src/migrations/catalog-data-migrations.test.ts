@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 
+import { contentCrossSourceKey } from "../cross-source-key";
 import { creatorNameKey } from "../creator-merge-plan";
 import {
   inspectCatalog,
@@ -221,19 +222,23 @@ function queryOptionalNumber(db: Database, sql: string, ...params: SQLQueryBindi
   return Number(v);
 }
 
-function creatorColumnNames(db: Database): readonly string[] {
-  const rows: readonly unknown[] = db.query("PRAGMA table_info(creator)").all();
+function loadColumnNames(db: Database, tableName: string): readonly string[] {
+  const rows: readonly unknown[] = db.query(`PRAGMA table_info(${tableName})`).all();
   const names: string[] = [];
   for (const row of rows) {
     if (typeof row !== "object" || row === null || !("name" in row)) {
-      throw new Error("PRAGMA table_info(creator) returned an unexpected row");
+      throw new Error(`PRAGMA table_info(${tableName}) returned an unexpected row`);
     }
     if (typeof row.name !== "string") {
-      throw new Error("PRAGMA table_info(creator) returned a non-string column name");
+      throw new Error(`PRAGMA table_info(${tableName}) returned a non-string column name`);
     }
     names.push(row.name);
   }
   return names;
+}
+
+function creatorColumnNames(db: Database): readonly string[] {
+  return loadColumnNames(db, "creator");
 }
 
 function indexNames(db: Database): ReadonlySet<string> {
@@ -313,10 +318,15 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
 
     expect(report.apply).toBe(true);
-    expect(report.appliedCount).toBe(1);
-    expect(report.steps).toHaveLength(1);
+    expect(report.appliedCount).toBe(2);
+    expect(report.steps).toHaveLength(2);
     expect(report.steps[0]?.id).toBe("creator_cross_source_merge");
     expect(report.steps[0]?.applied).toBe(true);
+    expect(report.steps[1]?.id).toBe("content_cross_source_key");
+    expect(report.steps[1]?.applied).toBe(true);
+    expect(report.steps[1]?.details.some((detail) => detail.startsWith("backfilled cross_source_key for 5"))).toBe(
+      true,
+    );
 
     const after = inspectDatabaseFile(path);
     // 4 creators -> 2 (the three Scott Manley rows collapse onto the youtube one).
@@ -349,6 +359,7 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
       expect(queryOptionalNumber(db, "SELECT last_content_published_at AS v FROM creator WHERE id = ?", SOLO_ID)).toBe(50);
       expect(queryNumber(db, "SELECT count(*) AS n FROM creator WHERE name_key = 'scottmanley'")).toBe(1);
       expect(queryNumber(db, "SELECT count(*) AS n FROM __feedelity_migrations WHERE id = 'creator_cross_source_merge'")).toBe(1);
+      expect(queryNumber(db, "SELECT count(*) AS n FROM __feedelity_migrations WHERE id = 'content_cross_source_key'")).toBe(1);
 
       // Schema convergence: legacy columns/index gone, cross-source indexes present.
       const columns = creatorColumnNames(db);
@@ -356,11 +367,34 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
       expect(columns).not.toContain("source_external_id");
       expect(columns).toContain("name_key");
       expect(columns).toContain("last_content_published_at");
+      const contentColumns = loadColumnNames(db, "content_item");
+      expect(contentColumns).toContain("cross_source_key");
       const indexes = indexNames(db);
       expect(indexes.has("creator_source_identity_uidx")).toBe(false);
       expect(indexes.has("creator_name_key_uidx")).toBe(true);
       expect(indexes.has("creator_display_name_idx")).toBe(true);
       expect(indexes.has("creator_last_content_published_at_idx")).toBe(true);
+      expect(indexes.has("content_item_cross_source_key_idx")).toBe(true);
+
+      // Every item carries the mirror key derived from its creator's name_key
+      // and its title, computed by the parity-tested mirrored function.
+      expect(queryNumber(db, "SELECT count(*) AS n FROM content_item WHERE cross_source_key IS NULL")).toBe(0);
+      const itemRows: readonly unknown[] = db
+        .query(
+          "SELECT i.id AS id, c.name_key AS nameKey, i.title AS title, i.cross_source_key AS crossSourceKey " +
+            "FROM content_item i INNER JOIN creator c ON c.id = i.creator_id",
+        )
+        .all();
+      expect(itemRows).toHaveLength(5);
+      for (const row of itemRows) {
+        if (typeof row !== "object" || row === null || !("id" in row) || !("nameKey" in row) || !("title" in row) || !("crossSourceKey" in row)) {
+          throw new Error("content_item backfill query returned an unexpected row");
+        }
+        if (typeof row.nameKey !== "string" || typeof row.title !== "string") {
+          throw new Error("content_item backfill query returned non-string name_key/title");
+        }
+        expect(row.crossSourceKey).toBe(contentCrossSourceKey(row.nameKey, row.title));
+      }
     } finally {
       db.close();
     }
@@ -376,8 +410,11 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     const secondRun = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
 
     expect(secondRun.appliedCount).toBe(0);
+    expect(secondRun.steps).toHaveLength(2);
     expect(secondRun.steps[0]?.applied).toBe(false);
     expect(secondRun.steps[0]?.details).toEqual(["skipped: migration id already recorded"]);
+    expect(secondRun.steps[1]?.applied).toBe(false);
+    expect(secondRun.steps[1]?.details).toEqual(["skipped: migration id already recorded"]);
 
     const after = inspectDatabaseFile(path);
     expect(after.counts.creators).toBe(2);
@@ -400,6 +437,17 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     expect(details).toContain("drop legacy column(s) source_type, source_external_id");
     expect(details).toContain("add name_key column");
 
+    // The content_cross_source_key step reports the planned column, index, and
+    // backfill work without writing.
+    expect(report.steps).toHaveLength(2);
+    expect(report.steps[1]?.id).toBe("content_cross_source_key");
+    expect(report.steps[1]?.applied).toBe(false);
+    const keyStepDetails = report.steps[1]?.details.join("\n") ?? "";
+    expect(keyStepDetails).toContain("add content_item.cross_source_key column");
+    expect(keyStepDetails).toContain("create index content_item_cross_source_key_idx");
+    expect(keyStepDetails).toContain("backfill cross_source_key for 5 content_item row(s)");
+    expect(keyStepDetails).toContain("no writes performed (dry run)");
+
     // Nothing was written: no migration record, no schema change, no merge.
     const db = openCatalogDatabase(path, { readOnly: true });
     try {
@@ -410,6 +458,14 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     } finally {
       db.close();
     }
+
+    const contentDb = openCatalogDatabase(path, { readOnly: true });
+    try {
+      expect(loadColumnNames(contentDb, "content_item")).not.toContain("cross_source_key");
+      expect(queryNumber(contentDb, "SELECT count(*) AS n FROM content_item")).toBe(5);
+    } finally {
+      contentDb.close();
+    }
   });
 
   test("also converges a legacy database that lacks the last_content_published_at column", async () => {
@@ -419,7 +475,7 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     seedDb.close();
 
     const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
-    expect(report.appliedCount).toBe(1);
+    expect(report.appliedCount).toBe(2);
 
     const after = inspectDatabaseFile(path);
     expect(after.counts.creators).toBe(2);
@@ -444,7 +500,7 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     await runCatalogDataMigrations({ databaseUrl: path, apply: true });
 
     // Simulate a database whose schema is already correct but whose migration
-    // id is missing (e.g. created via db:push): the step must detect
+    // ids are missing (e.g. created via db:push): each step must detect
     // convergence by inspection, do nothing, and still get recorded.
     const db = openCatalogDatabase(path, { readOnly: false });
     try {
@@ -454,8 +510,11 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     }
 
     const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
-    expect(report.appliedCount).toBe(1);
+    expect(report.appliedCount).toBe(2);
     expect(report.steps[0]?.details[0]).toContain("already converged");
+    expect(report.steps[1]?.details[0]).toContain(
+      "already converged: content_item.cross_source_key exists, is indexed, and has no NULL rows",
+    );
 
     const secondRun = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
     expect(secondRun.appliedCount).toBe(0);

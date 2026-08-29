@@ -9,7 +9,10 @@
  * migration (a unique name_key index over still-duplicated rows). Instead, the
  * `creator_cross_source_merge` step merges duplicate creator rows first and
  * then converges the creator table to the cross-source (name_key) schema on
- * whatever state it finds — legacy or current.
+ * whatever state it finds — legacy or current. The follow-up
+ * `content_cross_source_key` step adds content_item.cross_source_key, indexes
+ * it, and backfills mirror keys from each item's creator name_key plus its
+ * normalized title.
  *
  * Each step runs in its own transaction: BEGIN IMMEDIATE -> check id -> run ->
  * insert id -> COMMIT; on any error the transaction is rolled back and the
@@ -19,6 +22,7 @@
 
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 
+import { contentCrossSourceKey } from "../cross-source-key";
 import {
   buildMergePlan,
   summarizePlan,
@@ -67,6 +71,8 @@ const CREATOR_INDEX_DDL: Readonly<Record<string, string>> = {
 };
 
 const CREATOR_INDEXES = Object.keys(CREATOR_INDEX_DDL);
+
+const CONTENT_CROSS_SOURCE_KEY_INDEX = "content_item_cross_source_key_idx";
 
 export interface CatalogCounts {
   readonly creators: number;
@@ -226,7 +232,17 @@ const creatorCrossSourceMergeStep: CatalogMigrationStep = {
   run: runCreatorCrossSourceMerge,
 };
 
-const catalogMigrationSteps: readonly CatalogMigrationStep[] = [creatorCrossSourceMergeStep];
+const contentCrossSourceKeyStep: CatalogMigrationStep = {
+  id: "content_cross_source_key",
+  description:
+    "Add content_item.cross_source_key, index it, and backfill the mirror key of existing items from their creator's name_key and normalized title.",
+  run: runContentCrossSourceKey,
+};
+
+const catalogMigrationSteps: readonly CatalogMigrationStep[] = [
+  creatorCrossSourceMergeStep,
+  contentCrossSourceKeyStep,
+];
 
 function runCreatorCrossSourceMerge(db: Database, apply: boolean): readonly string[] {
   const before = inspectCatalog(db);
@@ -270,6 +286,105 @@ function runCreatorCrossSourceMerge(db: Database, apply: boolean): readonly stri
   details.push(`foreign_key_check: ${violations} violation(s) (pre-existing: ${before.foreignKeyViolations})`);
 
   return details;
+}
+
+/**
+ * Backfill content_item.cross_source_key. Runs after
+ * creator_cross_source_merge so creator.name_key exists for the join. The key
+ * function is the mirrored contentCrossSourceKey() from ../cross-source-key,
+ * which the parity tests pin to the domain implementation in packages/api.
+ */
+function runContentCrossSourceKey(db: Database, apply: boolean): readonly string[] {
+  const hasColumn = loadTableColumns(db, "content_item").has("cross_source_key");
+  const hasIndex = indexExists(db, CONTENT_CROSS_SOURCE_KEY_INDEX);
+  // Without the column every existing row is pending; with it, the NULL guard
+  // keeps the backfill idempotent.
+  const pendingCount = hasColumn
+    ? readSingleNumber(db, "SELECT count(*) AS n FROM content_item WHERE cross_source_key IS NULL")
+    : readSingleNumber(db, "SELECT count(*) AS n FROM content_item");
+
+  if (hasColumn && hasIndex && pendingCount === 0) {
+    return ["already converged: content_item.cross_source_key exists, is indexed, and has no NULL rows"];
+  }
+
+  if (!apply) {
+    const work: string[] = [];
+    if (!hasColumn) {
+      work.push("add content_item.cross_source_key column");
+    }
+    if (!hasIndex) {
+      work.push(`create index ${CONTENT_CROSS_SOURCE_KEY_INDEX}`);
+    }
+    work.push(`backfill cross_source_key for ${pendingCount} content_item row(s)`);
+    work.push("no writes performed (dry run)");
+    return work;
+  }
+
+  if (!hasColumn) {
+    db.exec("ALTER TABLE content_item ADD COLUMN cross_source_key text");
+  }
+  if (!hasIndex) {
+    db.exec(`CREATE INDEX IF NOT EXISTS ${CONTENT_CROSS_SOURCE_KEY_INDEX} ON content_item (cross_source_key)`);
+  }
+
+  const details: string[] = [];
+  if (!hasColumn) {
+    details.push("added content_item.cross_source_key column");
+  }
+  if (!hasIndex) {
+    details.push(`created index ${CONTENT_CROSS_SOURCE_KEY_INDEX}`);
+  }
+
+  const pendingRows = loadContentItemsMissingCrossSourceKey(db);
+  let backfilled = 0;
+  for (const row of pendingRows) {
+    // Titles with no letters or numbers normalize to empty: skip them and leave
+    // the key NULL so callers never see a garbage linkage.
+    const key = contentCrossSourceKey(row.nameKey, row.title);
+    if (key === null) {
+      continue;
+    }
+    db.query("UPDATE content_item SET cross_source_key = ? WHERE id = ?").run(key, row.id);
+    backfilled += 1;
+  }
+  details.push(
+    `backfilled cross_source_key for ${backfilled} content_item row(s)` +
+      (pendingRows.length === backfilled ? "" : ` (skipped ${pendingRows.length - backfilled} with empty normalized titles)`),
+  );
+
+  return details;
+}
+
+interface ContentItemKeyRow {
+  readonly id: string;
+  readonly nameKey: string;
+  readonly title: string;
+}
+
+function loadContentItemsMissingCrossSourceKey(db: Database): ContentItemKeyRow[] {
+  const rows: readonly unknown[] = db
+    .query(
+      "SELECT i.id AS id, c.name_key AS nameKey, i.title AS title " +
+        "FROM content_item i INNER JOIN creator c ON c.id = i.creator_id " +
+        "WHERE i.cross_source_key IS NULL",
+    )
+    .all();
+  return rows.map(parseContentItemKeyRow);
+}
+
+function parseContentItemKeyRow(row: unknown): ContentItemKeyRow {
+  if (!isRecord(row)) {
+    throw new Error("content_item cross-source-key query returned a non-object row");
+  }
+  const title = row["title"];
+  if (typeof title !== "string") {
+    throw new Error(`expected a string for content_item.title, got ${describeValue(title)}`);
+  }
+  return {
+    id: requireStringField(row, "id", "content_item.id"),
+    nameKey: requireStringField(row, "nameKey", "creator.name_key"),
+    title,
+  };
 }
 
 /** Re-point every child row of a merged-away creator, then delete the row. */
@@ -384,7 +499,7 @@ function describeSchemaWork(schema: CreatorSchemaState): string {
 
 /** Read the full catalog state: counts, creator schema state, and merge plan. */
 export function inspectCatalog(db: Database): CatalogInspection {
-  const columns = loadCreatorColumns(db);
+  const columns = loadTableColumns(db, "creator");
   const mergePlan = buildMergePlan(loadCreatorRows(db, columns));
   return {
     counts: loadCatalogCounts(db),
@@ -409,21 +524,22 @@ function loadCatalogCounts(db: Database): CatalogCounts {
   };
 }
 
-function loadCreatorColumns(db: Database): ReadonlySet<string> {
-  const rows: readonly unknown[] = db.query("PRAGMA table_info(creator)").all();
+/** Load the set of column names a table currently has. */
+function loadTableColumns(db: Database, tableName: string): ReadonlySet<string> {
+  const rows: readonly unknown[] = db.query(`PRAGMA table_info(${tableName})`).all();
   if (rows.length === 0) {
     throw new Error(
-      "creator table does not exist; apply the drizzle schema first (db:push or the bootstrap SQL migrations)",
+      `${tableName} table does not exist; apply the drizzle schema first (db:push or the bootstrap SQL migrations)`,
     );
   }
   const names = new Set<string>();
   for (const row of rows) {
     if (!isRecord(row)) {
-      throw new Error("PRAGMA table_info(creator) returned a non-object row");
+      throw new Error(`PRAGMA table_info(${tableName}) returned a non-object row`);
     }
     const name = row["name"];
     if (typeof name !== "string" || name.length === 0) {
-      throw new Error("PRAGMA table_info(creator) returned a row without a valid column name");
+      throw new Error(`PRAGMA table_info(${tableName}) returned a row without a valid column name`);
     }
     names.add(name);
   }

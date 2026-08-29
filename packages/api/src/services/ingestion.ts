@@ -18,7 +18,7 @@ import {
   linkFeedContent,
   type RepositoryDb,
 } from "../repositories/catalog";
-import { creatorNameKey } from "../domain/catalog";
+import { contentCrossSourceKey, creatorNameKey } from "../domain/catalog";
 import { findOrCreateSubscription } from "../repositories/overlays";
 import type { UserSubscription } from "../domain/overlays";
 import type { SourceAdapterError, SourceAdapterErrorCode } from "../sources";
@@ -199,7 +199,13 @@ export async function persistNormalizedCatalog(
 
   for (const normalizedItem of payload.items) {
     const existingContentItem = await findContentItemBySourceIdentity(db, normalizedItem.contentItem);
-    const contentItem = await findOrCreateContentItem(db, { ...normalizedItem.contentItem, creatorId: creator.id });
+    // A null key (title without letters or numbers) is simply not written: the
+    // column stays NULL and no mirror linkage is recorded for such items.
+    const contentItem = await findOrCreateContentItem(db, {
+      ...normalizedItem.contentItem,
+      creatorId: creator.id,
+      crossSourceKey: contentCrossSourceKey(creator.nameKey, normalizedItem.contentItem.title),
+    });
     contentItems.push(contentItem);
     if (existingContentItem === null) {
       createdContentItems += 1;

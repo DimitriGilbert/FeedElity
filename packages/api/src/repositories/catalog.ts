@@ -53,6 +53,7 @@ export interface SaveContentItemInput {
   readonly thumbnailUrl?: string | null;
   readonly canonicalUrl?: string | null;
   readonly metadataJson?: string | null;
+  readonly crossSourceKey?: string | null;
 }
 
 export interface SaveContentSourceInput {
@@ -326,6 +327,18 @@ export async function findOrCreateFeed(db: RepositoryDb, input: SaveFeedInput): 
   if (existing === null) {
     throw new Error("Feed write did not produce a readable catalog record.");
   }
+
+  // Self-heal on conflict: a feed created before a creator merge (or by a race)
+  // can point at a stale creator row. Re-point it onto the creator resolved in
+  // this flow so split creator rows never re-form through ingestion or refresh.
+  if (existing.creatorId !== input.creatorId) {
+    await db
+      .update(schema.feed)
+      .set({ creatorId: input.creatorId })
+      .where(eq(schema.feed.id, existing.id));
+    return { ...existing, creatorId: input.creatorId };
+  }
+
   return existing;
 }
 
@@ -368,23 +381,52 @@ export async function findOrCreateContentItem(
       thumbnailUrl: input.thumbnailUrl ?? null,
       canonicalUrl: input.canonicalUrl ?? null,
       metadataJson: input.metadataJson ?? null,
+      crossSourceKey: input.crossSourceKey ?? null,
     })
     .onConflictDoNothing({ target: [schema.contentItem.sourceType, schema.contentItem.sourceExternalId] });
 
-  const existing = await findContentItemBySourceIdentity(db, input);
-  if (existing === null) {
+  // Read the raw row so self-heal can inspect cross_source_key, which the
+  // CatalogContentItem domain shape does not carry.
+  const existingRow = await db.query.contentItem.findFirst({
+    where: and(
+      eq(schema.contentItem.sourceType, input.sourceType),
+      eq(schema.contentItem.sourceExternalId, input.sourceExternalId),
+    ),
+  });
+  if (existingRow === undefined) {
     throw new Error("Content item write did not produce a readable catalog record.");
   }
 
-  if (existing.thumbnailUrl === null && input.thumbnailUrl !== null && input.thumbnailUrl !== undefined) {
-    await db
-      .update(schema.contentItem)
-      .set({ thumbnailUrl: input.thumbnailUrl })
-      .where(eq(schema.contentItem.id, existing.id));
-    return { ...existing, thumbnailUrl: input.thumbnailUrl };
+  // Self-heal on conflict: re-point rows created before a creator merge (or by
+  // a race) onto the resolved creator, backfill a missing thumbnail, and
+  // backfill the cross-source mirror key for rows created before keys existed.
+  // All repairs fold into one UPDATE so repeated ingestion of the same video
+  // stays a no-op apart from these backfills.
+  const updates: Partial<
+    Pick<typeof schema.contentItem.$inferInsert, "creatorId" | "thumbnailUrl" | "crossSourceKey">
+  > = {};
+  if (existingRow.creatorId !== input.creatorId) {
+    updates.creatorId = input.creatorId;
+  }
+  if (existingRow.thumbnailUrl === null && input.thumbnailUrl !== null && input.thumbnailUrl !== undefined) {
+    updates.thumbnailUrl = input.thumbnailUrl;
+  }
+  if (existingRow.crossSourceKey === null && input.crossSourceKey !== null && input.crossSourceKey !== undefined) {
+    updates.crossSourceKey = input.crossSourceKey;
   }
 
-  return existing;
+  if (Object.keys(updates).length === 0) {
+    return toCatalogContentItem(existingRow);
+  }
+
+  await db.update(schema.contentItem).set(updates).where(eq(schema.contentItem.id, existingRow.id));
+
+  return toCatalogContentItem({
+    ...existingRow,
+    creatorId: updates.creatorId ?? existingRow.creatorId,
+    thumbnailUrl: updates.thumbnailUrl ?? existingRow.thumbnailUrl,
+    crossSourceKey: updates.crossSourceKey ?? existingRow.crossSourceKey,
+  });
 }
 
 export async function findContentItemBySourceIdentity(
@@ -901,6 +943,7 @@ export async function listRefreshFeedResultsWithFeedsForRun(
 function toCatalogCreator(row: typeof schema.creator.$inferSelect): CatalogCreator {
   return {
     id: row.id,
+    nameKey: row.nameKey,
     displayName: row.displayName,
     description: row.description,
     imageUrl: row.imageUrl,

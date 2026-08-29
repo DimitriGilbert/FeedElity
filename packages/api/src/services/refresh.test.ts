@@ -702,6 +702,7 @@ const schemaStatements = [
     duration_seconds INTEGER,
     thumbnail_url TEXT,
     canonical_url TEXT,
+    cross_source_key TEXT,
     metadata_json TEXT,
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))
