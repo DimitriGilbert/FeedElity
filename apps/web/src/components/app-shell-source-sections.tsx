@@ -21,6 +21,7 @@ import UserMinus from "lucide-solid/icons/user-minus";
 import UserPlus from "lucide-solid/icons/user-plus";
 import X from "lucide-solid/icons/x";
 
+import { createDebouncedValue } from "@/utils/debounce";
 import { client } from "@/utils/orpc";
 
 import {
@@ -452,6 +453,10 @@ interface PlaylistColumnSectionProps {
 
 export function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
   const [playlists, { refetch: refetchPlaylists }] = createResource(() => client.overlays.playlists());
+  // All resource consumption below goes through .latest memos so a refetch
+  // (create/update/delete playlist) never suspends this section — the panel
+  // updates in place instead of flashing through a Suspense fallback.
+  const playlistsValue = createMemo(() => playlists.latest);
   const [playlistName, setPlaylistName] = createSignal("");
   const [playlistDescription, setPlaylistDescription] = createSignal("");
   const [playlistSortMode, setPlaylistSortMode] = createSignal<PlaylistSortMode>("manual");
@@ -477,7 +482,8 @@ export function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
       return client.overlays.playlistItems({ playlistId });
     },
   );
-  const selectedPlaylist = createMemo(() => playlists()?.find((playlist) => playlist.id === props.selectedPlaylistId()) ?? null);
+  const selectedPlaylistItemsValue = createMemo(() => selectedPlaylistItems.latest);
+  const selectedPlaylist = createMemo(() => playlistsValue()?.find((playlist) => playlist.id === props.selectedPlaylistId()) ?? null);
   const selectedPlaylistUsesManualOrder = createMemo(() => selectedPlaylist()?.sortMode === "manual")
 
   const editPlaylist = (playlist: Playlist | null) => {
@@ -555,7 +561,7 @@ export function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
   };
 
   const movePlaylistItem = async (item: PlaylistItemWithContent, direction: -1 | 1) => {
-    const items = selectedPlaylistItems() ?? emptyPlaylistItems;
+    const items = selectedPlaylistItemsValue() ?? emptyPlaylistItems;
     const currentIndex = items.findIndex((candidate) => candidate.id === item.id);
     const targetIndex = currentIndex + direction;
     if (currentIndex < 0 || targetIndex < 0 || targetIndex >= items.length) {
@@ -585,8 +591,8 @@ export function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
 
   return (
     <section class="border-t border-border px-2 py-2" aria-labelledby="playlist-section-title">
-      <div class="flex items-center justify-between gap-2"><h3 id="playlist-section-title" class="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Playlists</h3><span class="text-[0.68rem] text-muted-foreground">{playlists()?.length ?? 0} saved</span></div>
-      <Show when={(playlists()?.length ?? 0) > 0}><div class="mt-2"><label class="sr-only" for="source-playlist-selector">Selected playlist</label><select id="source-playlist-selector" class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring" value={props.selectedPlaylistId() ?? ""} onChange={(event) => { const playlistId = event.currentTarget.value; editPlaylist(playlistId.length === 0 ? null : playlists()?.find((playlist) => playlist.id === playlistId) ?? null); }} data-compact-playlist-selector><option value="">No playlist selected</option><For each={playlists() ?? emptyPlaylists}>{(playlist) => <option value={playlist.id}>{playlist.name}</option>}</For></select></div></Show>
+      <div class="flex items-center justify-between gap-2"><h3 id="playlist-section-title" class="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Playlists</h3><span class="text-[0.68rem] text-muted-foreground">{playlistsValue()?.length ?? 0} saved</span></div>
+      <Show when={(playlistsValue()?.length ?? 0) > 0}><div class="mt-2"><label class="sr-only" for="source-playlist-selector">Selected playlist</label><select id="source-playlist-selector" class="w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring" value={props.selectedPlaylistId() ?? ""} onChange={(event) => { const playlistId = event.currentTarget.value; editPlaylist(playlistId.length === 0 ? null : playlistsValue()?.find((playlist) => playlist.id === playlistId) ?? null); }} data-compact-playlist-selector><option value="">No playlist selected</option><For each={playlistsValue() ?? emptyPlaylists}>{(playlist) => <option value={playlist.id}>{playlist.name}</option>}</For></select></div></Show>
       <Show when={playlistError()}>{(message) => <p class="mt-2 border border-destructive px-2 py-1.5 text-[0.72rem] text-destructive">{message()}</p>}</Show>
       <details class="mt-2 border-t border-border p-2" data-playlist-management-panel>
         <summary class="cursor-pointer text-xs font-semibold text-foreground">Manage playlists</summary>
@@ -597,18 +603,18 @@ export function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
           <div class="grid grid-cols-2 gap-2"><button type="submit" class="inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-primary p-1 text-xs font-semibold text-primary-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" aria-label={editingPlaylist() === null ? "Create playlist" : "Save playlist"} title={editingPlaylist() === null ? "Create playlist" : "Save playlist"} disabled={playlistBusy()}>{editingPlaylist() === null ? <Plus size={14} /> : <Save size={14} />}</button><button type="button" class="inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-card p-1 text-xs font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" aria-label="New playlist" title="New playlist" onClick={() => { editPlaylist(null); }}>New</button></div>
         </form>
         <Switch>
-          <Match when={playlists.loading && playlists() === undefined}><p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading playlists.</p></Match>
+          <Match when={playlists.loading && playlistsValue() === undefined}><p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading playlists.</p></Match>
           <Match when={playlists.error !== undefined}><p class="mt-2 text-[0.72rem] leading-5 text-destructive">Playlists unavailable.</p></Match>
-          <Match when={(playlists()?.length ?? 0) === 0}><p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Create a playlist to collect videos.</p></Match>
-          <Match when={playlists()}>{(loadedPlaylists) => <ol class="mt-2 space-y-1" aria-label="Playlists"><For each={loadedPlaylists()}>{(playlist) => <li class="border-t border-border p-2"><button type="button" class="w-full text-left text-card-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" aria-pressed={props.selectedPlaylistId() === playlist.id} onClick={() => editPlaylist(props.selectedPlaylistId() === playlist.id ? null : playlist)}><span class="block truncate text-xs font-semibold">{playlist.name}</span><span class="mt-1 block truncate text-[0.68rem] text-muted-foreground">{formatPlaylistSortMode(playlist.sortMode)}</span></button><Show when={props.selectedPlaylistId() === playlist.id}><div class="mt-2 flex gap-2"><button type="button" class="flex-1 inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-background p-1 text-[0.68rem] font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" aria-label="Update playlist" title="Update playlist" disabled={playlistBusy()} onClick={async () => { await updatePlaylist(playlist); }}><Save size={14} /></button><button type="button" class="flex-1 inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-background p-1 text-[0.68rem] font-semibold text-destructive transition hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" aria-label="Delete playlist" title="Delete playlist" disabled={playlistBusy()} onClick={async () => { await deletePlaylist(playlist.id); }}><Trash2 size={14} /></button></div></Show></li>}</For></ol>}</Match>
+          <Match when={(playlistsValue()?.length ?? 0) === 0}><p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Create a playlist to collect videos.</p></Match>
+          <Match when={playlistsValue()}>{(loadedPlaylists) => <ol class="mt-2 space-y-1" aria-label="Playlists"><For each={loadedPlaylists()}>{(playlist) => <li class="border-t border-border p-2"><button type="button" class="w-full text-left text-card-foreground transition hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" aria-pressed={props.selectedPlaylistId() === playlist.id} onClick={() => editPlaylist(props.selectedPlaylistId() === playlist.id ? null : playlist)}><span class="block truncate text-xs font-semibold">{playlist.name}</span><span class="mt-1 block truncate text-[0.68rem] text-muted-foreground">{formatPlaylistSortMode(playlist.sortMode)}</span></button><Show when={props.selectedPlaylistId() === playlist.id}><div class="mt-2 flex gap-2"><button type="button" class="flex-1 inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-background p-1 text-[0.68rem] font-semibold text-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" aria-label="Update playlist" title="Update playlist" disabled={playlistBusy()} onClick={async () => { await updatePlaylist(playlist); }}><Save size={14} /></button><button type="button" class="flex-1 inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-background p-1 text-[0.68rem] font-semibold text-destructive transition hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60" aria-label="Delete playlist" title="Delete playlist" disabled={playlistBusy()} onClick={async () => { await deletePlaylist(playlist.id); }}><Trash2 size={14} /></button></div></Show></li>}</For></ol>}</Match>
         </Switch>
         <Show when={props.selectedPlaylistId() !== null}>
           <section class="mt-2 border-t border-border pt-2" aria-label="Selected playlist videos">
             <Switch>
-              <Match when={selectedPlaylistItems.loading && selectedPlaylistItems() === undefined}><p class="text-[0.72rem] leading-5 text-muted-foreground">Loading playlist videos.</p></Match>
+              <Match when={selectedPlaylistItems.loading && selectedPlaylistItemsValue() === undefined}><p class="text-[0.72rem] leading-5 text-muted-foreground">Loading playlist videos.</p></Match>
               <Match when={selectedPlaylistItems.error !== undefined}><p class="text-[0.72rem] leading-5 text-destructive">Playlist videos unavailable.</p></Match>
-              <Match when={(selectedPlaylistItems()?.length ?? 0) === 0}><p class="text-[0.72rem] leading-5 text-muted-foreground">Add the selected video from the viewer.</p></Match>
-              <Match when={selectedPlaylistItems()}>{(items) => <ol class="space-y-1" aria-label="Videos in selected playlist"><For each={items()}>{(item, index) => <PlaylistItemRow item={item} itemIndex={index()} itemCount={items().length} busy={playlistBusy()} showManualControls={selectedPlaylistUsesManualOrder()} onSelectContent={props.onSelectContent} onMove={movePlaylistItem} onRemove={removePlaylistItem} />}</For></ol>}</Match>
+              <Match when={(selectedPlaylistItemsValue()?.length ?? 0) === 0}><p class="text-[0.72rem] leading-5 text-muted-foreground">Add the selected video from the viewer.</p></Match>
+              <Match when={selectedPlaylistItemsValue()}>{(items) => <ol class="space-y-1" aria-label="Videos in selected playlist"><For each={items()}>{(item, index) => <PlaylistItemRow item={item} itemIndex={index()} itemCount={items().length} busy={playlistBusy()} showManualControls={selectedPlaylistUsesManualOrder()} onSelectContent={props.onSelectContent} onMove={movePlaylistItem} onRemove={removePlaylistItem} />}</For></ol>}</Match>
             </Switch>
           </section>
         </Show>
@@ -637,6 +643,10 @@ export function CollectionColumnSection(props: CollectionColumnSectionProps) {
   const [collections, { refetch: refetchCollections }] = createResource(collectionsSource, () =>
     client.overlays.collections(),
   );
+  // All resource consumption below goes through .latest memos so CRUD refetches
+  // (create/update/delete collection, add/remove member, search) never suspend
+  // this section — the panel updates in place instead of flashing.
+  const collectionsValue = createMemo(() => collections.latest);
   const [collectionName, setCollectionName] = createSignal("");
   const [collectionDescription, setCollectionDescription] = createSignal("");
   const [editingCollection, setEditingCollection] = createSignal<CreatorCollection | null>(null);
@@ -651,12 +661,12 @@ export function CollectionColumnSection(props: CollectionColumnSectionProps) {
       return null;
     }
 
-    return `${collectionId}${props.collectionsReloadKey().toString()}`;
+    return `${collectionId}\u001f${props.collectionsReloadKey().toString()}`;
   });
   const [selectedCollectionMembers, { refetch: refetchSelectedCollectionMembers }] = createResource(
     selectedCollectionMembersInput,
     (resourceKey) => {
-      const [collectionId] = resourceKey.split("", 1);
+      const [collectionId] = resourceKey.split("\u001f", 1);
       if (collectionId === undefined) {
         return emptyCollectionMembers;
       }
@@ -664,27 +674,33 @@ export function CollectionColumnSection(props: CollectionColumnSectionProps) {
       return client.overlays.collectionMembers({ collectionId });
     },
   );
+  const selectedCollectionMembersValue = createMemo(() => selectedCollectionMembers.latest);
 
+  // Member search is user-typed input: debounce it 300 ms so the catalog search
+  // resource only refetches after typing settles, not on every keystroke. This
+  // is an input debounce, not a background refresh — nothing fires on its own.
+  const debouncedMemberSearch = createDebouncedValue(memberSearch, 300);
   const creatorSearchInput = createMemo(() => {
     const collectionId = props.selectedCollectionId();
-    const trimmed = memberSearch().trim();
+    const trimmed = debouncedMemberSearch().trim();
     if (collectionId === null || trimmed.length === 0) {
       return null;
     }
 
-    return `${collectionId}${trimmed}`;
+    return `${collectionId}\u001f${trimmed}`;
   });
   const [creatorSearchResults] = createResource(creatorSearchInput, async (resourceKey) => {
-    const [, search] = resourceKey.split("", 2);
-    if (search === undefined) {
+    const [collectionId, search] = resourceKey.split("\u001f");
+    if (collectionId === undefined || search === undefined) {
       return emptyCreatorSearchResults;
     }
 
     return client.catalog.creators({ search, limit: creatorSearchLimit });
   });
+  const creatorSearchResultsValue = createMemo(() => creatorSearchResults.latest);
 
   const memberCreatorIds = createMemo(
-    () => new Set((selectedCollectionMembers() ?? emptyCollectionMembers).map((member) => member.creatorId)),
+    () => new Set((selectedCollectionMembersValue() ?? emptyCollectionMembers).map((member) => member.creatorId)),
   );
 
   const editCollection = (collection: CreatorCollection | null) => {
@@ -797,9 +813,9 @@ export function CollectionColumnSection(props: CollectionColumnSectionProps) {
         <h3 id="collection-section-title" class="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
           Collections
         </h3>
-        <span class="text-[0.68rem] text-muted-foreground">{collections()?.length ?? 0} saved</span>
+        <span class="text-[0.68rem] text-muted-foreground">{collectionsValue()?.length ?? 0} saved</span>
       </div>
-      <Show when={(collections()?.length ?? 0) > 0}>
+      <Show when={(collectionsValue()?.length ?? 0) > 0}>
         <div class="mt-2">
           <label class="sr-only" for="source-collection-selector">
             Selected collection
@@ -811,13 +827,13 @@ export function CollectionColumnSection(props: CollectionColumnSectionProps) {
             onChange={(event) => {
               const collectionId = event.currentTarget.value;
               editCollection(
-                collectionId.length === 0 ? null : collections()?.find((collection) => collection.id === collectionId) ?? null,
+                collectionId.length === 0 ? null : collectionsValue()?.find((collection) => collection.id === collectionId) ?? null,
               );
             }}
             data-compact-collection-selector
           >
             <option value="">No collection selected</option>
-            <For each={collections() ?? emptyCollections}>
+            <For each={collectionsValue() ?? emptyCollections}>
               {(collection) => <option value={collection.id}>{collection.name}</option>}
             </For>
           </select>
@@ -884,16 +900,16 @@ export function CollectionColumnSection(props: CollectionColumnSectionProps) {
           </div>
         </form>
         <Switch>
-          <Match when={collections.loading && collections() === undefined}>
+          <Match when={collections.loading && collectionsValue() === undefined}>
             <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Loading collections.</p>
           </Match>
           <Match when={collections.error !== undefined}>
             <p class="mt-2 text-[0.72rem] leading-5 text-destructive">Collections unavailable.</p>
           </Match>
-          <Match when={(collections()?.length ?? 0) === 0}>
+          <Match when={(collectionsValue()?.length ?? 0) === 0}>
             <p class="mt-2 text-[0.72rem] leading-5 text-muted-foreground">Create a collection to group creators by interest.</p>
           </Match>
-          <Match when={collections()}>
+          <Match when={collectionsValue()}>
             {(loadedCollections) => (
               <ol class="mt-2 space-y-1" aria-label="Collections">
                 <For each={loadedCollections()}>
@@ -953,16 +969,16 @@ export function CollectionColumnSection(props: CollectionColumnSectionProps) {
       <Show when={props.selectedCollectionId() !== null}>
         <section class="mt-2 border-t border-border pt-2" aria-label="Selected collection members">
           <Switch>
-            <Match when={selectedCollectionMembers.loading && selectedCollectionMembers() === undefined}>
+            <Match when={selectedCollectionMembers.loading && selectedCollectionMembersValue() === undefined}>
               <p class="text-[0.72rem] leading-5 text-muted-foreground">Loading collection creators.</p>
             </Match>
             <Match when={selectedCollectionMembers.error !== undefined}>
               <p class="text-[0.72rem] leading-5 text-destructive">Collection creators unavailable.</p>
             </Match>
-            <Match when={(selectedCollectionMembers()?.length ?? 0) === 0}>
+            <Match when={(selectedCollectionMembersValue()?.length ?? 0) === 0}>
               <p class="text-[0.72rem] leading-5 text-muted-foreground">Search the catalog below to add creators.</p>
             </Match>
-            <Match when={selectedCollectionMembers()}>
+            <Match when={selectedCollectionMembersValue()}>
               {(members) => (
                 <ol class="space-y-1" aria-label="Creators in selected collection">
                   <For each={members()}>
@@ -1004,9 +1020,9 @@ export function CollectionColumnSection(props: CollectionColumnSectionProps) {
               onInput={(event) => setMemberSearch(event.currentTarget.value)}
             />
           </div>
-          <Show when={creatorSearchResults() !== undefined && (creatorSearchResults()?.length ?? 0) > 0}>
+          <Show when={creatorSearchResultsValue() !== undefined && (creatorSearchResultsValue()?.length ?? 0) > 0}>
             <ol class="mt-1 space-y-1" aria-label="Creator search results">
-              <For each={creatorSearchResults() ?? emptyCreatorSearchResults}>
+              <For each={creatorSearchResultsValue() ?? emptyCreatorSearchResults}>
                 {(creator) => (
                   <li class="flex items-center gap-2 border-t border-border p-1">
                     <span class="min-w-0 flex-1 truncate text-[0.72rem] text-card-foreground">
