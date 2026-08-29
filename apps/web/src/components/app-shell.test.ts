@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { CatalogContentSource, CatalogFeed, RefreshFeedResult, RefreshRun, RefreshRunReport, UserSetting } from "@FeedElity/api";
+import type { CatalogContentSource, CatalogCreator, CatalogCreatorSummary, CatalogFeed, RefreshFeedResult, RefreshRun, RefreshRunReport, UserSetting } from "@FeedElity/api";
 import type { LeftPaneTab, MiddlePanePanel, ViewerMode } from "./app-shell.contract";
 
 import {
@@ -74,11 +74,14 @@ import {
   toFeedListInput,
   toPlayableSources,
   toCreatorListSortFromSettings,
+  toCreatorSourceTypes,
   toReaderDensityFromSettings,
   toSafePlaybackUrl,
   toShellContentSelectionState,
   toCreatorListInput,
   toShellSelectionState,
+  toYoutubeNoCookieFromSettings,
+  youtubePrivacySettingKey,
   viewerColumnClass,
   viewerScrollRegionClass,
 } from "./app-shell.contract";
@@ -868,7 +871,144 @@ test("selected viewer derives playable sources only from safe API source URLs", 
       canonicalUrl: "https://peertube.example.test/w/video-1",
       priority: 2,
     },
+    {
+      id: "odysee-1",
+      sourceType: "odysee",
+      label: "Odysee embed",
+      kind: "embed",
+      url: "https://odysee.example.test/$/embed/odysee-video-1",
+      canonicalUrl: "https://odysee.example.test/odysee-video-1",
+      priority: 3,
+    },
   ]);
+});
+
+test("odysee embed sources are playable while odysee sources without any URL stay dropped", () => {
+  const odyseeEmbed: readonly CatalogContentSource[] = [
+    {
+      id: "odysee-embed-1",
+      contentItemId: "content-1",
+      sourceType: "odysee",
+      sourceExternalId: null,
+      embedUrl: "https://odysee.com/$/embed/@creator/video",
+      nativeMediaUrl: null,
+      canonicalUrl: "https://odysee.com/@creator/video",
+      priority: 1,
+      metadataJson: null,
+    },
+  ];
+
+  expect(toPlayableSources(odyseeEmbed)).toEqual([
+    {
+      id: "odysee-embed-1",
+      sourceType: "odysee",
+      label: "Odysee embed",
+      kind: "embed",
+      url: "https://odysee.com/$/embed/@creator/video",
+      canonicalUrl: "https://odysee.com/@creator/video",
+      priority: 1,
+    },
+  ]);
+
+  // Without an enclosure and without a safe embed URL there is nothing to play.
+  const odyseeUnplayable: readonly CatalogContentSource[] = [
+    {
+      id: "odysee-bare-1",
+      contentItemId: "content-1",
+      sourceType: "odysee",
+      sourceExternalId: null,
+      embedUrl: null,
+      nativeMediaUrl: null,
+      canonicalUrl: "https://odysee.com/@creator/video",
+      priority: 1,
+      metadataJson: null,
+    },
+    {
+      id: "odysee-unsafe-1",
+      contentItemId: "content-1",
+      sourceType: "odysee",
+      sourceExternalId: null,
+      embedUrl: "javascript:alert(1)",
+      nativeMediaUrl: null,
+      canonicalUrl: "https://odysee.com/@creator/video",
+      priority: 2,
+      metadataJson: null,
+    },
+  ];
+
+  expect(toPlayableSources(odyseeUnplayable)).toEqual([]);
+});
+
+test("creator source badges read sourceTypes from summaries and stay empty without them", () => {
+  const summary: CatalogCreatorSummary = {
+    id: "creator-1",
+    displayName: "Scott Manley",
+    imageUrl: null,
+    canonicalUrl: null,
+    sourceTypes: ["youtube", "odysee"],
+  };
+  const plainCreator: CatalogCreator = {
+    id: "creator-2",
+    nameKey: "scottmanley",
+    displayName: "Scott Manley",
+    description: null,
+    imageUrl: null,
+    canonicalUrl: null,
+    metadataJson: null,
+  };
+
+  expect(toCreatorSourceTypes(summary)).toEqual(["youtube", "odysee"]);
+  expect(toCreatorSourceTypes(plainCreator)).toEqual([]);
+});
+
+test("youtube privacy setting key satisfies the setting key pattern and round-trips", () => {
+  const privacySetting: UserSetting = {
+    id: "setting-3",
+    userId: "user-1",
+    key: youtubePrivacySettingKey,
+    valueJson: JSON.stringify("true"),
+  };
+
+  expect(youtubePrivacySettingKey).toBe("playback.youtube.nocookie");
+  expect(new RegExp(settingKeyPattern).test(youtubePrivacySettingKey)).toBe(true);
+  // No stored preference defaults to privacy-enhanced embeds.
+  expect(toYoutubeNoCookieFromSettings([])).toBe(true);
+  // The save path stores JSON.stringify("true"/"false"); the parse round-trips.
+  expect(toYoutubeNoCookieFromSettings([privacySetting])).toBe(true);
+  expect(toYoutubeNoCookieFromSettings([{ ...privacySetting, valueJson: JSON.stringify("false") }])).toBe(false);
+  // A bare JSON boolean is tolerated as an alternative encoding.
+  expect(toYoutubeNoCookieFromSettings([{ ...privacySetting, valueJson: "false" }])).toBe(false);
+  expect(toYoutubeNoCookieFromSettings([{ ...privacySetting, valueJson: "true" }])).toBe(true);
+  // Non-boolean and malformed values fall back to the safe default.
+  expect(toYoutubeNoCookieFromSettings([{ ...privacySetting, valueJson: JSON.stringify("standard") }])).toBe(true);
+  expect(toYoutubeNoCookieFromSettings([{ ...privacySetting, valueJson: "not json" }])).toBe(true);
+  // Other settings never leak into the preference.
+  expect(toYoutubeNoCookieFromSettings([{ ...privacySetting, key: readerDensitySettingKey, valueJson: JSON.stringify("false") }])).toBe(true);
+});
+
+test("multi-source rows badges mirror chip and persisted privacy toggle are wired", async () => {
+  const source = await readAppShellSource();
+
+  // Creator rows: per-source icons next to the display name, hidden when empty.
+  expect(source).toContain("const sourceTypes = createMemo(() => toCreatorSourceTypes(props.creator));");
+  expect(source).toContain("data-creator-source-badges");
+  expect(source).toContain("<For each={sourceTypes()}>{(sourceType) => <SourceTypeIcon sourceType={sourceType} />}</For>");
+  // Content rows: +N mirror chip beside the source indicator, pure display.
+  expect(source).toContain("data-content-mirror-count");
+  expect(source).toContain("This video also appears on ${count} other source${count === 1 ? \"\" : \"s\"}; open it to switch.");
+  // Viewer: "Also on" switcher drives the existing selection flow.
+  expect(source).toContain("readonly onSelectContent: (contentItem: CatalogContentListItem) => Promise<void>;");
+  expect(source).toContain("data-viewer-mirror-switcher");
+  expect(source).toContain("void props.onSelectContent(mirror)");
+  expect(source).toContain("const selectContent = async (contentItem: CatalogContentListItem) => {");
+  // Privacy preference: seeds and re-converges from the settings overlay,
+  // persists only for authenticated users, and surfaces save failures.
+  expect(source).toContain("const [useNoCookieEmbed, setUseNoCookieEmbed] = createSignal(toYoutubeNoCookieFromSettings(props.settings()))");
+  expect(source).toContain("setUseNoCookieEmbed(toYoutubeNoCookieFromSettings(props.settings()))");
+  expect(source).toContain("await client.overlays.saveSetting({ key: youtubePrivacySettingKey, value: next ? \"true\" : \"false\" });");
+  expect(source).toContain("await props.onSettingsChanged();");
+  expect(source).toContain("setNoCookieActionError(formatError(error))");
+  expect(source).toContain("onClick={toggleNoCookieEmbed}");
 });
 
 test("selected viewer supports source switching and real playback render contracts", async () => {

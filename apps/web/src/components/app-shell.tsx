@@ -1449,6 +1449,7 @@ export default function AppShell(props: AppShellProps) {
           onPlaylistItemAdded={() => setPlaylistItemsReloadKey((key) => key + 1)}
           onFavoriteChanged={() => setFavoritesReloadKey((key) => key + 1)}
           onSelectCreator={selectCreatorFromViewer}
+          onSelectContent={selectContent}
           onMarkContentOpened={markContentOpened}
           onMarkContentPlayed={markContentPlayed}
           onAutoMarkContentPlayed={autoMarkContentPlayed}
