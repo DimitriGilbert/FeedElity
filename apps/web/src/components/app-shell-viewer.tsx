@@ -1,4 +1,4 @@
-import type { CatalogContentDetail, CatalogContentListItem, CatalogContentSource, Playlist, UserContentStatus, UserSetting } from "@FeedElity/api";
+import type { CatalogContentDetail, CatalogContentListItem, CatalogContentSource, CatalogCreatorSummary, Playlist, UserContentStatus, UserSetting } from "@FeedElity/api";
 import { For, Match, Show, Switch, createMemo, createResource, createSignal } from "solid-js";
 import ArrowLeft from "lucide-solid/icons/arrow-left";
 import CircleCheck from "lucide-solid/icons/circle-check";
@@ -48,6 +48,7 @@ export interface SelectedContentViewerProps {
   readonly onCloseSettings: () => void;
   readonly onSettingsChanged: () => Promise<void>;
   readonly onSelectPlaylist: (playlistId: string | null) => void;
+  readonly onSelectCreator: (creator: CatalogCreatorSummary) => void;
   readonly onPlaylistItemAdded: () => void;
   readonly onFavoriteChanged: () => void;
   readonly onMarkContentOpened: (contentItemId: string) => Promise<void>;
@@ -414,7 +415,7 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                     </button>
                   </div>
                 </Show>
-                <ContentDetailBody detail={detail()} />
+                <ContentDetailBody detail={detail()} onCreatorClick={props.onSelectCreator} />
               </div>
             )}
           </Match>
@@ -464,6 +465,7 @@ function PlaybackSurface(props: PlaybackSurfaceProps) {
 
 interface ContentDetailBodyProps {
   readonly detail: CatalogContentDetail;
+  readonly onCreatorClick: (creator: CatalogCreatorSummary) => void;
 }
 
 function ContentDetailBody(props: ContentDetailBodyProps) {
@@ -472,7 +474,14 @@ function ContentDetailBody(props: ContentDetailBodyProps) {
       <div>
         <h3 class="text-lg font-semibold tracking-tight text-foreground">{props.detail.title}</h3>
         <p class="mt-1 text-sm text-muted-foreground">
-          {props.detail.creator.displayName} · {formatContentPublishedAt(props.detail.publishedAt)}
+          <button
+            type="button"
+            class="rounded-sm text-sm text-muted-foreground underline-offset-2 transition hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            onClick={() => props.onCreatorClick(props.detail.creator)}
+          >
+            {props.detail.creator.displayName}
+          </button>
+          {" · "}{formatContentPublishedAt(props.detail.publishedAt)}
           <Show when={props.detail.durationSeconds !== null}>
             {" · "}{formatContentDuration(props.detail.durationSeconds)}
           </Show>

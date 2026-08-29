@@ -1,5 +1,6 @@
 import type {
   CatalogContentListItem,
+  CatalogCreatorSummary,
   CatalogFeed,
   RefreshFeedResultWithFeed,
   RefreshRun,
@@ -9,6 +10,9 @@ import type {
   UserSubscriptionWithCreator,
 } from "@FeedElity/api";
 import { For, Match, Show, Suspense, Switch, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
+import ArrowDownAZ from "lucide-solid/icons/arrow-down-a-z";
+import ClockArrowDown from "lucide-solid/icons/clock-arrow-down";
+import LayoutGrid from "lucide-solid/icons/layout-grid";
 import TriangleAlert from "lucide-solid/icons/triangle-alert";
 import ChevronDown from "lucide-solid/icons/chevron-down";
 import Plus from "lucide-solid/icons/plus";
@@ -79,6 +83,7 @@ import {
   type ViewerMode,
 } from "./app-shell.contract";
 import { SelectedContentViewer } from "./app-shell-viewer";
+import { SourceTypeIcon } from "./source-indicator";
 
 export {
   contentCatalogFiltersLabel,
@@ -156,8 +161,6 @@ export {
   type ViewerMode,
 } from "./app-shell.contract";
 
-const allCreatorSourceFilterValue = "all";
-
 const sourceFilterOptions: readonly SourceType[] = ["youtube", "odysee", "peertube"];
 
 type SubscriptionAction = "subscribe" | "unsubscribe";
@@ -171,10 +174,6 @@ const emptySubscriptions: readonly UserSubscriptionWithCreator[] = [];
 const emptyUserContentStatuses: readonly UserContentStatus[] = [];
 
 const emptyUserSettings: readonly UserSetting[] = [];
-
-function toSourceFilterValue(value: string): SourceType | null {
-  return sourceFilterOptions.find((sourceType) => sourceType === value) ?? null;
-}
 
 function toCreatorListResourceKey(input: CreatorListInput, reloadKey: number): string {
   return [
@@ -687,6 +686,23 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   });
   const failedFeedCount = createMemo(() => lastCompletedStatus()?.results.filter((result) => result.status === "failed").length ?? 0);
   const lastRunHadFailures = createMemo(() => (lastCompletedStatus()?.run.feedsFailedCount ?? 0) > 0);
+  const creatorSortToggleLabel = createMemo(() =>
+    props.creatorSort() === "name"
+      ? "Sorted by name. Activate to sort by last video update."
+      : "Sorted by last video update. Activate to sort by name.",
+  );
+  const activeCreatorSourceTypeLabel = createMemo(() => {
+    const activeSourceType = sourceType();
+    return activeSourceType === null ? "All" : formatSourceLabel(activeSourceType);
+  });
+
+  // Shared source-filter mutation for the popover options: every selection
+  // resets the library paging limit exactly like the previous select's
+  // onChange did.
+  const applyCreatorSourceType = (nextSourceType: SourceType | null) => {
+    setSourceType(nextSourceType);
+    setLibraryCreatorLimit(creatorListLimit);
+  };
 
   return (
     <section
@@ -837,45 +853,65 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
               setLibraryCreatorLimit(creatorListLimit);
             }}
           />
-          <label class="sr-only" for={creatorListSortInputId}>
-            Sort creators
-          </label>
-          <select
+          <button
+            type="button"
             id={creatorListSortInputId}
-            class="shrink-0 rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-            value={props.creatorSort()}
-            aria-label="Creator list sort order"
-            title="Sorts the creator list by name or by the most recent video update."
+            class="shrink-0 rounded-md border border-input bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+            aria-label={creatorSortToggleLabel()}
+            title={creatorSortToggleLabel()}
             disabled={!props.isAuthenticated()}
-            onChange={(event) => {
-              const nextSort = creatorListSortValues.find((value) => value === event.currentTarget.value);
-              if (nextSort !== undefined) {
-                void changeCreatorSort(nextSort);
-              }
+            onClick={() => {
+              const nextSort = creatorListSortValues[(creatorListSortValues.indexOf(props.creatorSort()) + 1) % creatorListSortValues.length];
+              void changeCreatorSort(nextSort);
             }}
           >
-            <option value="name">By name</option>
-            <option value="lastUpdate">By last video update</option>
-          </select>
-          <label class="sr-only" for={creatorSourceFilterId}>
-            Filter creators by source type
-          </label>
-          <select
-            id={creatorSourceFilterId}
-            class="shrink-0 rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
-            value={sourceType() ?? allCreatorSourceFilterValue}
-            aria-label="Creator source-type filter"
-            title="Filters creator rows by catalog source type. Select a creator to inspect all feeds."
-            onChange={(event) => {
-              setSourceType(toSourceFilterValue(event.currentTarget.value));
-              setLibraryCreatorLimit(creatorListLimit);
-            }}
-          >
-            <option value={allCreatorSourceFilterValue}>All</option>
-            <For each={sourceFilterOptions}>
-              {(source) => <option value={source}>{formatSourceLabel(source)}</option>}
-            </For>
-          </select>
+            <Show when={props.creatorSort() === "name"} fallback={<ClockArrowDown size={14} aria-hidden="true" />}>
+              <ArrowDownAZ size={14} aria-hidden="true" />
+            </Show>
+          </button>
+          <details class="relative shrink-0">
+            <summary
+              id={creatorSourceFilterId}
+              class="flex cursor-pointer list-none items-center justify-center rounded-md border border-input bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              aria-label={`Filter creators by source: ${activeCreatorSourceTypeLabel()}`}
+              title="Filters creator rows by catalog source type. Select a creator to inspect all feeds."
+            >
+              <Show when={sourceType()} keyed fallback={<LayoutGrid size={14} aria-hidden="true" />}>
+                {(activeSourceType: SourceType) => <SourceTypeIcon sourceType={activeSourceType} />}
+              </Show>
+            </summary>
+            <div class="absolute right-0 z-20 mt-1 min-w-28 rounded-md border border-border bg-popover p-1 shadow-lg">
+              <button
+                type="button"
+                class={`flex w-full items-center gap-1 rounded-sm px-2 py-1.5 text-left text-xs font-semibold text-popover-foreground transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${sourceType() === null ? "bg-accent text-accent-foreground" : "hover:bg-accent hover:text-accent-foreground"}`}
+                aria-pressed={sourceType() === null}
+                onClick={(event) => {
+                  event.currentTarget.closest("details")?.removeAttribute("open");
+                  applyCreatorSourceType(null);
+                }}
+              >
+                <LayoutGrid size={14} aria-hidden="true" /> All
+              </button>
+              <For each={sourceFilterOptions}>
+                {(source) => {
+                  const isActive = createMemo(() => sourceType() === source);
+                  return (
+                    <button
+                      type="button"
+                      class={`flex w-full items-center gap-1 rounded-sm px-2 py-1.5 text-left text-xs font-semibold text-popover-foreground transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${isActive() ? "bg-accent text-accent-foreground" : "hover:bg-accent hover:text-accent-foreground"}`}
+                      aria-pressed={isActive()}
+                      onClick={(event) => {
+                        event.currentTarget.closest("details")?.removeAttribute("open");
+                        applyCreatorSourceType(source);
+                      }}
+                    >
+                      <SourceTypeIcon sourceType={source} /> {formatSourceLabel(source)}
+                    </button>
+                  );
+                }}
+              </For>
+            </div>
+          </details>
         </div>
         <Show when={creatorSortError()}>
           {(message) => <p class="mt-1 text-xs text-destructive" data-creator-sort-error>{message()}</p>}
@@ -1143,6 +1179,21 @@ export default function AppShell(props: AppShellProps) {
     setSelectedFeed(feed);
   };
 
+  // Viewer-side creator filter: SELECT-ONLY, unlike the creator-row toggle.
+  // Clicking the creator name in the viewer narrows the content list to that
+  // creator; it never clears an already-selected creator and never touches the
+  // viewer's own content. It only re-keys the content-list resource (via
+  // selectedCreator -> toContentListInput), so the viewer detail (keyed on the
+  // content id) and the creator column stay mounted.
+  const selectCreatorFromViewer = (creator: CatalogCreatorSummary) => {
+    if (selectedCreator()?.id === creator.id) {
+      return;
+    }
+
+    setSelectedCreator(creator);
+    setSelectedFeed(null);
+  };
+
   // Shared unselect affordance (creator-column rows, subscription-triggered
   // clears, and the content-column filter chip): clears creator + feed + viewer
   // content in one place so every entry point behaves identically.
@@ -1397,6 +1448,7 @@ export default function AppShell(props: AppShellProps) {
           onSelectPlaylist={setSelectedPlaylistId}
           onPlaylistItemAdded={() => setPlaylistItemsReloadKey((key) => key + 1)}
           onFavoriteChanged={() => setFavoritesReloadKey((key) => key + 1)}
+          onSelectCreator={selectCreatorFromViewer}
           onMarkContentOpened={markContentOpened}
           onMarkContentPlayed={markContentPlayed}
           onAutoMarkContentPlayed={autoMarkContentPlayed}

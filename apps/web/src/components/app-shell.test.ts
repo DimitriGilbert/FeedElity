@@ -344,9 +344,26 @@ test("creator source-type filter scopes the creator list without changing playba
   // Catalog search is debounced: the list input reads the 300 ms debounced
   // mirror of the search signal, not the raw keystroke value.
   expect(source).toContain("() => toCreatorListInput(debouncedSearch(), sourceType(), props.creatorSort())");
+  // The filter is a compact native details/summary popover: the id moved onto
+  // the summary trigger so selectors stay meaningful.
   expect(source).toContain(`id={creatorSourceFilterId}`);
-  expect(source).toContain(`aria-label="Creator source-type filter"`);
+  expect(source).toContain(`<details class="relative shrink-0">`);
+  // The trigger aria-label states the active filter ("All" or a source label).
+  expect(source).toContain("aria-label={`Filter creators by source: ${activeCreatorSourceTypeLabel()}`}");
   expect(source).toContain(`title="Filters creator rows by catalog source type. Select a creator to inspect all feeds."`);
+  expect(source).toContain("const activeCreatorSourceTypeLabel = createMemo(() => {");
+  // The trigger icon is the neutral grid for "All" and the source icon otherwise.
+  expect(source).toContain('fallback={<LayoutGrid size={14} aria-hidden="true" />}');
+  expect(source).toContain("(activeSourceType: SourceType) => <SourceTypeIcon sourceType={activeSourceType} />");
+  // Options are pressed-state buttons (All + one per source) that close the
+  // popover and apply the filter through the shared handler.
+  expect(source).toContain("aria-pressed={sourceType() === null}");
+  expect(source).toContain("const isActive = createMemo(() => sourceType() === source);");
+  expect(source).toContain("aria-pressed={isActive()}");
+  expect(source).toContain("const applyCreatorSourceType = (nextSourceType: SourceType | null) => {");
+  // Three popover close sites exist: the force-refresh action plus the All and
+  // per-source filter options — every selection closes its popover.
+  expect((source.match(/removeAttribute\("open"\)/g) ?? [])).toHaveLength(3);
   // Multi-source creators belong to every source they publish on, so the
   // filter checks membership in sourceTypes (a creator must stay visible for
   // each of its sources, not a single legacy sourceType field).
@@ -752,7 +769,14 @@ test("selected viewer is wired to anonymous catalog content detail", async () =>
   expect(source).toContain("client.catalog.contentDetail({ id })");
   expect(source).toContain("const selectedContentItemId = createMemo(() => props.selectedContent()?.id ?? null)");
   expect(source).toContain("data-selected-content-item-id={selectedContentItemId() ?? \"\"}");
-  expect(source).toContain("<ContentDetailBody detail={detail()} />");
+  // The creator name in the detail body is a real button wired to the shell's
+  // select-only viewer filter: it never toggles off and never keeps a feed.
+  expect(source).toContain("<ContentDetailBody detail={detail()} onCreatorClick={props.onSelectCreator} />");
+  expect(source).toContain("readonly onSelectCreator: (creator: CatalogCreatorSummary) => void;");
+  expect(source).toContain("readonly onCreatorClick: (creator: CatalogCreatorSummary) => void;");
+  expect(source).toContain("onClick={() => props.onCreatorClick(props.detail.creator)}");
+  expect(source).toContain("const selectCreatorFromViewer = (creator: CatalogCreatorSummary) => {");
+  expect(source).toContain("onSelectCreator={selectCreatorFromViewer}");
 });
 
 test("viewer has no internal metadata aside or rejected selection bar copy", async () => {
@@ -768,7 +792,7 @@ test("viewer has no internal metadata aside or rejected selection bar copy", asy
 test("selected viewer places playback before body in source order", async () => {
   const source = await readAppShellSource();
   const playbackIndex = source.indexOf("<PlaybackSurface\n                  source={selectedPlayableSource()}");
-  const bodyIndex = source.indexOf("<ContentDetailBody detail={detail()} />");
+  const bodyIndex = source.indexOf("<ContentDetailBody detail={detail()} onCreatorClick={props.onSelectCreator} />");
 
   expect(playbackIndex).toBeGreaterThan(-1);
   expect(bodyIndex).toBeGreaterThan(playbackIndex);
@@ -1769,7 +1793,7 @@ test("viewer source switcher uses button group with SourceTypeIcon instead of se
   expect(source).toContain("aria-label={source.label}");
 });
 
-test("creator list sort select persists a typed setting and refetches the list", async () => {
+test("creator list sort toggle persists a typed setting and refetches the list", async () => {
   const source = await readAppShellSource();
   const lastUpdateSetting: UserSetting = {
     id: "setting-2",
@@ -1786,11 +1810,16 @@ test("creator list sort select persists a typed setting and refetches the list",
   // Invalid stored values fall back to "name" safely.
   expect(toCreatorListSortFromSettings([{ ...lastUpdateSetting, valueJson: JSON.stringify("bogus") }])).toBe("name");
   expect(toCreatorListSortFromSettings([{ ...lastUpdateSetting, valueJson: "not json" }])).toBe("name");
-  // The select sits beside the search box with exactly the two approved orders.
+  // The sort control is a compact icon button that cycles exactly the two
+  // approved orders; the id moved onto the trigger so selectors stay meaningful.
   expect(source).toContain("id={creatorListSortInputId}");
-  expect(source).toContain("aria-label=\"Creator list sort order\"");
-  expect(source).toContain('<option value="name">By name</option>');
-  expect(source).toContain('<option value="lastUpdate">By last video update</option>');
+  expect(source).toContain('import ArrowDownAZ from "lucide-solid/icons/arrow-down-a-z";');
+  expect(source).toContain('import ClockArrowDown from "lucide-solid/icons/clock-arrow-down";');
+  expect(source).toContain("aria-label={creatorSortToggleLabel()}");
+  expect(source).toContain("title={creatorSortToggleLabel()}");
+  expect(source).toContain('"Sorted by name. Activate to sort by last video update."');
+  expect(source).toContain('"Sorted by last video update. Activate to sort by name."');
+  expect(source).toContain("creatorListSortValues[(creatorListSortValues.indexOf(props.creatorSort()) + 1) % creatorListSortValues.length]");
   // Anonymous browsing stays usable: the persisted control is gated on auth.
   expect(source).toContain("disabled={!props.isAuthenticated()}");
   // Changes flow through the typed settings overlay, then back into the list input.
