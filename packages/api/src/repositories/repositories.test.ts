@@ -13,6 +13,7 @@ import {
   findCreatorByNameKey,
   findOrCreateCreator,
   findOrCreateFeed,
+  getCatalogContentDetail,
   linkFeedContent,
   listCatalogContentItems,
   listCatalogCreators,
@@ -697,6 +698,114 @@ describe("catalog and overlay repositories", () => {
     expect(contentItems.map((contentItem) => contentItem.id)).toEqual([olderItem.id]);
     expect(firstFeed.id).not.toBe(secondFeed.id);
     expect(newestItem.id).not.toBe(olderItem.id);
+  });
+
+  test("creator list entries carry sourceTypes aggregated from feeds and content items", async () => {
+    const multiSourceCreator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Multi Source Creator",
+    });
+    await findOrCreateFeed(testDatabase.db, {
+      creatorId: multiSourceCreator.id,
+      sourceType: "odysee",
+      sourceExternalId: "multi-source-odysee-feed",
+      url: "https://odysee.com/$/rss/@multisource:abc",
+    });
+    await findOrCreateContentItem(testDatabase.db, {
+      creatorId: multiSourceCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "multi-source-video",
+      title: "Multi source video",
+    });
+    const singleSourceCreator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Single Source Creator",
+    });
+    await findOrCreateContentItem(testDatabase.db, {
+      creatorId: singleSourceCreator.id,
+      sourceType: "peertube",
+      sourceExternalId: "single-source-video",
+      title: "Single source video",
+    });
+
+    const creators = await listCatalogCreators(testDatabase.db, { limit: 10 });
+
+    const multiSummary = creators.find((creator) => creator.id === multiSourceCreator.id);
+    const singleSummary = creators.find((creator) => creator.id === singleSourceCreator.id);
+    if (multiSummary === undefined || singleSummary === undefined) {
+      throw new Error("Expected both creators in the catalog creator list.");
+    }
+    // The summary keeps the fields the UI renders and carries sources derived
+    // from both the creator's feeds (odysee) and its content items (youtube).
+    expect(multiSummary).toMatchObject({ displayName: "Multi Source Creator", imageUrl: null, canonicalUrl: null });
+    expect([...multiSummary.sourceTypes].sort()).toEqual(["odysee", "youtube"]);
+    expect([...singleSummary.sourceTypes].sort()).toEqual(["peertube"]);
+  });
+
+  test("cross-source mirrors surface in list mirror counts and detail mirrors while null keys stay unlinked", async () => {
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Mirror List Creator",
+    });
+    const youtubeCopy = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "mirror-list-youtube",
+      title: "Mirror list video",
+      publishedAt: new Date("2026-05-01T00:00:00.000Z"),
+      crossSourceKey: "mirrorlistcreator:mirrorlistvideo",
+    });
+    const odyseeCopy = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "odysee",
+      sourceExternalId: "mirror-list-odysee",
+      title: "Mirror list video",
+      publishedAt: new Date("2026-05-02T00:00:00.000Z"),
+      crossSourceKey: "mirrorlistcreator:mirrorlistvideo",
+    });
+    const peertubeCopy = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "peertube",
+      sourceExternalId: "mirror-list-peertube",
+      title: "Mirror list video",
+      publishedAt: new Date("2026-05-03T00:00:00.000Z"),
+      crossSourceKey: "mirrorlistcreator:mirrorlistvideo",
+    });
+    const unkeyedItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "mirror-list-unkeyed",
+      title: "Mirror list unkeyed video",
+    });
+
+    const rows = await listCatalogContentItems(testDatabase.db);
+    const mirrorCountById = new Map(rows.map((row) => [row.id, row.mirrorCount]));
+    expect(mirrorCountById.get(youtubeCopy.id)).toBe(2);
+    expect(mirrorCountById.get(odyseeCopy.id)).toBe(2);
+    expect(mirrorCountById.get(peertubeCopy.id)).toBe(2);
+    expect(mirrorCountById.get(unkeyedItem.id)).toBe(0);
+
+    const detail = await getCatalogContentDetail(testDatabase.db, youtubeCopy.id);
+    if (detail === null) {
+      throw new Error("Expected catalog content detail for the YouTube mirror copy.");
+    }
+    // Mirrors exclude the viewed item and order by sourceType asc.
+    expect(detail.mirrors.map((mirror) => mirror.id)).toEqual([odyseeCopy.id, peertubeCopy.id]);
+    const odyseeMirror = detail.mirrors[0];
+    if (odyseeMirror === undefined) {
+      throw new Error("Expected the Odysee mirror to be listed first.");
+    }
+    // Each mirror is the full list-item shape the web select-content flow needs.
+    expect(odyseeMirror).toMatchObject({
+      id: odyseeCopy.id,
+      sourceType: "odysee",
+      title: "Mirror list video",
+      mirrorCount: 2,
+    });
+    expect(odyseeMirror.creator).toMatchObject({ id: creator.id, displayName: "Mirror List Creator" });
+
+    const unkeyedDetail = await getCatalogContentDetail(testDatabase.db, unkeyedItem.id);
+    if (unkeyedDetail === null) {
+      throw new Error("Expected catalog content detail for the unkeyed item.");
+    }
+    expect(unkeyedDetail.mirrors).toEqual([]);
   });
 });
 

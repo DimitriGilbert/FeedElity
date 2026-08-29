@@ -321,6 +321,106 @@ describe("catalog browsing router", () => {
     expect(unsubscribedCreatorPage).toEqual([]);
   });
 
+  test("catalog creators list carries sourceTypes aggregated from feeds and content items", async () => {
+    const multiSourceCreator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Router Multi Source",
+    });
+    await findOrCreateFeed(testDatabase.db, {
+      creatorId: multiSourceCreator.id,
+      sourceType: "youtube",
+      sourceExternalId: "router-multi-source-feed",
+      url: "https://youtube.example.test/router-multi-source.xml",
+    });
+    await findOrCreateContentItem(testDatabase.db, {
+      creatorId: multiSourceCreator.id,
+      sourceType: "odysee",
+      sourceExternalId: "router-multi-source-video",
+      title: "Router multi source video",
+    });
+
+    const creators = await call(
+      appRouter.catalog.creators,
+      { search: "router multi", limit: 10 },
+      { context: anonymousContext(testDatabase.db) },
+    );
+
+    expect(creators).toHaveLength(1);
+    const summary = creators[0];
+    if (summary === undefined) {
+      throw new Error("Expected the multi-source creator in the catalog creators list.");
+    }
+    expect(summary.id).toBe(multiSourceCreator.id);
+    // Aggregated from the creator's feed (youtube) and its content item (odysee).
+    expect([...summary.sourceTypes].sort()).toEqual(["odysee", "youtube"]);
+  });
+
+  test("mirror counts are catalog-global across user-scoped subscribed lists and detail mirrors", async () => {
+    await insertUser(testDatabase.db, "mirror-user-a", "mirror-user-a@example.test");
+    await insertUser(testDatabase.db, "mirror-user-b", "mirror-user-b@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Router Mirror Creator",
+    });
+    const youtubeCopy = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "router-mirror-youtube",
+      title: "Router mirror video",
+      publishedAt: new Date("2026-06-01T00:00:00.000Z"),
+      crossSourceKey: "routormirrorcreator:routormirrorvideo",
+    });
+    const odyseeCopy = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "odysee",
+      sourceExternalId: "router-mirror-odysee",
+      title: "Router mirror video",
+      publishedAt: new Date("2026-06-02T00:00:00.000Z"),
+      crossSourceKey: "routormirrorcreator:routormirrorvideo",
+    });
+    const unkeyedItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "peertube",
+      sourceExternalId: "router-mirror-unkeyed",
+      title: "Router mirror unkeyed video",
+      publishedAt: new Date("2026-06-03T00:00:00.000Z"),
+    });
+    await findOrCreateSubscription(testDatabase.db, { userId: "mirror-user-a", creatorId: creator.id });
+    await findOrCreateSubscription(testDatabase.db, { userId: "mirror-user-b", creatorId: creator.id });
+
+    const listA = await call(
+      appRouter.overlays.subscribedContentItems,
+      { limit: 10 },
+      { context: authenticatedContext(testDatabase.db, "mirror-user-a") },
+    );
+    const listB = await call(
+      appRouter.overlays.subscribedContentItems,
+      { limit: 10 },
+      { context: authenticatedContext(testDatabase.db, "mirror-user-b") },
+    );
+
+    // Both subscribers see identical catalog-global mirror counts; the overlay
+    // scoping of the parent list is unchanged (same rows, same order).
+    const mirrorCountA = new Map(listA.map((row) => [row.id, row.mirrorCount]));
+    const mirrorCountB = new Map(listB.map((row) => [row.id, row.mirrorCount]));
+    expect(mirrorCountA.get(youtubeCopy.id)).toBe(1);
+    expect(mirrorCountA.get(odyseeCopy.id)).toBe(1);
+    expect(mirrorCountA.get(unkeyedItem.id)).toBe(0);
+    expect(mirrorCountB).toEqual(mirrorCountA);
+    expect(listA.map((row) => row.id)).toEqual(listB.map((row) => row.id));
+
+    // Anonymous content detail exposes the cross-source mirror without any
+    // user-owned overlay data.
+    const detail = await call(
+      appRouter.catalog.contentDetail,
+      { id: youtubeCopy.id },
+      { context: anonymousContext(testDatabase.db) },
+    );
+    expect(detail.mirrors.map((mirror) => mirror.id)).toEqual([odyseeCopy.id]);
+    expect(detail.mirrors[0]).toMatchObject({ id: odyseeCopy.id, sourceType: "odysee", mirrorCount: 1 });
+    const serializedDetail = JSON.stringify(detail);
+    expect(serializedDetail).not.toContain("mirror-user-a");
+    expect(serializedDetail).not.toContain("mirror-user-b");
+  });
+
   test("refresh status is public and manual refresh procedures are protected", async () => {
     const run = await createRefreshRun(testDatabase.db, {
       scope: "all",

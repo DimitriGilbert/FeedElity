@@ -300,14 +300,36 @@ function normalizeItem(item: XmlElement, fallbackChannelClaim: string): Normaliz
   };
 }
 
-function buildContentSources(
+/**
+ * Derive the playback sources for a normalized Odysee item. Items with an
+ * enclosure keep the native media source; items without one stay playable
+ * through the site's iframe embed player, built from the item's canonical URL
+ * path. Exported for fixture tests: the canonical URL is constructed upstream
+ * from lbry claims, so a malformed/non-odysee canonical URL cannot be produced
+ * through normalizeCatalogPayload.
+ */
+export function buildContentSources(
   contentExternalId: string,
   canonicalUrl: string,
   enclosureUrl: string | null,
   enclosureType: string | null,
 ): readonly NormalizedContentSourceInput[] {
   if (enclosureUrl === null) {
-    return [];
+    const embedUrl = odyseeEmbedUrlFromCanonical(canonicalUrl);
+    if (embedUrl === null) {
+      return [];
+    }
+
+    return [
+      {
+        sourceType: ODYSEE_SOURCE_TYPE,
+        sourceExternalId: contentExternalId,
+        embedUrl,
+        canonicalUrl,
+        priority: 0,
+        metadataJson: stableJson({ playback: "odysee-embed" }),
+      },
+    ];
   }
 
   return [
@@ -320,6 +342,25 @@ function buildContentSources(
       metadataJson: stableJson({ playback: "odysee-native-media", mediaType: enclosureType ?? "unknown" }),
     },
   ];
+}
+
+/**
+ * Build the odysee.com embed URL from a canonical item URL's path. Returns
+ * null when the URL does not parse as http(s) or its host is not odysee.com,
+ * so a malformed or foreign link never persists an unusable playback source.
+ */
+function odyseeEmbedUrlFromCanonical(canonicalUrl: string): string | null {
+  const urlResult = parseHttpUrl(canonicalUrl);
+  if (!urlResult.ok) {
+    return null;
+  }
+
+  const url = urlResult.value;
+  if (!isOdyseeHost(url.hostname)) {
+    return null;
+  }
+
+  return `${ODYSEE_ORIGIN}/$/embed${url.pathname}`;
 }
 
 function detected(

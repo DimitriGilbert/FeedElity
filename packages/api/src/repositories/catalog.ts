@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { LibSQLDatabase } from "drizzle-orm/libsql";
 
 import * as schema from "@FeedElity/db/schema";
@@ -548,7 +548,7 @@ export async function linkFeedContent(db: RepositoryDb, input: LinkFeedContentIn
 export async function listCatalogCreators(
   db: RepositoryDb,
   input: ListCatalogCreatorsInput,
-): Promise<readonly CatalogCreator[]> {
+): Promise<readonly CatalogCreatorSummary[]> {
   // Creators are cross-source, so the optional source-type filter selects
   // creators that publish on that source via their feeds.
   const conditions = [
@@ -571,7 +571,9 @@ export async function listCatalogCreators(
     offset: input.offset ?? 0,
   });
 
-  return rows.map(toCatalogCreator);
+  const sourceTypesByCreator = await loadSourceTypesByCreatorId(db, rows.map((row) => row.id));
+
+  return rows.map((row) => toCatalogCreatorSummary(row, sourceTypesByCreator.get(row.id) ?? []));
 }
 
 export async function listCatalogContentItems(
@@ -596,46 +598,28 @@ export async function listCatalogContentItems(
     input.search === undefined ? undefined : containsNormalized(schema.contentItem.title, input.search),
   ].filter(isDefined);
 
-  const contentQuery = db
-    .select({
-      contentItem: schema.contentItem,
-      creator: schema.creator,
-      sourceCount: sql<number>`(
-        select count(*)
-        from ${schema.contentSource}
-        where ${schema.contentSource.contentItemId} = ${schema.contentItem.id}
-      )`,
-    })
-    .from(schema.contentItem)
-    .innerJoin(schema.creator, eq(schema.contentItem.creatorId, schema.creator.id));
-
-  let joinedQuery = contentQuery;
+  const joinedQuery = selectCatalogContentListItemRows(db);
+  let filteredQuery = joinedQuery;
   if (input.feedId !== undefined) {
-    joinedQuery = joinedQuery.innerJoin(
+    filteredQuery = filteredQuery.innerJoin(
       schema.feedContent,
       eq(schema.feedContent.contentItemId, schema.contentItem.id),
     );
   }
   if (collectionScoped) {
-    joinedQuery = joinedQuery.innerJoin(
+    filteredQuery = filteredQuery.innerJoin(
       schema.collectionMember,
       eq(schema.collectionMember.creatorId, schema.contentItem.creatorId),
     );
   }
 
-  const rows = await joinedQuery
+  const rows = await filteredQuery
     .where(conditions.length === 0 ? undefined : and(...conditions))
     .orderBy(desc(schema.contentItem.publishedAt), desc(schema.contentItem.createdAt), desc(schema.contentItem.id))
     .limit(input.limit)
     .offset(input.offset ?? 0);
 
-  const sourceTypesByCreator = await loadSourceTypesByCreatorId(db, rows.map((row) => row.creator.id));
-
-  return rows.map((row) => ({
-    ...toCatalogContentItem(row.contentItem),
-    creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
-    sourceCount: row.sourceCount,
-  }));
+  return toCatalogContentListItems(db, rows);
 }
 
 export async function listCatalogFeeds(db: RepositoryDb): Promise<readonly CatalogFeed[]> {
@@ -693,12 +677,85 @@ export async function getCatalogContentDetail(
     .where(eq(schema.feedContent.contentItemId, contentItemId))
     .orderBy(asc(schema.feed.createdAt));
 
+  const mirrorKey = firstRow.contentItem.crossSourceKey;
+  const mirrors = mirrorKey === null
+    ? []
+    : await listCatalogContentListItemsByMirrorKey(db, mirrorKey, contentItemId);
+
   return {
     ...toCatalogContentItem(firstRow.contentItem),
     creator: toCatalogCreatorSummary(firstRow.creator, await loadSourceTypesForCreator(db, firstRow.creator.id)),
     sources: sourceRows.map(toCatalogContentSource),
     feeds: feedRows.map((feedRow) => toCatalogFeed(feedRow.feed)),
+    mirrors,
   };
+}
+
+/**
+ * Sibling catalog items sharing the given non-null cross-source mirror key,
+ * excluding the item the viewer is looking at. Mirrors are catalog-global
+ * data (source identity + counts only), never user-owned overlay data.
+ */
+async function listCatalogContentListItemsByMirrorKey(
+  db: RepositoryDb,
+  crossSourceKey: string,
+  excludedContentItemId: string,
+): Promise<readonly CatalogContentListItem[]> {
+  const rows = await selectCatalogContentListItemRows(db)
+    .where(and(eq(schema.contentItem.crossSourceKey, crossSourceKey), ne(schema.contentItem.id, excludedContentItemId)))
+    .orderBy(asc(schema.contentItem.sourceType), desc(schema.contentItem.publishedAt), desc(schema.contentItem.id));
+
+  return toCatalogContentListItems(db, rows);
+}
+
+interface CatalogContentListItemRow {
+  readonly contentItem: typeof schema.contentItem.$inferSelect;
+  readonly creator: typeof schema.creator.$inferSelect;
+  readonly sourceCount: number;
+  readonly mirrorCount: number;
+}
+
+/**
+ * Shared projection for catalog content list rows: the item, its creator, how
+ * many playback sources the item has, and how many cross-source mirror
+ * siblings share its non-null cross_source_key (excluding itself; 0 when the
+ * key is null). The mirror count subselect aliases the inner table so the
+ * qualified outer columns correlate against the driving row.
+ */
+function selectCatalogContentListItemRows(db: RepositoryDb) {
+  return db
+    .select({
+      contentItem: schema.contentItem,
+      creator: schema.creator,
+      sourceCount: sql<number>`(
+        select count(*)
+        from ${schema.contentSource}
+        where ${schema.contentSource.contentItemId} = ${schema.contentItem.id}
+      )`,
+      mirrorCount: sql<number>`(
+        select count(*)
+        from ${schema.contentItem} as mirror_item
+        where mirror_item.cross_source_key is not null
+          and mirror_item.cross_source_key = ${schema.contentItem.crossSourceKey}
+          and mirror_item.id <> ${schema.contentItem.id}
+      )`,
+    })
+    .from(schema.contentItem)
+    .innerJoin(schema.creator, eq(schema.contentItem.creatorId, schema.creator.id));
+}
+
+async function toCatalogContentListItems(
+  db: RepositoryDb,
+  rows: readonly CatalogContentListItemRow[],
+): Promise<readonly CatalogContentListItem[]> {
+  const sourceTypesByCreator = await loadSourceTypesByCreatorId(db, rows.map((row) => row.creator.id));
+
+  return rows.map((row) => ({
+    ...toCatalogContentItem(row.contentItem),
+    creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
+    sourceCount: row.sourceCount,
+    mirrorCount: row.mirrorCount,
+  }));
 }
 
 export async function listCatalogFeedsForCreator(db: RepositoryDb, creatorId: string): Promise<readonly CatalogFeed[]> {

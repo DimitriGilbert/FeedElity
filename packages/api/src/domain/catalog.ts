@@ -100,6 +100,12 @@ export interface CatalogContentSource {
 export interface CatalogContentListItem extends CatalogContentItem {
   readonly creator: CatalogCreatorSummary;
   readonly sourceCount: number;
+  /**
+   * Number of sibling catalog items sharing the same non-null cross-source
+   * mirror key, excluding the item itself. 0 means "no mirrors" (or unknown,
+   * for overlay mappers that do not compute it); never user-owned data.
+   */
+  readonly mirrorCount: number;
 }
 
 export interface CatalogCreatorSummary {
@@ -114,6 +120,12 @@ export interface CatalogContentDetail extends CatalogContentItem {
   readonly creator: CatalogCreatorSummary;
   readonly feeds: readonly CatalogFeed[];
   readonly sources: readonly CatalogContentSource[];
+  /**
+   * Cross-source copies of the same video (same non-null mirror key), excluding
+   * the detail item itself. Full list-item shape so clients can select a mirror
+   * through their existing content-selection flow.
+   */
+  readonly mirrors: readonly CatalogContentListItem[];
 }
 
 export interface FeedContentLink {

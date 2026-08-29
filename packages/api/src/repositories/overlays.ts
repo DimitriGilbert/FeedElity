@@ -238,6 +238,15 @@ export async function listSubscribedContentItemsForUser(
         from ${schema.contentSource}
         where ${schema.contentSource.contentItemId} = ${schema.contentItem.id}
       )`,
+      // Mirror counts are catalog-global (source identity only), safe to expose
+      // inside a user-scoped list; the list itself stays scoped by subscription.
+      mirrorCount: sql<number>`(
+        select count(*)
+        from ${schema.contentItem} as mirror_item
+        where mirror_item.cross_source_key is not null
+          and mirror_item.cross_source_key = ${schema.contentItem.crossSourceKey}
+          and mirror_item.id <> ${schema.contentItem.id}
+      )`,
     })
     .from(schema.contentItem)
     .innerJoin(schema.creator, eq(schema.contentItem.creatorId, schema.creator.id))
@@ -269,6 +278,7 @@ export async function listSubscribedContentItemsForUser(
     ...toCatalogContentItem(row.contentItem),
     creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
     sourceCount: row.sourceCount,
+    mirrorCount: row.mirrorCount,
   }));
 }
 
@@ -452,6 +462,10 @@ export async function listContentStatusWithContentForUser(
       ...toCatalogContentItem(row.contentItem),
       creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
       sourceCount: row.sourceCount,
+      // Favorites/history views do not compute mirror linkage; 0 means the UI
+      // shows no mirror affordance there. The viewer switcher reads mirrors
+      // from contentDetail instead.
+      mirrorCount: 0,
     },
   }));
 }
@@ -653,6 +667,10 @@ export async function listPlaylistItemsWithContentForUserPlaylist(
       ...toCatalogContentItem(row.contentItem),
       creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
       sourceCount: row.sourceCount,
+      // Playlist item views do not compute mirror linkage; 0 means the UI shows
+      // no mirror affordance there. The viewer switcher reads mirrors from
+      // contentDetail instead.
+      mirrorCount: 0,
     },
   }));
 }
