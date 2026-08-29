@@ -1136,6 +1136,26 @@ test("playlist items reload through resource key without effect refetch loop", a
   expect(playlistSectionSource).not.toMatch(refetchEffectPattern);
 });
 
+test("playlist and collection rows are owner-filtered so stale .latest rows never render", async () => {
+  const source = await readAppShellSource();
+
+  // .latest keeps the PREVIOUS playlist/collection's rows while the fetch for a
+  // newly selected owner is pending; visible rows must match the current owner
+  // so stale rows (and their remove/move actions) never render.
+  expect(source).toContain("const visiblePlaylistItems = createMemo(() =>");
+  expect(source).toContain("(item) => item.playlistId === props.selectedPlaylistId()");
+  expect(source).toContain("const visibleCollectionMembers = createMemo(() =>");
+  expect(source).toContain("(member) => member.collectionId === props.selectedCollectionId()");
+  // Row lists, reorder input, and member "Added" markers derive from visible rows.
+  expect(source).toContain("<For each={visiblePlaylistItems()}>");
+  expect(source).toContain("<For each={visibleCollectionMembers()}>");
+  expect(source).toContain("const items = visiblePlaylistItems();");
+  expect(source).toContain("new Set(visibleCollectionMembers().map((member) => member.creatorId))");
+  // A stale-owner pending state renders the new selection's loading state.
+  expect(source).toContain("selectedPlaylistItems.loading && visiblePlaylistItems().length === 0");
+  expect(source).toContain("selectedCollectionMembers.loading && visibleCollectionMembers().length === 0");
+});
+
 test("playlist edit form changes only through explicit playlist selection", async () => {
   const source = await readAppShellSource();
 

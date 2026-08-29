@@ -34,16 +34,19 @@ export function creatorNameKey(displayName: string): string {
 
 /**
  * Derive the deterministic cross-source mirror key for a content item:
- * `<creator name_key>:<title lowercased with every character that is not a
- * Unicode letter or number stripped>`. Two items of the same creator whose
- * titles normalize to the same value are mirrors of one video across sources.
- * Returns null when the title carries no letters or numbers, so callers never
- * persist a garbage key. Mirrored (without importing this package) by
- * packages/db/src/cross-source-key.ts for the backfill migration; both
- * implementations are pinned to the same case table by parity tests.
+ * `<creator name_key>:<title NFC-normalized, lowercased, with every character
+ * that is not a Unicode letter or number stripped>`. NFC runs before the strip
+ * so decomposed accents (e.g. "e" + U+0301) compose first and survive as
+ * letters instead of being stripped, keeping both accent forms on one key. Two
+ * items of the same creator whose titles normalize to the same value are
+ * mirrors of one video across sources. Returns null when the title carries no
+ * letters or numbers, so callers never persist a garbage key. Mirrored
+ * (without importing this package) by packages/db/src/cross-source-key.ts for
+ * the backfill migration; both implementations are pinned to the same case
+ * table by parity tests.
  */
 export function contentCrossSourceKey(nameKey: string, title: string): string | null {
-  const normalizedTitle = title.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  const normalizedTitle = title.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
   if (normalizedTitle.length === 0) {
     return null;
   }

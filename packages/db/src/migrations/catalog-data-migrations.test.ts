@@ -9,7 +9,6 @@ import { contentCrossSourceKey } from "../cross-source-key";
 import { creatorNameKey } from "../creator-merge-plan";
 import {
   inspectCatalog,
-  NAME_KEY_SQL,
   openCatalogDatabase,
   resolveDatabaseFilePath,
   runCatalogDataMigrations,
@@ -262,31 +261,51 @@ function inspectDatabaseFile(path: string): CatalogInspection {
   }
 }
 
-describe("name_key SQL backfill parity", () => {
-  test("NAME_KEY_SQL agrees with creatorNameKey on handle, claim-revision, and case variants", () => {
-    const cases = [
-      "@ScottManley",
-      "@ScottManley:5",
-      "Scott Manley",
-      "scott manley",
-      "SCOTT MANLEY",
-      "  GreatScott! ",
-      "@docteuralwest:0",
-      "Half as Interesting",
+describe("name_key backfill parity", () => {
+  test("backfilled name_key equals creatorNameKey for every display-name shape", async () => {
+    // Shapes the previous SQL backfill got wrong: it stripped EVERY "@" (not
+    // just leading handles) and only ASCII spaces (not tabs/newlines).
+    const displayNames = [
+      "Tech@Home", // internal "@" must survive into the key
+      "  @ScottManley:5 ", // leading handle + :claimId revision + padding
+      "Tabbed\tName\nLines", // whitespace beyond ASCII spaces must collapse
+      "Half as Interesting", // plain multi-word name
     ];
-    const db = new Database(":memory:");
+    const path = await createLegacyDatabaseFile("feedelity-db-name-key-");
+    const seedDb = createLegacyDatabase(path, { withLastPublishedColumn: true });
+    for (const [index, displayName] of displayNames.entries()) {
+      insertCreator(
+        seedDb,
+        { withLastPublishedColumn: true },
+        `name-key-${index}`,
+        "youtube",
+        `UC-name-key-${index}`,
+        displayName,
+        0,
+      );
+    }
+    seedDb.close();
+
+    const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
+
+    expect(report.appliedCount).toBe(2);
+    const db = openCatalogDatabase(path, { readOnly: true });
     try {
-      db.exec("CREATE TABLE creator (display_name text NOT NULL, name_key text)");
-      for (const displayName of cases) {
-        db.query("INSERT INTO creator (display_name, name_key) VALUES (?, NULL)").run(displayName);
-      }
-      db.exec(`UPDATE creator SET name_key = ${NAME_KEY_SQL} WHERE name_key IS NULL`);
-      for (const displayName of cases) {
-        const row: unknown = db.query("SELECT name_key AS nameKey FROM creator WHERE display_name = ?").get(displayName);
-        if (typeof row !== "object" || row === null || !("nameKey" in row)) {
-          throw new Error(`no name_key row for display_name ${displayName}`);
+      // The unique index is created after the backfill: it only exists if every
+      // row received a key, and per-row parity rules out NULL keys.
+      expect(indexNames(db).has("creator_name_key_uidx")).toBe(true);
+      const rows: readonly unknown[] = db
+        .query("SELECT display_name AS displayName, name_key AS nameKey FROM creator")
+        .all();
+      expect(rows).toHaveLength(displayNames.length);
+      for (const row of rows) {
+        if (typeof row !== "object" || row === null || !("displayName" in row) || !("nameKey" in row)) {
+          throw new Error("creator name_key query returned an unexpected row");
         }
-        expect(row.nameKey).toBe(creatorNameKey(displayName));
+        if (typeof row.displayName !== "string" || typeof row.nameKey !== "string") {
+          throw new Error("creator name_key query returned non-string displayName/name_key");
+        }
+        expect(row.nameKey).toBe(creatorNameKey(row.displayName));
       }
     } finally {
       db.close();

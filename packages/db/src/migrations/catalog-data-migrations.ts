@@ -25,6 +25,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { contentCrossSourceKey } from "../cross-source-key";
 import {
   buildMergePlan,
+  creatorNameKey,
   summarizePlan,
   type CreatorRow,
   type MergePlan,
@@ -35,24 +36,6 @@ const migrationTableName = "__feedelity_migrations";
 
 const createMigrationTableSql =
   `CREATE TABLE IF NOT EXISTS ${migrationTableName} (id text PRIMARY KEY NOT NULL, applied_at integer DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)) NOT NULL)`;
-
-/**
- * Exact backfill expression from scripts/db-repair/repair.ts so the SQL
- * derivation of name_key stays identical to the repair tool. Must agree with
- * creatorNameKey() in ../creator-merge-plan.ts (asserted by the parity test in
- * catalog-data-migrations.test.ts).
- */
-export const NAME_KEY_SQL = `lower(
-  iif(
-    instr(replace(replace(\`display_name\`, '@', ''), ' ', ''), ':') > 0,
-    substr(
-      replace(replace(\`display_name\`, '@', ''), ' ', ''),
-      1,
-      instr(replace(replace(\`display_name\`, '@', ''), ' ', ''), ':') - 1
-    ),
-    replace(replace(\`display_name\`, '@', ''), ' ', '')
-  )
-)`;
 
 /** Exact MAX(published_at) backfill from 0002_creator_last_published.sql. */
 const LAST_CONTENT_PUBLISHED_AT_BACKFILL_SQL =
@@ -439,9 +422,7 @@ function convergeCreatorSchema(
     details.push("added creator.last_content_published_at column");
   }
 
-  const backfilledNameKeys = db.query(
-    `UPDATE creator SET name_key = ${NAME_KEY_SQL} WHERE name_key IS NULL`,
-  ).run().changes;
+  const backfilledNameKeys = backfillCreatorNameKeys(db);
   details.push(`backfilled name_key for ${backfilledNameKeys} row(s)`);
 
   for (const indexName of schema.missingIndexes) {
@@ -467,6 +448,33 @@ function convergeCreatorSchema(
     }
     details.push(`recomputed last_content_published_at for ${plan.groups.length} canonical creator(s)`);
   }
+}
+
+/**
+ * Backfill creator.name_key with creatorNameKey() — the same function the merge
+ * plan and runtime ingestion use — so the stored key matches what
+ * findCreatorByNameKey computes for every display-name shape (leading "@",
+ * ":claimId" suffixes, internal "@", tabs/newlines). Parameterized per-row
+ * UPDATE, same pattern as the cross_source_key backfill. Must run before the
+ * unique creator_name_key_uidx index is created.
+ */
+function backfillCreatorNameKeys(db: Database): number {
+  const rows: readonly unknown[] = db
+    .query("SELECT id AS id, display_name AS displayName FROM creator WHERE name_key IS NULL")
+    .all();
+  let backfilled = 0;
+  for (const row of rows) {
+    if (!isRecord(row)) {
+      throw new Error("creator name_key backfill query returned a non-object row");
+    }
+    const displayName = requireStringField(row, "displayName", "creator.display_name");
+    const id = requireStringField(row, "id", "creator.id");
+    const updated = db
+      .query("UPDATE creator SET name_key = ? WHERE id = ?")
+      .run(creatorNameKey(displayName), id).changes;
+    backfilled += updated;
+  }
+  return backfilled;
 }
 
 function isSchemaConverged(schema: CreatorSchemaState): boolean {

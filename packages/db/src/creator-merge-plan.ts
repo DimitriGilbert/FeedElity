@@ -35,8 +35,8 @@ export interface MergePlan {
 
 /**
  * Normalize a display name into a cross-source key. Mirrors creatorNameKey() in
- * packages/api/src/domain/catalog.ts and the SQL backfill in the migration so the
- * repair, the runtime, and the schema agree on identity.
+ * packages/api/src/domain/catalog.ts so the merge plan, the repair tooling, the
+ * migration name_key backfill, and runtime ingestion agree on identity.
  */
 export function creatorNameKey(displayName: string): string {
   const withoutHandle = displayName.trim().replace(/^@+/, "");

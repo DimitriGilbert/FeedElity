@@ -483,6 +483,15 @@ export function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
     },
   );
   const selectedPlaylistItemsValue = createMemo(() => selectedPlaylistItems.latest);
+  // While the fetch for a newly selected playlist is pending, .latest still
+  // holds the PREVIOUS playlist's rows. Filtering by the row's owning playlist
+  // id keeps those stale rows (and their remove/move actions) out of the panel
+  // while same-owner reload rows stay visible in place.
+  const visiblePlaylistItems = createMemo(() =>
+    (selectedPlaylistItemsValue() ?? emptyPlaylistItems).filter(
+      (item) => item.playlistId === props.selectedPlaylistId(),
+    ),
+  );
   const selectedPlaylist = createMemo(() => playlistsValue()?.find((playlist) => playlist.id === props.selectedPlaylistId()) ?? null);
   const selectedPlaylistUsesManualOrder = createMemo(() => selectedPlaylist()?.sortMode === "manual")
 
@@ -561,7 +570,9 @@ export function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
   };
 
   const movePlaylistItem = async (item: PlaylistItemWithContent, direction: -1 | 1) => {
-    const items = selectedPlaylistItemsValue() ?? emptyPlaylistItems;
+    // Reorder only the visible (current-owner) rows: stale rows from the
+    // previous playlist must never enter the reordered id payload.
+    const items = visiblePlaylistItems();
     const currentIndex = items.findIndex((candidate) => candidate.id === item.id);
     const targetIndex = currentIndex + direction;
     if (currentIndex < 0 || targetIndex < 0 || targetIndex >= items.length) {
@@ -611,10 +622,10 @@ export function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
         <Show when={props.selectedPlaylistId() !== null}>
           <section class="mt-2 border-t border-border pt-2" aria-label="Selected playlist videos">
             <Switch>
-              <Match when={selectedPlaylistItems.loading && selectedPlaylistItemsValue() === undefined}><p class="text-[0.72rem] leading-5 text-muted-foreground">Loading playlist videos.</p></Match>
+              <Match when={selectedPlaylistItems.loading && visiblePlaylistItems().length === 0}><p class="text-[0.72rem] leading-5 text-muted-foreground">Loading playlist videos.</p></Match>
               <Match when={selectedPlaylistItems.error !== undefined}><p class="text-[0.72rem] leading-5 text-destructive">Playlist videos unavailable.</p></Match>
-              <Match when={(selectedPlaylistItemsValue()?.length ?? 0) === 0}><p class="text-[0.72rem] leading-5 text-muted-foreground">Add the selected video from the viewer.</p></Match>
-              <Match when={selectedPlaylistItemsValue()}>{(items) => <ol class="space-y-1" aria-label="Videos in selected playlist"><For each={items()}>{(item, index) => <PlaylistItemRow item={item} itemIndex={index()} itemCount={items().length} busy={playlistBusy()} showManualControls={selectedPlaylistUsesManualOrder()} onSelectContent={props.onSelectContent} onMove={movePlaylistItem} onRemove={removePlaylistItem} />}</For></ol>}</Match>
+              <Match when={visiblePlaylistItems().length === 0}><p class="text-[0.72rem] leading-5 text-muted-foreground">Add the selected video from the viewer.</p></Match>
+              <Match when={visiblePlaylistItems().length > 0}><ol class="space-y-1" aria-label="Videos in selected playlist"><For each={visiblePlaylistItems()}>{(item, index) => <PlaylistItemRow item={item} itemIndex={index()} itemCount={visiblePlaylistItems().length} busy={playlistBusy()} showManualControls={selectedPlaylistUsesManualOrder()} onSelectContent={props.onSelectContent} onMove={movePlaylistItem} onRemove={removePlaylistItem} />}</For></ol></Match>
             </Switch>
           </section>
         </Show>
@@ -675,6 +686,15 @@ export function CollectionColumnSection(props: CollectionColumnSectionProps) {
     },
   );
   const selectedCollectionMembersValue = createMemo(() => selectedCollectionMembers.latest);
+  // Same stale-owner guard as visiblePlaylistItems: while the fetch for a newly
+  // selected collection is pending, .latest still holds the PREVIOUS
+  // collection's members; owner-filtering keeps them out of the list and out of
+  // the remove action.
+  const visibleCollectionMembers = createMemo(() =>
+    (selectedCollectionMembersValue() ?? emptyCollectionMembers).filter(
+      (member) => member.collectionId === props.selectedCollectionId(),
+    ),
+  );
 
   // Member search is user-typed input: debounce it 300 ms so the catalog search
   // resource only refetches after typing settles, not on every keystroke. This
@@ -700,7 +720,7 @@ export function CollectionColumnSection(props: CollectionColumnSectionProps) {
   const creatorSearchResultsValue = createMemo(() => creatorSearchResults.latest);
 
   const memberCreatorIds = createMemo(
-    () => new Set((selectedCollectionMembersValue() ?? emptyCollectionMembers).map((member) => member.creatorId)),
+    () => new Set(visibleCollectionMembers().map((member) => member.creatorId)),
   );
 
   const editCollection = (collection: CreatorCollection | null) => {
@@ -969,41 +989,39 @@ export function CollectionColumnSection(props: CollectionColumnSectionProps) {
       <Show when={props.selectedCollectionId() !== null}>
         <section class="mt-2 border-t border-border pt-2" aria-label="Selected collection members">
           <Switch>
-            <Match when={selectedCollectionMembers.loading && selectedCollectionMembersValue() === undefined}>
+            <Match when={selectedCollectionMembers.loading && visibleCollectionMembers().length === 0}>
               <p class="text-[0.72rem] leading-5 text-muted-foreground">Loading collection creators.</p>
             </Match>
             <Match when={selectedCollectionMembers.error !== undefined}>
               <p class="text-[0.72rem] leading-5 text-destructive">Collection creators unavailable.</p>
             </Match>
-            <Match when={(selectedCollectionMembersValue()?.length ?? 0) === 0}>
+            <Match when={visibleCollectionMembers().length === 0}>
               <p class="text-[0.72rem] leading-5 text-muted-foreground">Search the catalog below to add creators.</p>
             </Match>
-            <Match when={selectedCollectionMembersValue()}>
-              {(members) => (
-                <ol class="space-y-1" aria-label="Creators in selected collection">
-                  <For each={members()}>
-                    {(member) => (
-                      <li class="flex items-center gap-2 border-t border-border p-1">
-                        <span class="min-w-0 flex-1 truncate text-[0.72rem] font-semibold text-card-foreground">
-                          {member.creator.displayName}
-                        </span>
-                        <button
-                          type="button"
-                          class="shrink-0 inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-background p-1 text-[0.68rem] font-semibold text-destructive transition hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
-                          aria-label={`Remove ${member.creator.displayName} from collection`}
-                          title="Remove from collection"
-                          disabled={collectionBusy()}
-                          onClick={async () => {
-                            await removeMember(member);
-                          }}
-                        >
-                          <UserMinus size={12} />
-                        </button>
-                      </li>
-                    )}
-                  </For>
-                </ol>
-              )}
+            <Match when={visibleCollectionMembers().length > 0}>
+              <ol class="space-y-1" aria-label="Creators in selected collection">
+                <For each={visibleCollectionMembers()}>
+                  {(member) => (
+                    <li class="flex items-center gap-2 border-t border-border p-1">
+                      <span class="min-w-0 flex-1 truncate text-[0.72rem] font-semibold text-card-foreground">
+                        {member.creator.displayName}
+                      </span>
+                      <button
+                        type="button"
+                        class="shrink-0 inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-background p-1 text-[0.68rem] font-semibold text-destructive transition hover:bg-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                        aria-label={`Remove ${member.creator.displayName} from collection`}
+                        title="Remove from collection"
+                        disabled={collectionBusy()}
+                        onClick={async () => {
+                          await removeMember(member);
+                        }}
+                      >
+                        <UserMinus size={12} />
+                      </button>
+                    </li>
+                  )}
+                </For>
+              </ol>
             </Match>
           </Switch>
           <div class="mt-2">

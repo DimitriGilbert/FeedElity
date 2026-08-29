@@ -23,7 +23,7 @@
 
 import { Database } from "bun:sqlite";
 
-import { buildMergePlan, summarizePlan, type CreatorRow } from "@FeedElity/db/creator-merge-plan";
+import { buildMergePlan, creatorNameKey, summarizePlan, type CreatorRow } from "@FeedElity/db/creator-merge-plan";
 
 interface Args {
   db: string | null;
@@ -64,17 +64,31 @@ Merge duplicate creator rows and convert to the cross-source (name_key) model.
 --yes         Actually write. Without it, runs as a dry run (reports only).
 `;
 
-const NAME_KEY_SQL = `lower(
-  iif(
-    instr(replace(replace(\`display_name\`, '@', ''), ' ', ''), ':') > 0,
-    substr(
-      replace(replace(\`display_name\`, '@', ''), ' ', ''),
-      1,
-      instr(replace(replace(\`display_name\`, '@', ''), ' ', ''), ':') - 1
-    ),
-    replace(replace(\`display_name\`, '@', ''), ' ', '')
-  )
-)`;
+/**
+ * Backfill name_key with creatorNameKey() — the same function buildMergePlan
+ * and runtime ingestion use — so the stored key matches for every display-name
+ * shape (internal "@", tabs/newlines, leading "@", ":claimId" suffixes).
+ * Parameterized per-row UPDATE; runs before the unique name_key index.
+ */
+function backfillNameKeys(db: Database): number {
+  const rows: readonly unknown[] = db
+    .query("SELECT id AS id, display_name AS displayName FROM creator WHERE name_key IS NULL")
+    .all();
+  let backfilled = 0;
+  for (const row of rows) {
+    if (typeof row !== "object" || row === null || !("id" in row) || !("displayName" in row)) {
+      throw new Error("creator name_key query returned an unexpected row");
+    }
+    const id: unknown = row.id;
+    const displayName: unknown = row.displayName;
+    if (typeof id !== "string" || typeof displayName !== "string" || displayName.length === 0) {
+      throw new Error("creator name_key query returned non-string id/display_name");
+    }
+    db.query("UPDATE creator SET name_key = ? WHERE id = ?").run(creatorNameKey(displayName), id);
+    backfilled += 1;
+  }
+  return backfilled;
+}
 
 function loadCreatorRows(db: Database): CreatorRow[] {
   const columns = new Set(
@@ -185,7 +199,8 @@ async function main(): Promise<void> {
       db.exec("ALTER TABLE creator DROP COLUMN source_type");
       db.exec("ALTER TABLE creator DROP COLUMN source_external_id");
       db.exec("ALTER TABLE creator ADD COLUMN name_key text");
-      db.exec(`UPDATE creator SET name_key = ${NAME_KEY_SQL} WHERE name_key IS NULL`);
+      const backfilledNameKeys = backfillNameKeys(db);
+      console.log(`  name_key backfilled for ${backfilledNameKeys} creator row(s)`);
     }
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS creator_name_key_uidx ON creator (name_key)");
     db.exec("CREATE INDEX IF NOT EXISTS creator_display_name_idx ON creator (display_name)");
