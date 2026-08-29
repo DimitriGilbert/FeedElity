@@ -11,7 +11,7 @@ export function createAppRouter() {
     routeTree,
     defaultPreload: "intent",
     scrollRestoration: true,
-    defaultPreloadStaleTime: 0,
+    defaultPreloadStaleTime: 30_000,
     context: { orpc, queryClient },
   });
 }

@@ -7,7 +7,7 @@ import solidPlugin from "vite-plugin-solid";
 
 export default defineConfig({
   plugins: [
-    tanstackRouter({ target: "solid", autoCodeSplitting: true, enableRouteGeneration: false }),
+    tanstackRouter({ target: "solid", autoCodeSplitting: true }),
     solidPlugin(),
     tailwindcss(),
   ],

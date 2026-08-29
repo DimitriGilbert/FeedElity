@@ -1111,7 +1111,7 @@ export interface AppShellProps {
 }
 
 export default function AppShell(props: AppShellProps) {
-  const mode = props.mode ?? "catalog";
+  const mode = () => props.mode ?? "catalog";
   const session = authClient.useSession();
   const appSessionResourceInput = createMemo(() => session().data?.user.id ?? null);
   const [appSession] = createResource(appSessionResourceInput, () => client.session.current());
@@ -1364,7 +1364,7 @@ export default function AppShell(props: AppShellProps) {
         <Suspense>
         <CreatorSourceColumn
           isAuthenticated={isAuthenticated}
-          mode={mode}
+          mode={mode()}
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           readerDensity={readerDensity}
@@ -1396,7 +1396,7 @@ export default function AppShell(props: AppShellProps) {
         <Suspense>
         <ContentListColumn
           isAuthenticated={isAuthenticated}
-          mode={mode}
+          mode={mode()}
           selectedCreator={selectedCreator}
           selectedFeed={selectedFeed}
           selectedPlaylistId={selectedPlaylistId}
@@ -1414,7 +1414,7 @@ export default function AppShell(props: AppShellProps) {
           middlePanePanel={middlePanePanel}
           onCloseMiddlePanePanel={() => setMiddlePanePanel(null)}
           onAddSource={async (value) => {
-            if (mode === "library") {
+            if (mode() === "library") {
               await client.overlays.subscribeToCreator({ creatorId: value.creator.id });
             }
 

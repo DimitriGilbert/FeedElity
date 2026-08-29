@@ -1543,13 +1543,17 @@ test("creator pane keeps header refresh action beside subscription actions", asy
 });
 
 test("catalog and library routes deliberately select distinct shell modes", async () => {
-  const indexRoute = await Bun.file(new URL("../routes/index.tsx", import.meta.url)).text();
-  const dashboardRoute = await Bun.file(new URL("../routes/dashboard.tsx", import.meta.url)).text();
+  const shellLayoutRoute = await Bun.file(new URL("../routes/_shell.tsx", import.meta.url)).text();
+  const indexRoute = await Bun.file(new URL("../routes/_shell.index.tsx", import.meta.url)).text();
+  const dashboardRoute = await Bun.file(new URL("../routes/_shell.dashboard.tsx", import.meta.url)).text();
   const headerSource = await Bun.file(new URL("./header.tsx", import.meta.url)).text();
 
-  expect(indexRoute).toContain('<AppShell mode="catalog" />');
-  expect(dashboardRoute).toContain('<AppShell mode="library" />');
-  expect(dashboardRoute).toContain('createFileRoute("/dashboard")');
+  expect(shellLayoutRoute).toContain('<AppShell mode={mode()} />');
+  expect(shellLayoutRoute).toContain('location().pathname.startsWith("/dashboard") ? "library" : "catalog"');
+  expect(indexRoute).toContain('createFileRoute("/_shell/")');
+  expect(dashboardRoute).toContain('createFileRoute("/_shell/dashboard")');
+  expect(dashboardRoute).toContain('to: "/login"');
+  expect(dashboardRoute).toContain("authClient.getSession()");
   expect(headerSource).toContain('{ to: "/", label: "Catalog", helper: "Browse" }');
   expect(headerSource).toContain('{ to: "/dashboard", label: "Library", helper: "Saved" }');
   expect(headerSource).not.toContain("Dashboard");
@@ -1582,7 +1586,7 @@ test("subscribed library content uses one protected endpoint without client fan-
   expect(source).toContain("return client.overlays.subscribedContentItems(input);");
   expect(source).not.toContain("subscriptions.flatMap");
   expect(source).not.toContain("toSubscribedCreatorContentListInputs");
-  expect(source).toContain("if (mode === \"library\") {\n              await client.overlays.subscribeToCreator({ creatorId: value.creator.id });\n            }");
+  expect(source).toContain("if (mode() === \"library\") {\n              await client.overlays.subscribeToCreator({ creatorId: value.creator.id });\n            }");
 });
 
 test("viewer empty state uses neutral video copy", async () => {
