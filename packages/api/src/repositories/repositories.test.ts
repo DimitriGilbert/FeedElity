@@ -31,10 +31,13 @@ import {
   findOrCreateMigrationRun,
   findOrCreateSubscription,
   listContentStatusesForUser,
+  listContentStatusWithContentForUser,
   listMigrationMappingsForRun,
   listMigrationRuns,
   listPlaylistItemsForUserPlaylist,
+  listPlaylistItemsWithContentForUserPlaylist,
   listPlaylistsForUser,
+  listSubscribedContentItemsForUser,
   listSubscriptionsForUser,
   listUserSettingsForUser,
   recordMigrationMapping,
@@ -830,6 +833,87 @@ describe("catalog and overlay repositories", () => {
       throw new Error("Expected catalog content detail for the unkeyed item.");
     }
     expect(unkeyedDetail.mirrors).toEqual([]);
+  });
+
+  test("catalog and overlay list rows stay slim while detail keeps description and metadata", async () => {
+    await insertUser(testDatabase.db, "user-a", "slim-projection-a@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Slim Projection Creator",
+    });
+    const contentItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "slim-projection-video",
+      title: "Slim projection video",
+      description: "Long catalog description",
+      metadataJson: JSON.stringify({ kind: "meta" }),
+      publishedAt: new Date("2026-06-01T00:00:00.000Z"),
+    });
+    await findOrCreateContentSource(testDatabase.db, {
+      contentItemId: contentItem.id,
+      sourceType: "youtube",
+      sourceExternalId: "slim-projection-video",
+      canonicalUrl: "https://www.youtube.com/watch?v=slim-projection-video",
+      priority: 0,
+    });
+    await findOrCreateSubscription(testDatabase.db, { userId: "user-a", creatorId: creator.id });
+    await findOrCreateContentStatus(testDatabase.db, {
+      userId: "user-a",
+      contentItemId: contentItem.id,
+      status: "favorite",
+    });
+    const playlist = await createPlaylist(testDatabase.db, { userId: "user-a", name: "Slim queue" });
+    const playlistItem = await addPlaylistItem(testDatabase.db, {
+      userId: "user-a",
+      playlistId: playlist.id,
+      contentItemId: contentItem.id,
+      position: 0,
+    });
+    if (playlistItem === null) {
+      throw new Error("Expected the playlist item write to succeed.");
+    }
+
+    const catalogRows = await listCatalogContentItems(testDatabase.db);
+    const subscribedRows = await listSubscribedContentItemsForUser(testDatabase.db, {
+      userId: "user-a",
+      limit: 10,
+    });
+    const favoriteRows = await listContentStatusWithContentForUser(testDatabase.db, {
+      userId: "user-a",
+      status: "favorite",
+    });
+    const playlistRows = await listPlaylistItemsWithContentForUserPlaylist(testDatabase.db, "user-a", playlist.id);
+
+    const listRows = [
+      ...catalogRows,
+      ...subscribedRows,
+      ...favoriteRows.map((row) => row.content),
+      ...playlistRows.map((row) => row.content),
+    ];
+    expect(listRows.length).toBeGreaterThanOrEqual(4);
+    // List projections never carry the heavyweight detail-only columns.
+    for (const row of listRows) {
+      expect("description" in row).toBe(false);
+      expect("metadataJson" in row).toBe(false);
+    }
+    // They still carry the fields the list pages render.
+    expect(catalogRows[0]).toMatchObject({ id: contentItem.id, title: "Slim projection video" });
+    // Favorites and playlist views deliberately report no mirror linkage;
+    // subscribed views keep the (real, here unkeyed-zero) mirror count field.
+    expect(favoriteRows[0]?.content.mirrorCount).toBe(0);
+    expect(playlistRows[0]?.content.mirrorCount).toBe(0);
+    expect(subscribedRows[0]?.mirrorCount).toBe(0);
+
+    const detail = await getCatalogContentDetail(testDatabase.db, contentItem.id);
+    if (detail === null) {
+      throw new Error("Expected catalog content detail for the slim projection item.");
+    }
+    expect(detail.description).toBe("Long catalog description");
+    expect(detail.metadataJson).toBe(JSON.stringify({ kind: "meta" }));
+    // Detail mirrors are list items too, so they stay slim as well.
+    expect(
+      detail.mirrors.every((mirror) => !("description" in mirror) && !("metadataJson" in mirror)),
+    ).toBe(true);
   });
 });
 

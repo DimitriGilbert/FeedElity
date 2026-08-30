@@ -230,9 +230,18 @@ test("primary navigation preserves anonymous catalog access and authenticated wo
 test("anonymous shell state gates protected overlays behind app session state", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("const [appSession] = createResource(appSessionResourceInput, () => client.session.current())");
-  expect(source).toContain("appSession.latest !== null && appSession.latest !== undefined");
+  expect(source).toContain("const isAuthenticated = createMemo(() => !session().isPending && session().data !== null);");
+  expect(source).not.toContain("client.session.current");
   expect(source).toContain('props.isAuthenticated() && props.mode === "library"');
+});
+
+test("creator catalog holds its first fetch until the persisted sort is known (D11)", async () => {
+  const source = await readAppShellSource();
+
+  expect(source).toContain("const creatorsResourceInput = createMemo(() => {\n    if (props.creatorSortPending()) {\n      return null;\n    }\n\n    return creatorListResourceKey();\n  });");
+  expect(source).toContain('return settings.state === "unresolved" || settings.state === "pending";');
+  expect(source).toContain("creatorSortPending={creatorListFetchPending}");
+  expect(source).toContain('props.mode === "catalog" && (creators.loading || props.creatorSortPending()) && creatorsValue() === undefined');
 });
 
 test("app shell keeps a single compact global header", () => {
@@ -1066,7 +1075,7 @@ test("playlist controls are protected behind authenticated session state", async
   const source = await readAppShellSource();
 
   expect(source).toContain("const session = authClient.useSession()");
-  expect(source).toContain("appSession.latest !== null && appSession.latest !== undefined");
+  expect(source).toContain("const isAuthenticated = createMemo(() => !session().isPending && session().data !== null);");
   expect(source).toContain("<Show when={props.isAuthenticated()}>");
   expect(source).not.toContain("Sign in to create playlists");
   expect(source).not.toContain("Login to save playlists");

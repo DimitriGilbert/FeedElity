@@ -100,7 +100,24 @@ export interface CatalogContentSource {
   readonly metadataJson: string | null;
 }
 
-export interface CatalogContentListItem extends CatalogContentItem {
+/**
+ * Slim catalog list row. Deliberately standalone and narrow: list pages render
+ * only identity, ordering, and playback-summary fields, so rows stop carrying
+ * the heavyweight `description` and `metadataJson` blobs. The detail endpoint
+ * (`CatalogContentDetail`) keeps fetching them. Mirror counts stay catalog-
+ * global data (source identity only), never user-owned overlay data.
+ */
+export interface CatalogContentListItem {
+  readonly id: string;
+  readonly creatorId: string;
+  readonly sourceType: SourceType;
+  readonly sourceExternalId: string;
+  readonly title: string;
+  readonly publishedAt: Date | null;
+  readonly contentType: ContentType;
+  readonly durationSeconds: number | null;
+  readonly thumbnailUrl: string | null;
+  readonly canonicalUrl: string | null;
   readonly creator: CatalogCreatorSummary;
   readonly sourceCount: number;
   /**

@@ -248,6 +248,11 @@ interface CreatorSourceColumnProps {
   readonly setActiveTab: (tab: LeftPaneTab) => void;
   readonly readerDensity: () => ReaderDensity;
   readonly creatorSort: () => CreatorListSort;
+  // True while the persisted creator sort may still arrive (auth session
+  // undetermined, or authenticated settings not yet settled). The catalog
+  // creators fetch holds until this flips false so signed-in users fetch once
+  // with the final sort instead of a default-sort fetch followed by a refetch.
+  readonly creatorSortPending: () => boolean;
   readonly onCreatorSortChange: (sort: CreatorListSort) => Promise<void>;
   readonly selectedCreatorId: () => string | null;
   readonly selectedCreator: () => BrowsableCreator | null;
@@ -363,8 +368,19 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [libraryCreatorLimit, setLibraryCreatorLimit] = createSignal(creatorListLimit);
   const creatorListInput = createMemo(() => toCreatorListInput(debouncedSearch(), sourceType(), props.creatorSort()));
   const creatorListResourceKey = createMemo(() => toCreatorListResourceKey(creatorListInput(), props.catalogReloadKey()));
+  // D11 gate: while the persisted sort may still arrive the input is null so
+  // the resource does not fetch; when it flips to the real key the single
+  // catalog fetch runs with the persisted sort (or the default for anonymous
+  // users, whose pending window closes right after the session check).
+  const creatorsResourceInput = createMemo(() => {
+    if (props.creatorSortPending()) {
+      return null;
+    }
+
+    return creatorListResourceKey();
+  });
   const [creators] = createResource(
-    creatorListResourceKey,
+    creatorsResourceInput,
     () => client.catalog.creators(untrack(creatorListInput)),
   );
   const creatorsValue = createMemo(() => creators.latest);
@@ -950,7 +966,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
               <p class="text-xs font-semibold text-foreground">Loading Library</p>
               <p class="mt-2 text-xs leading-5 text-muted-foreground">Loading your subscribed sources.</p>
             </Match>
-            <Match when={props.mode === "catalog" && creators.loading && creatorsValue() === undefined}>
+            <Match when={props.mode === "catalog" && (creators.loading || props.creatorSortPending()) && creatorsValue() === undefined}>
               <p class="text-xs font-semibold text-foreground">Loading sources</p>
               <p class="mt-2 text-xs leading-5 text-muted-foreground">Loading the public catalog.</p>
             </Match>
@@ -1138,9 +1154,11 @@ export interface AppShellProps {
 export default function AppShell(props: AppShellProps) {
   const mode = () => props.mode ?? "catalog";
   const session = authClient.useSession();
-  const appSessionResourceInput = createMemo(() => session().data?.user.id ?? null);
-  const [appSession] = createResource(appSessionResourceInput, () => client.session.current());
-  const isAuthenticated = createMemo(() => appSession.latest !== null && appSession.latest !== undefined);
+  // Single auth gate for every overlay resource below, derived straight from
+  // the better-auth session hook (the same source the header uses) so startup
+  // no longer issues a second dedicated session round trip. Not authenticated
+  // while the session check is pending.
+  const isAuthenticated = createMemo(() => !session().isPending && session().data !== null);
   const [selectedCreator, setSelectedCreator] = createSignal<BrowsableCreator | null>(null);
   const [selectedFeed, setSelectedFeed] = createSignal<CatalogFeed | null>(null);
   const [selectedContent, setSelectedContent] = createSignal<CatalogContentListItem | null>(null);
@@ -1176,6 +1194,23 @@ export default function AppShell(props: AppShellProps) {
     await client.overlays.saveSetting({ key: creatorListSortSettingKey, value: sort });
     await refetchSettings();
   };
+  // D11: the creator catalog must fetch ONCE with the persisted sort for
+  // signed-in users. While the session check is pending the auth state is
+  // undetermined, and once authenticated the persisted sort arrives with the
+  // settings fetch — fetching before settings settle produces a default-sort
+  // list that is immediately refetched (the double fetch this gate removes).
+  // Anonymous users (session resolved, no session data) fetch immediately.
+  const creatorListFetchPending = createMemo(() => {
+    if (session().isPending) {
+      return true;
+    }
+
+    if (!isAuthenticated()) {
+      return false;
+    }
+
+    return settings.state === "unresolved" || settings.state === "pending";
+  });
   const contentStatusesResourceInput = createMemo(() => {
     if (!isAuthenticated()) {
       return null;
@@ -1398,6 +1433,7 @@ export default function AppShell(props: AppShellProps) {
           setActiveTab={setActiveTab}
           readerDensity={readerDensity}
           creatorSort={creatorSort}
+          creatorSortPending={creatorListFetchPending}
           onCreatorSortChange={saveCreatorSortSetting}
           selectedCreatorId={selectedCreatorId}
           selectedCreator={selectedCreator}

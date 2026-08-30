@@ -46,7 +46,8 @@ function legacySchemaSql(options: { readonly withLastPublishedColumn: boolean })
     source_type text NOT NULL,
     source_external_id text NOT NULL,
     title text NOT NULL,
-    published_at integer
+    published_at integer,
+    created_at integer NOT NULL DEFAULT 0
   );
   CREATE UNIQUE INDEX content_item_source_identity_uidx ON content_item (source_type, source_external_id);
   CREATE TABLE refresh_run (
@@ -301,7 +302,7 @@ describe("name_key backfill parity", () => {
 
     const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
 
-    expect(report.appliedCount).toBe(2);
+    expect(report.appliedCount).toBe(3);
     const db = openCatalogDatabase(path, { readOnly: true });
     try {
       // The unique index is created after the backfill: it only exists if every
@@ -337,7 +338,7 @@ describe("name_key backfill parity", () => {
 
     const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
 
-    expect(report.appliedCount).toBe(2);
+    expect(report.appliedCount).toBe(3);
     const mergeDetails = report.steps[0]?.details.join("\n") ?? "";
     expect(mergeDetails).toContain("recomputed name_key for 1 row(s)");
 
@@ -375,8 +376,8 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
 
     expect(report.apply).toBe(true);
-    expect(report.appliedCount).toBe(2);
-    expect(report.steps).toHaveLength(2);
+    expect(report.appliedCount).toBe(3);
+    expect(report.steps).toHaveLength(3);
     expect(report.steps[0]?.id).toBe("creator_cross_source_merge");
     expect(report.steps[0]?.applied).toBe(true);
     expect(report.steps[1]?.id).toBe("content_cross_source_key");
@@ -384,6 +385,9 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     expect(report.steps[1]?.details.some((detail) => detail.startsWith("backfilled cross_source_key for 5"))).toBe(
       true,
     );
+    expect(report.steps[2]?.id).toBe("content_item_list_order_idx");
+    expect(report.steps[2]?.applied).toBe(true);
+    expect(report.steps[2]?.details.join("\n")).toContain("created index content_item_published_created_id_idx");
 
     const after = inspectDatabaseFile(path);
     // 4 creators -> 2 (the three Scott Manley rows collapse onto the youtube one).
@@ -432,6 +436,7 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
       expect(indexes.has("creator_display_name_idx")).toBe(true);
       expect(indexes.has("creator_last_content_published_at_idx")).toBe(true);
       expect(indexes.has("content_item_cross_source_key_idx")).toBe(true);
+      expect(indexes.has("content_item_published_created_id_idx")).toBe(true);
 
       // Every item carries the mirror key derived from its creator's name_key
       // and its title, computed by the parity-tested mirrored function.
@@ -467,11 +472,13 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     const secondRun = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
 
     expect(secondRun.appliedCount).toBe(0);
-    expect(secondRun.steps).toHaveLength(2);
+    expect(secondRun.steps).toHaveLength(3);
     expect(secondRun.steps[0]?.applied).toBe(false);
     expect(secondRun.steps[0]?.details).toEqual(["skipped: migration id already recorded"]);
     expect(secondRun.steps[1]?.applied).toBe(false);
     expect(secondRun.steps[1]?.details).toEqual(["skipped: migration id already recorded"]);
+    expect(secondRun.steps[2]?.applied).toBe(false);
+    expect(secondRun.steps[2]?.details).toEqual(["skipped: migration id already recorded"]);
 
     const after = inspectDatabaseFile(path);
     expect(after.counts.creators).toBe(2);
@@ -496,7 +503,7 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
 
     // The content_cross_source_key step reports the planned column, index, and
     // backfill work without writing.
-    expect(report.steps).toHaveLength(2);
+    expect(report.steps).toHaveLength(3);
     expect(report.steps[1]?.id).toBe("content_cross_source_key");
     expect(report.steps[1]?.applied).toBe(false);
     const keyStepDetails = report.steps[1]?.details.join("\n") ?? "";
@@ -505,11 +512,20 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     expect(keyStepDetails).toContain("backfill cross_source_key for 5 content_item row(s)");
     expect(keyStepDetails).toContain("no writes performed (dry run)");
 
+    // The list-order index step reports the planned composite index without
+    // writing.
+    expect(report.steps[2]?.id).toBe("content_item_list_order_idx");
+    expect(report.steps[2]?.applied).toBe(false);
+    const listOrderStepDetails = report.steps[2]?.details.join("\n") ?? "";
+    expect(listOrderStepDetails).toContain("create index content_item_published_created_id_idx");
+    expect(listOrderStepDetails).toContain("no writes performed (dry run)");
+
     // Nothing was written: no migration record, no schema change, no merge.
     const db = openCatalogDatabase(path, { readOnly: true });
     try {
       expect(queryNumber(db, "SELECT count(*) AS n FROM creator")).toBe(4);
       expect(queryNumber(db, "SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = '__feedelity_migrations'")).toBe(0);
+      expect(queryNumber(db, "SELECT count(*) AS n FROM sqlite_master WHERE type = 'index' AND name = 'content_item_published_created_id_idx'")).toBe(0);
       expect(creatorColumnNames(db)).toContain("source_type");
       expect(creatorColumnNames(db)).not.toContain("name_key");
     } finally {
@@ -532,7 +548,7 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     seedDb.close();
 
     const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
-    expect(report.appliedCount).toBe(2);
+    expect(report.appliedCount).toBe(3);
 
     const after = inspectDatabaseFile(path);
     expect(after.counts.creators).toBe(2);
@@ -567,10 +583,13 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     }
 
     const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
-    expect(report.appliedCount).toBe(2);
+    expect(report.appliedCount).toBe(3);
     expect(report.steps[0]?.details[0]).toContain("already converged");
     expect(report.steps[1]?.details[0]).toContain(
       "already converged: content_item.cross_source_key exists, is indexed, and has no NULL rows",
+    );
+    expect(report.steps[2]?.details[0]).toContain(
+      "already converged: index content_item_published_created_id_idx exists",
     );
 
     const secondRun = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
@@ -598,7 +617,7 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
 
     const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
 
-    expect(report.appliedCount).toBe(2);
+    expect(report.appliedCount).toBe(3);
     const mergeDetails = report.steps[0]?.details.join("\n") ?? "";
     expect(mergeDetails).not.toContain("already converged");
     expect(mergeDetails).toContain("recomputed name_key for 1 row(s)");
@@ -610,6 +629,74 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
       );
     } finally {
       verify.close();
+    }
+  });
+});
+
+describe("content_item_list_order_idx step", () => {
+  test("creates the composite list-order index and is a no-op when re-applied", async () => {
+    const path = await createLegacyDatabaseFile("feedelity-db-list-order-idx-");
+    const seedDb = createLegacyDatabase(path, { withLastPublishedColumn: true });
+    seedLegacyRows(seedDb, { withLastPublishedColumn: true });
+    seedDb.close();
+
+    const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
+
+    const indexStep = report.steps.at(2);
+    expect(indexStep?.id).toBe("content_item_list_order_idx");
+    expect(indexStep?.applied).toBe(true);
+    expect(indexStep?.details.join("\n")).toContain("created index content_item_published_created_id_idx");
+
+    const db = openCatalogDatabase(path, { readOnly: true });
+    try {
+      expect(indexNames(db).has("content_item_published_created_id_idx")).toBe(true);
+    } finally {
+      db.close();
+    }
+
+    const secondRun = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
+    expect(secondRun.appliedCount).toBe(0);
+    expect(secondRun.steps.at(2)?.id).toBe("content_item_list_order_idx");
+    expect(secondRun.steps.at(2)?.applied).toBe(false);
+    expect(secondRun.steps.at(2)?.details).toEqual(["skipped: migration id already recorded"]);
+  });
+
+  test("the newest-first list query plan uses the composite index with no TEMP B-TREE and no full scan", async () => {
+    const path = await createLegacyDatabaseFile("feedelity-db-list-order-plan-");
+    const seedDb = createLegacyDatabase(path, { withLastPublishedColumn: true });
+    seedLegacyRows(seedDb, { withLastPublishedColumn: true });
+    // Enough rows that LIMIT 50 is a strict subset, mirroring a real page of
+    // the catalog list query.
+    for (let index = 0; index < 120; index += 1) {
+      insertContentItem(seedDb, `plan-item-${index}`, SCOTT_CANONICAL_ID, `plan-item-${index}`, index);
+    }
+    seedDb.close();
+    await runCatalogDataMigrations({ databaseUrl: path, apply: true });
+
+    const db = openCatalogDatabase(path, { readOnly: true });
+    try {
+      const planRows: readonly unknown[] = db
+        .query(
+          "EXPLAIN QUERY PLAN SELECT id, title, published_at FROM content_item " +
+            "ORDER BY published_at DESC, created_at DESC, id DESC LIMIT 50",
+        )
+        .all();
+      const planLines = planRows.map((row) => {
+        if (typeof row !== "object" || row === null || !("detail" in row) || typeof row.detail !== "string") {
+          throw new Error("EXPLAIN QUERY PLAN returned an unexpected row");
+        }
+        return row.detail;
+      });
+      const planText = planLines.join("\n");
+      // The index satisfies the whole ORDER BY, so no sort step may appear and
+      // every content_item access must go through the composite index.
+      expect(planText).toContain("USING INDEX content_item_published_created_id_idx");
+      expect(planText).not.toContain("TEMP B-TREE");
+      expect(planLines.some((line) => line.includes("SCAN content_item") && !line.includes("USING INDEX"))).toBe(
+        false,
+      );
+    } finally {
+      db.close();
     }
   });
 });

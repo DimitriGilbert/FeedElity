@@ -57,6 +57,16 @@ const CREATOR_INDEXES = Object.keys(CREATOR_INDEX_DDL);
 
 const CONTENT_CROSS_SOURCE_KEY_INDEX = "content_item_cross_source_key_idx";
 
+/**
+ * Composite index matching the newest-first catalog list ordering
+ * (published_at DESC, created_at DESC, id DESC) so ORDER BY + LIMIT list
+ * queries read rows pre-sorted instead of using a TEMP B-TREE.
+ */
+const CONTENT_ITEM_LIST_ORDER_INDEX = "content_item_published_created_id_idx";
+
+const CONTENT_ITEM_LIST_ORDER_INDEX_DDL =
+  `CREATE INDEX IF NOT EXISTS ${CONTENT_ITEM_LIST_ORDER_INDEX} ON content_item (published_at DESC, created_at DESC, id DESC)`;
+
 export interface CatalogCounts {
   readonly creators: number;
   readonly feeds: number;
@@ -222,9 +232,17 @@ const contentCrossSourceKeyStep: CatalogMigrationStep = {
   run: runContentCrossSourceKey,
 };
 
+const contentItemListOrderIndexStep: CatalogMigrationStep = {
+  id: "content_item_list_order_idx",
+  description:
+    "Create the content_item list-order composite index (published_at DESC, created_at DESC, id DESC) so newest-first list queries avoid a TEMP B-TREE sort.",
+  run: runContentItemListOrderIndex,
+};
+
 const catalogMigrationSteps: readonly CatalogMigrationStep[] = [
   creatorCrossSourceMergeStep,
   contentCrossSourceKeyStep,
+  contentItemListOrderIndexStep,
 ];
 
 function runCreatorCrossSourceMerge(db: Database, apply: boolean): readonly string[] {
@@ -346,6 +364,30 @@ function runContentCrossSourceKey(db: Database, apply: boolean): readonly string
   );
 
   return details;
+}
+
+/**
+ * Create the composite content_item list-order index. Pure DDL over columns
+ * that exist in every schema produced by the bootstrap SQL migrations
+ * (published_at since 0000, created_at since 0000), so a re-run converges by
+ * the index-existence check alone.
+ */
+function runContentItemListOrderIndex(db: Database, apply: boolean): readonly string[] {
+  if (indexExists(db, CONTENT_ITEM_LIST_ORDER_INDEX)) {
+    return [`already converged: index ${CONTENT_ITEM_LIST_ORDER_INDEX} exists`];
+  }
+
+  if (!apply) {
+    return [
+      `create index ${CONTENT_ITEM_LIST_ORDER_INDEX} on content_item (published_at DESC, created_at DESC, id DESC)`,
+      "no writes performed (dry run)",
+    ];
+  }
+
+  db.exec(CONTENT_ITEM_LIST_ORDER_INDEX_DDL);
+  return [
+    `created index ${CONTENT_ITEM_LIST_ORDER_INDEX} on content_item (published_at DESC, created_at DESC, id DESC)`,
+  ];
 }
 
 interface ContentItemKeyRow {

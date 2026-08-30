@@ -246,7 +246,7 @@ async function main(): Promise<void> {
 }
 
 async function importExportData(exportData: unknown): Promise<void> {
-  const { client, db } = createDbConnection(databaseUrl);
+  const { client, db } = await createDbConnection(databaseUrl);
   try {
     const report = await db.transaction((tx) => runStrapiExportMigration(tx, { exportData, sourceFilename: outputPath }));
     console.log(JSON.stringify({ status: report.status, counts: report.counts, warnings: report.warnings.length, failures: report.failures.length }, null, 2));

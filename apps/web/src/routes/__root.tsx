@@ -1,7 +1,6 @@
 import type { QueryClient } from "@tanstack/solid-query";
-import { SolidQueryDevtools } from "@tanstack/solid-query-devtools";
 import { Outlet, createRootRouteWithContext } from "@tanstack/solid-router";
-import { TanStackRouterDevtools } from "@tanstack/solid-router-devtools";
+import { Show, Suspense, lazy } from "solid-js";
 
 import Header from "@/components/header";
 
@@ -16,6 +15,10 @@ export const Route = createRootRouteWithContext<RouterContext>()({
   component: RootComponent,
 });
 
+// Lazy so the devtools code is code-split into its own chunk; the DEV gate
+// keeps the chunk unloaded (and absent from the main bundle) in production.
+const DevTools = lazy(() => import("@/components/dev-tools"));
+
 function RootComponent() {
   return (
     <>
@@ -23,8 +26,11 @@ function RootComponent() {
         <Header />
         <Outlet />
       </div>
-      <SolidQueryDevtools />
-      <TanStackRouterDevtools />
+      <Show when={import.meta.env.DEV}>
+        <Suspense>
+          <DevTools />
+        </Suspense>
+      </Show>
     </>
   );
 }

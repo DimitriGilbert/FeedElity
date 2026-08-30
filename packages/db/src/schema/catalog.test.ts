@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { getTableConfig } from "drizzle-orm/sqlite-core";
+import { getTableConfig, SQLiteSyncDialect } from "drizzle-orm/sqlite-core";
 import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 
 import {
@@ -35,6 +35,18 @@ function indexColumnsByName(table: SQLiteTable, indexName: string): string[] {
   return indexConfig?.config.columns.map((column) => ("name" in column ? column.name : "sql_expression")) ?? [];
 }
 
+/** Rendered index column expressions; DESC order lives in SQL-expression columns. */
+function indexColumnExpressions(table: SQLiteTable, indexName: string): string[] {
+  const indexConfig = getTableConfig(table).indexes.find((tableIndex) => tableIndex.config.name === indexName);
+
+  expect(indexConfig).toBeDefined();
+
+  const dialect = new SQLiteSyncDialect();
+  return (
+    indexConfig?.config.columns.map((column) => ("name" in column ? column.name : dialect.sqlToQuery(column).sql)) ?? []
+  );
+}
+
 describe("global catalog schema", () => {
   test("catalog tables are not user-owned overlays", () => {
     const userOwnershipColumnNames = new Set(["user_id", "userId"]);
@@ -56,6 +68,16 @@ describe("global catalog schema", () => {
     expect(indexColumnsByName(contentItem, "content_item_source_identity_uidx")).toEqual([
       "source_type",
       "source_external_id",
+    ]);
+  });
+
+  test("content_item declares the composite newest-first list-order index", () => {
+    // DESC ordering is declared through SQL-expression columns, so the rendered
+    // expression text (the DDL db:push generates) is the contract.
+    expect(indexColumnExpressions(contentItem, "content_item_published_created_id_idx")).toEqual([
+      '"content_item"."published_at" desc',
+      '"content_item"."created_at" desc',
+      '"content_item"."id" desc',
     ]);
   });
 

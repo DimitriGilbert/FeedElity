@@ -2,7 +2,7 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 
 import * as schema from "@FeedElity/db/schema";
 
-import type { CatalogContentItem, CatalogContentListItem, CatalogCreatorSummary, ContentStatusKind, SourceType } from "../domain/catalog";
+import type { CatalogContentListItem, CatalogCreatorSummary, ContentStatusKind, ContentType, SourceType } from "../domain/catalog";
 import { loadSourceTypesByCreatorId, loadSourceTypesForCreator } from "./catalog";
 import type {
   CollectionMember,
@@ -231,7 +231,16 @@ export async function listSubscribedContentItemsForUser(
 
   const contentQuery = db
     .select({
-      contentItem: schema.contentItem,
+      id: schema.contentItem.id,
+      creatorId: schema.contentItem.creatorId,
+      sourceType: schema.contentItem.sourceType,
+      sourceExternalId: schema.contentItem.sourceExternalId,
+      title: schema.contentItem.title,
+      publishedAt: schema.contentItem.publishedAt,
+      contentType: schema.contentItem.contentType,
+      durationSeconds: schema.contentItem.durationSeconds,
+      thumbnailUrl: schema.contentItem.thumbnailUrl,
+      canonicalUrl: schema.contentItem.canonicalUrl,
       creator: schema.creator,
       sourceCount: sql<number>`(
         select count(*)
@@ -276,12 +285,7 @@ export async function listSubscribedContentItemsForUser(
 
   const sourceTypesByCreator = await loadSourceTypesByCreatorId(db, rows.map((row) => row.creator.id));
 
-  return rows.map((row) => ({
-    ...toCatalogContentItem(row.contentItem),
-    creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
-    sourceCount: row.sourceCount,
-    mirrorCount: row.mirrorCount,
-  }));
+  return rows.map((row) => toCatalogContentListItem(row, sourceTypesByCreator.get(row.creator.id) ?? []));
 }
 
 export async function getSubscriptionWithCreatorForUser(
@@ -441,13 +445,26 @@ export async function listContentStatusWithContentForUser(
   const rows = await db
     .select({
       contentStatus: schema.contentStatus,
-      contentItem: schema.contentItem,
+      id: schema.contentItem.id,
+      creatorId: schema.contentItem.creatorId,
+      sourceType: schema.contentItem.sourceType,
+      sourceExternalId: schema.contentItem.sourceExternalId,
+      title: schema.contentItem.title,
+      publishedAt: schema.contentItem.publishedAt,
+      contentType: schema.contentItem.contentType,
+      durationSeconds: schema.contentItem.durationSeconds,
+      thumbnailUrl: schema.contentItem.thumbnailUrl,
+      canonicalUrl: schema.contentItem.canonicalUrl,
       creator: schema.creator,
       sourceCount: sql<number>`(
         select count(*)
         from ${schema.contentSource}
         where ${schema.contentSource.contentItemId} = ${schema.contentItem.id}
       )`,
+      // Favorites/history views do not compute mirror linkage; 0 means the UI
+      // shows no mirror affordance there. The viewer switcher reads mirrors
+      // from contentDetail instead.
+      mirrorCount: sql<number>`0`,
     })
     .from(schema.contentStatus)
     .innerJoin(schema.contentItem, eq(schema.contentStatus.contentItemId, schema.contentItem.id))
@@ -460,15 +477,7 @@ export async function listContentStatusWithContentForUser(
 
   return rows.map((row) => ({
     ...toUserContentStatus(row.contentStatus),
-    content: {
-      ...toCatalogContentItem(row.contentItem),
-      creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
-      sourceCount: row.sourceCount,
-      // Favorites/history views do not compute mirror linkage; 0 means the UI
-      // shows no mirror affordance there. The viewer switcher reads mirrors
-      // from contentDetail instead.
-      mirrorCount: 0,
-    },
+    content: toCatalogContentListItem(row, sourceTypesByCreator.get(row.creator.id) ?? []),
   }));
 }
 
@@ -647,13 +656,26 @@ export async function listPlaylistItemsWithContentForUserPlaylist(
   const rows = await db
     .select({
       playlistItem: schema.playlistItem,
-      contentItem: schema.contentItem,
+      id: schema.contentItem.id,
+      creatorId: schema.contentItem.creatorId,
+      sourceType: schema.contentItem.sourceType,
+      sourceExternalId: schema.contentItem.sourceExternalId,
+      title: schema.contentItem.title,
+      publishedAt: schema.contentItem.publishedAt,
+      contentType: schema.contentItem.contentType,
+      durationSeconds: schema.contentItem.durationSeconds,
+      thumbnailUrl: schema.contentItem.thumbnailUrl,
+      canonicalUrl: schema.contentItem.canonicalUrl,
       creator: schema.creator,
       sourceCount: sql<number>`(
         select count(*)
         from ${schema.contentSource}
         where ${schema.contentSource.contentItemId} = ${schema.contentItem.id}
       )`,
+      // Playlist item views do not compute mirror linkage; 0 means the UI shows
+      // no mirror affordance there. The viewer switcher reads mirrors from
+      // contentDetail instead.
+      mirrorCount: sql<number>`0`,
     })
     .from(schema.playlistItem)
     .innerJoin(schema.contentItem, eq(schema.playlistItem.contentItemId, schema.contentItem.id))
@@ -665,15 +687,7 @@ export async function listPlaylistItemsWithContentForUserPlaylist(
 
   return rows.map((row) => ({
     ...toPlaylistItem(row.playlistItem),
-    content: {
-      ...toCatalogContentItem(row.contentItem),
-      creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
-      sourceCount: row.sourceCount,
-      // Playlist item views do not compute mirror linkage; 0 means the UI shows
-      // no mirror affordance there. The viewer switcher reads mirrors from
-      // contentDetail instead.
-      mirrorCount: 0,
-    },
+    content: toCatalogContentListItem(row, sourceTypesByCreator.get(row.creator.id) ?? []),
   }));
 }
 
@@ -1145,20 +1159,46 @@ function toUserContentStatus(row: typeof schema.contentStatus.$inferSelect): Use
   };
 }
 
-function toCatalogContentItem(row: typeof schema.contentItem.$inferSelect): CatalogContentItem {
+/**
+ * Slim catalog list row used by the overlay list queries: the narrow
+ * content_item columns the list pages render (description and metadata_json
+ * are intentionally omitted — the detail endpoint fetches them), plus the
+ * creator row, source count, and mirror count.
+ */
+interface CatalogContentListItemRow {
+  readonly id: string;
+  readonly creatorId: string;
+  readonly sourceType: SourceType;
+  readonly sourceExternalId: string;
+  readonly title: string;
+  readonly publishedAt: Date | null;
+  readonly contentType: ContentType;
+  readonly durationSeconds: number | null;
+  readonly thumbnailUrl: string | null;
+  readonly canonicalUrl: string | null;
+  readonly creator: typeof schema.creator.$inferSelect;
+  readonly sourceCount: number;
+  readonly mirrorCount: number;
+}
+
+function toCatalogContentListItem(
+  row: CatalogContentListItemRow,
+  sourceTypes: readonly SourceType[],
+): CatalogContentListItem {
   return {
     id: row.id,
     creatorId: row.creatorId,
     sourceType: row.sourceType,
     sourceExternalId: row.sourceExternalId,
     title: row.title,
-    description: row.description,
     publishedAt: row.publishedAt,
     contentType: row.contentType,
     durationSeconds: row.durationSeconds,
     thumbnailUrl: row.thumbnailUrl,
     canonicalUrl: row.canonicalUrl,
-    metadataJson: row.metadataJson,
+    creator: toCatalogCreatorSummary(row.creator, sourceTypes),
+    sourceCount: row.sourceCount,
+    mirrorCount: row.mirrorCount,
   };
 }
 

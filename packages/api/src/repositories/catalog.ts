@@ -11,6 +11,7 @@ import type {
   CatalogCreator,
   CatalogCreatorSummary,
   CatalogFeed,
+  ContentType,
   RefreshFeedResult,
   RefreshFeedResultWithFeed,
   RefreshRun,
@@ -716,17 +717,32 @@ async function listCatalogContentListItemsByMirrorKey(
   return toCatalogContentListItems(db, rows);
 }
 
+/**
+ * Slim catalog list row: the narrow content_item columns the list pages render
+ * (description and metadata_json are intentionally omitted — the detail
+ * endpoint fetches them), plus the creator row, source count, and cross-source
+ * mirror count.
+ */
 interface CatalogContentListItemRow {
-  readonly contentItem: typeof schema.contentItem.$inferSelect;
+  readonly id: string;
+  readonly creatorId: string;
+  readonly sourceType: SourceType;
+  readonly sourceExternalId: string;
+  readonly title: string;
+  readonly publishedAt: Date | null;
+  readonly contentType: ContentType;
+  readonly durationSeconds: number | null;
+  readonly thumbnailUrl: string | null;
+  readonly canonicalUrl: string | null;
   readonly creator: typeof schema.creator.$inferSelect;
   readonly sourceCount: number;
   readonly mirrorCount: number;
 }
 
 /**
- * Shared projection for catalog content list rows: the item, its creator, how
- * many playback sources the item has, and how many CROSS-SOURCE mirror
- * siblings share its non-null cross_source_key (excluding itself and
+ * Shared projection for catalog content list rows: the slim item columns, its
+ * creator, how many playback sources the item has, and how many CROSS-SOURCE
+ * mirror siblings share its non-null cross_source_key (excluding itself and
  * same-source duplicates; 0 when the key is null). The mirror count subselect
  * aliases the inner table so the qualified outer columns correlate against
  * the driving row.
@@ -734,7 +750,16 @@ interface CatalogContentListItemRow {
 function selectCatalogContentListItemRows(db: RepositoryDb) {
   return db
     .select({
-      contentItem: schema.contentItem,
+      id: schema.contentItem.id,
+      creatorId: schema.contentItem.creatorId,
+      sourceType: schema.contentItem.sourceType,
+      sourceExternalId: schema.contentItem.sourceExternalId,
+      title: schema.contentItem.title,
+      publishedAt: schema.contentItem.publishedAt,
+      contentType: schema.contentItem.contentType,
+      durationSeconds: schema.contentItem.durationSeconds,
+      thumbnailUrl: schema.contentItem.thumbnailUrl,
+      canonicalUrl: schema.contentItem.canonicalUrl,
       creator: schema.creator,
       sourceCount: sql<number>`(
         select count(*)
@@ -754,18 +779,34 @@ function selectCatalogContentListItemRows(db: RepositoryDb) {
     .innerJoin(schema.creator, eq(schema.contentItem.creatorId, schema.creator.id));
 }
 
+function toCatalogContentListItem(
+  row: CatalogContentListItemRow,
+  sourceTypes: readonly SourceType[],
+): CatalogContentListItem {
+  return {
+    id: row.id,
+    creatorId: row.creatorId,
+    sourceType: row.sourceType,
+    sourceExternalId: row.sourceExternalId,
+    title: row.title,
+    publishedAt: row.publishedAt,
+    contentType: row.contentType,
+    durationSeconds: row.durationSeconds,
+    thumbnailUrl: row.thumbnailUrl,
+    canonicalUrl: row.canonicalUrl,
+    creator: toCatalogCreatorSummary(row.creator, sourceTypes),
+    sourceCount: row.sourceCount,
+    mirrorCount: row.mirrorCount,
+  };
+}
+
 async function toCatalogContentListItems(
   db: RepositoryDb,
   rows: readonly CatalogContentListItemRow[],
 ): Promise<readonly CatalogContentListItem[]> {
   const sourceTypesByCreator = await loadSourceTypesByCreatorId(db, rows.map((row) => row.creator.id));
 
-  return rows.map((row) => ({
-    ...toCatalogContentItem(row.contentItem),
-    creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
-    sourceCount: row.sourceCount,
-    mirrorCount: row.mirrorCount,
-  }));
+  return rows.map((row) => toCatalogContentListItem(row, sourceTypesByCreator.get(row.creator.id) ?? []));
 }
 
 export async function listCatalogFeedsForCreator(db: RepositoryDb, creatorId: string): Promise<readonly CatalogFeed[]> {
