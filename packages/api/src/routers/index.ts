@@ -54,6 +54,7 @@ import {
   unsubscribeFromCreatorForUser,
   updateCollectionForUser,
   updatePlaylistForUser,
+  upsertPlaybackPositionForUser,
 } from "../repositories/overlays";
 import {
   getCreatorMetadataRefreshStatus,
@@ -194,6 +195,14 @@ const contentDetailInput = z.object({
 
 const contentStatusInput = z.object({
   contentItemId: z.string().min(1),
+});
+
+const playbackSecondsInput = z.number().int().min(0).max(86_400);
+
+const savePlaybackPositionInput = z.object({
+  contentItemId: z.string().min(1),
+  positionSeconds: playbackSecondsInput,
+  durationSeconds: playbackSecondsInput.optional(),
 });
 
 const contentHistoryInput = z.object({
@@ -566,6 +575,20 @@ export const appRouter = {
         userId: context.session.user.id,
         contentItemId: input.contentItemId,
         status: "played",
+      });
+
+      return { status };
+    }),
+    savePlaybackPosition: protectedProcedure.input(savePlaybackPositionInput).handler(async ({ input, context }) => {
+      if ((await getCatalogContentItemById(context.db, input.contentItemId)) === null) {
+        throw new ORPCError("NOT_FOUND");
+      }
+
+      const status = await upsertPlaybackPositionForUser(context.db, {
+        userId: context.session.user.id,
+        contentItemId: input.contentItemId,
+        positionSeconds: input.positionSeconds,
+        durationSeconds: input.durationSeconds,
       });
 
       return { status };

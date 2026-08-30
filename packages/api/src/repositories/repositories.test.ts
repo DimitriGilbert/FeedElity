@@ -43,6 +43,7 @@ import {
   recordMigrationMapping,
   reorderPlaylistItemsForUser,
   saveUserSetting,
+  upsertPlaybackPositionForUser,
 } from "./overlays";
 
 interface TestDatabase {
@@ -915,7 +916,206 @@ describe("catalog and overlay repositories", () => {
       detail.mirrors.every((mirror) => !("description" in mirror) && !("metadataJson" in mirror)),
     ).toBe(true);
   });
+
+  test("playback position upsert creates the opened row when absent without duplicating rows", async () => {
+    await insertUser(testDatabase.db, "user-a", "playback-create-a@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Playback Create Creator",
+    });
+    const contentItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "playback-create-video",
+      title: "Playback create video",
+    });
+
+    const status = await upsertPlaybackPositionForUser(testDatabase.db, {
+      userId: "user-a",
+      contentItemId: contentItem.id,
+      positionSeconds: 300,
+      durationSeconds: 1_500,
+    });
+    const replayedStatus = await upsertPlaybackPositionForUser(testDatabase.db, {
+      userId: "user-a",
+      contentItemId: contentItem.id,
+      positionSeconds: 300,
+      durationSeconds: 1_500,
+    });
+    const statuses = await listContentStatusesForUser(testDatabase.db, "user-a");
+
+    expect(status.status).toBe("opened");
+    expect(replayedStatus.id).toBe(status.id);
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]).toMatchObject({ userId: "user-a", status: "opened" });
+    const storedMetadata: unknown = JSON.parse(requireMetadataJson(statuses[0]?.metadataJson));
+    expect(storedMetadata).toMatchObject({
+      playback: { positionSeconds: 300, durationSeconds: 1_500 },
+    });
+    const playback = readPlaybackMetadata(storedMetadata);
+    expect(new Date(playback.updatedAt).toISOString()).toBe(playback.updatedAt);
+  });
+
+  test("playback position upsert preserves unrelated metadata keys on the opened row", async () => {
+    await insertUser(testDatabase.db, "user-a", "playback-preserve-a@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Playback Preserve Creator",
+    });
+    const contentItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "odysee",
+      sourceExternalId: "playback-preserve-video",
+      title: "Playback preserve video",
+    });
+    await findOrCreateContentStatus(testDatabase.db, {
+      userId: "user-a",
+      contentItemId: contentItem.id,
+      status: "opened",
+      metadataJson: JSON.stringify({ lastSurface: "viewer", sourceImport: "strapi" }),
+    });
+
+    const status = await upsertPlaybackPositionForUser(testDatabase.db, {
+      userId: "user-a",
+      contentItemId: contentItem.id,
+      positionSeconds: 42,
+    });
+
+    const storedMetadata: unknown = JSON.parse(requireMetadataJson(status.metadataJson));
+    expect(storedMetadata).toMatchObject({
+      lastSurface: "viewer",
+      sourceImport: "strapi",
+      playback: { positionSeconds: 42, durationSeconds: null },
+    });
+  });
+
+  test("repeated playback position saves merge with last write winning", async () => {
+    await insertUser(testDatabase.db, "user-a", "playback-merge-a@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Playback Merge Creator",
+    });
+    const contentItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "peertube",
+      sourceExternalId: "playback-merge-video",
+      title: "Playback merge video",
+    });
+
+    const firstSave = await upsertPlaybackPositionForUser(testDatabase.db, {
+      userId: "user-a",
+      contentItemId: contentItem.id,
+      positionSeconds: 100,
+      durationSeconds: 600,
+    });
+    const secondSave = await upsertPlaybackPositionForUser(testDatabase.db, {
+      userId: "user-a",
+      contentItemId: contentItem.id,
+      positionSeconds: 250,
+      durationSeconds: null,
+    });
+    const statuses = await listContentStatusesForUser(testDatabase.db, "user-a");
+
+    expect(secondSave.id).toBe(firstSave.id);
+    expect(statuses).toHaveLength(1);
+    const storedMetadata: unknown = JSON.parse(requireMetadataJson(statuses[0]?.metadataJson));
+    expect(storedMetadata).toMatchObject({
+      playback: { positionSeconds: 250, durationSeconds: null },
+    });
+  });
+
+  test("malformed existing metadataJson does not crash the playback position upsert", async () => {
+    await insertUser(testDatabase.db, "user-a", "playback-malformed-a@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Playback Malformed Creator",
+    });
+    const contentItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "playback-malformed-video",
+      title: "Playback malformed video",
+    });
+    const seeded = await findOrCreateContentStatus(testDatabase.db, {
+      userId: "user-a",
+      contentItemId: contentItem.id,
+      status: "opened",
+      metadataJson: "{definitely-not-json",
+    });
+    await testDatabase.db
+      .update(schema.contentStatus)
+      .set({ metadataJson: "{definitely-not-json" })
+      .where(eq(schema.contentStatus.id, seeded.id));
+
+    const status = await upsertPlaybackPositionForUser(testDatabase.db, {
+      userId: "user-a",
+      contentItemId: contentItem.id,
+      positionSeconds: 15,
+      durationSeconds: 90,
+    });
+
+    const storedMetadata: unknown = JSON.parse(requireMetadataJson(status.metadataJson));
+    expect(storedMetadata).toMatchObject({
+      playback: { positionSeconds: 15, durationSeconds: 90 },
+    });
+  });
+
+  test("playback position upsert rejects invalid position and duration values", async () => {
+    await insertUser(testDatabase.db, "user-a", "playback-invalid-a@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Playback Invalid Creator",
+    });
+    const contentItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "playback-invalid-video",
+      title: "Playback invalid video",
+    });
+
+    await expect(
+      upsertPlaybackPositionForUser(testDatabase.db, {
+        userId: "user-a",
+        contentItemId: contentItem.id,
+        positionSeconds: -1,
+      }),
+    ).rejects.toThrow("Playback position must be an integer >= 0");
+    await expect(
+      upsertPlaybackPositionForUser(testDatabase.db, {
+        userId: "user-a",
+        contentItemId: contentItem.id,
+        positionSeconds: 1.5,
+      }),
+    ).rejects.toThrow("Playback position must be an integer >= 0");
+    await expect(
+      upsertPlaybackPositionForUser(testDatabase.db, {
+        userId: "user-a",
+        contentItemId: contentItem.id,
+        positionSeconds: 0,
+        durationSeconds: -10,
+      }),
+    ).rejects.toThrow("Playback duration must be null or an integer >= 0");
+    const statuses = await listContentStatusesForUser(testDatabase.db, "user-a");
+    expect(statuses).toHaveLength(0);
+  });
 });
+
+function requireMetadataJson(metadataJson: string | null | undefined): string {
+  if (metadataJson === null || metadataJson === undefined) {
+    throw new Error("Expected playback metadata to be persisted on the opened row.");
+  }
+  return metadataJson;
+}
+
+function readPlaybackMetadata(metadata: unknown): { updatedAt: string } {
+  if (!isJsonObjectFixture(metadata) || !isJsonObjectFixture(metadata.playback)) {
+    throw new Error("Expected a playback metadata object on the opened row.");
+  }
+  const { updatedAt } = metadata.playback;
+  if (typeof updatedAt !== "string") {
+    throw new Error("Expected the playback updatedAt field to be a UTC ISO string.");
+  }
+  return { updatedAt };
+}
+
+function isJsonObjectFixture(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 async function insertUser(db: RepositoryDb, id: string, email: string): Promise<void> {
   await db.insert(schema.user).values({

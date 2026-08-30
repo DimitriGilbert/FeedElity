@@ -30,6 +30,18 @@ export interface UserContentStatusWithContent extends UserContentStatus {
   readonly content: CatalogContentListItem;
 }
 
+/**
+ * Playback resume position for a content item, stored under the `playback` key
+ * inside `content_status.metadata_json` on the item's `opened` row (no separate
+ * column — see qol-features-plan.md decision D1). `updatedAt` is a UTC ISO 8601
+ * timestamp taken when the position was persisted.
+ */
+export interface PlaybackPositionMetadata {
+  readonly positionSeconds: number;
+  readonly durationSeconds: number | null;
+  readonly updatedAt: string;
+}
+
 export interface Playlist {
   readonly id: string;
   readonly userId: string;

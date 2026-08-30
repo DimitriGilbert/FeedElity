@@ -49,6 +49,13 @@ export interface SaveContentStatusInput {
   readonly metadataJson?: string | null;
 }
 
+export interface UpsertPlaybackPositionInput {
+  readonly userId: string;
+  readonly contentItemId: string;
+  readonly positionSeconds: number;
+  readonly durationSeconds?: number | null;
+}
+
 export interface ListContentStatusWithContentForUserInput {
   readonly userId: string;
   readonly status: ContentStatusKind;
@@ -436,6 +443,55 @@ export async function toggleFavoriteContentStatusForUser(
   });
 
   return { favorited: true, status };
+}
+
+/**
+ * Persists the playback resume position (decision D1) under the `playback` key
+ * of the item's `opened` row `metadata_json`, keeping every other metadata key.
+ * Insert-with-update on the unique (userId, contentItemId, status) triple, so
+ * repeated saves never duplicate rows — last write wins for `playback`.
+ */
+export async function upsertPlaybackPositionForUser(
+  db: RepositoryDb,
+  input: UpsertPlaybackPositionInput,
+): Promise<UserContentStatus> {
+  if (!Number.isInteger(input.positionSeconds) || input.positionSeconds < 0) {
+    throw new Error(`Playback position must be an integer >= 0, received ${input.positionSeconds}.`);
+  }
+  if (
+    input.durationSeconds !== null &&
+    input.durationSeconds !== undefined &&
+    (!Number.isInteger(input.durationSeconds) || input.durationSeconds < 0)
+  ) {
+    throw new Error(`Playback duration must be null or an integer >= 0, received ${input.durationSeconds}.`);
+  }
+
+  const existing = await getContentStatusForUser(db, input.userId, input.contentItemId, "opened");
+  const statusRow =
+    existing ??
+    (await findOrCreateContentStatus(db, {
+      userId: input.userId,
+      contentItemId: input.contentItemId,
+      status: "opened",
+    }));
+
+  const metadata = parseMetadataJsonObject(statusRow.metadataJson);
+  metadata.playback = {
+    positionSeconds: input.positionSeconds,
+    durationSeconds: input.durationSeconds ?? null,
+    updatedAt: new Date().toISOString(),
+  };
+
+  await db
+    .update(schema.contentStatus)
+    .set({ metadataJson: JSON.stringify(metadata) })
+    .where(and(eq(schema.contentStatus.id, statusRow.id), eq(schema.contentStatus.userId, input.userId)));
+
+  const updated = await getContentStatusForUser(db, input.userId, input.contentItemId, "opened");
+  if (updated === null) {
+    throw new Error("Playback position write did not produce a readable user overlay record.");
+  }
+  return updated;
 }
 
 export async function listContentStatusWithContentForUser(
@@ -1208,6 +1264,28 @@ function containsContentTitleNormalized(value: string) {
 
 function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
+}
+
+function isJsonObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Parses a `metadata_json` column value as a plain JSON object. Malformed or
+ * non-object payloads degrade to an empty object: the playback write then
+ * re-seeds fresh metadata instead of failing on legacy rows.
+ */
+function parseMetadataJsonObject(metadataJson: string | null): Record<string, unknown> {
+  if (metadataJson === null) {
+    return {};
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(metadataJson);
+    return isJsonObjectRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function toPlaylist(row: typeof schema.playlist.$inferSelect): Playlist {
