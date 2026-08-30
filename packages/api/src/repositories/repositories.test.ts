@@ -768,6 +768,17 @@ describe("catalog and overlay repositories", () => {
       publishedAt: new Date("2026-05-03T00:00:00.000Z"),
       crossSourceKey: "mirrorlistcreator:mirrorlistvideo",
     });
+    // Same-source re-upload: identical creator + title + key, but mirrors must
+    // only ever link ACROSS sources, so the two youtube rows never count each
+    // other.
+    const youtubeDuplicate = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "mirror-list-youtube-duplicate",
+      title: "Mirror list video",
+      publishedAt: new Date("2026-05-04T00:00:00.000Z"),
+      crossSourceKey: "mirrorlistcreator:mirrorlistvideo",
+    });
     const unkeyedItem = await findOrCreateContentItem(testDatabase.db, {
       creatorId: creator.id,
       sourceType: "youtube",
@@ -777,16 +788,21 @@ describe("catalog and overlay repositories", () => {
 
     const rows = await listCatalogContentItems(testDatabase.db);
     const mirrorCountById = new Map(rows.map((row) => [row.id, row.mirrorCount]));
+    // Each youtube row sees exactly its two cross-source siblings and NEVER
+    // its same-source duplicate; the odysee/peertube rows see both youtube
+    // rows (both are cross-source to them).
     expect(mirrorCountById.get(youtubeCopy.id)).toBe(2);
-    expect(mirrorCountById.get(odyseeCopy.id)).toBe(2);
-    expect(mirrorCountById.get(peertubeCopy.id)).toBe(2);
+    expect(mirrorCountById.get(youtubeDuplicate.id)).toBe(2);
+    expect(mirrorCountById.get(odyseeCopy.id)).toBe(3);
+    expect(mirrorCountById.get(peertubeCopy.id)).toBe(3);
     expect(mirrorCountById.get(unkeyedItem.id)).toBe(0);
 
     const detail = await getCatalogContentDetail(testDatabase.db, youtubeCopy.id);
     if (detail === null) {
       throw new Error("Expected catalog content detail for the YouTube mirror copy.");
     }
-    // Mirrors exclude the viewed item and order by sourceType asc.
+    // Mirrors exclude the viewed item, its same-source duplicate, and order by
+    // sourceType asc.
     expect(detail.mirrors.map((mirror) => mirror.id)).toEqual([odyseeCopy.id, peertubeCopy.id]);
     const odyseeMirror = detail.mirrors[0];
     if (odyseeMirror === undefined) {
@@ -797,9 +813,17 @@ describe("catalog and overlay repositories", () => {
       id: odyseeCopy.id,
       sourceType: "odysee",
       title: "Mirror list video",
-      mirrorCount: 2,
+      mirrorCount: 3,
     });
     expect(odyseeMirror.creator).toMatchObject({ id: creator.id, displayName: "Mirror List Creator" });
+
+    // The same-source duplicate gets the same cross-source mirrors and never
+    // the original youtube row.
+    const duplicateDetail = await getCatalogContentDetail(testDatabase.db, youtubeDuplicate.id);
+    if (duplicateDetail === null) {
+      throw new Error("Expected catalog content detail for the YouTube duplicate copy.");
+    }
+    expect(duplicateDetail.mirrors.map((mirror) => mirror.id)).toEqual([odyseeCopy.id, peertubeCopy.id]);
 
     const unkeyedDetail = await getCatalogContentDetail(testDatabase.db, unkeyedItem.id);
     if (unkeyedDetail === null) {

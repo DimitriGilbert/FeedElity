@@ -680,7 +680,7 @@ export async function getCatalogContentDetail(
   const mirrorKey = firstRow.contentItem.crossSourceKey;
   const mirrors = mirrorKey === null
     ? []
-    : await listCatalogContentListItemsByMirrorKey(db, mirrorKey, contentItemId);
+    : await listCatalogContentListItemsByMirrorKey(db, mirrorKey, contentItemId, firstRow.contentItem.sourceType);
 
   return {
     ...toCatalogContentItem(firstRow.contentItem),
@@ -693,16 +693,24 @@ export async function getCatalogContentDetail(
 
 /**
  * Sibling catalog items sharing the given non-null cross-source mirror key,
- * excluding the item the viewer is looking at. Mirrors are catalog-global
+ * excluding the item the viewer is looking at and any same-source duplicate
+ * (a mirror is only ever on a DIFFERENT source). Mirrors are catalog-global
  * data (source identity + counts only), never user-owned overlay data.
  */
 async function listCatalogContentListItemsByMirrorKey(
   db: RepositoryDb,
   crossSourceKey: string,
   excludedContentItemId: string,
+  drivingSourceType: SourceType,
 ): Promise<readonly CatalogContentListItem[]> {
   const rows = await selectCatalogContentListItemRows(db)
-    .where(and(eq(schema.contentItem.crossSourceKey, crossSourceKey), ne(schema.contentItem.id, excludedContentItemId)))
+    .where(
+      and(
+        eq(schema.contentItem.crossSourceKey, crossSourceKey),
+        ne(schema.contentItem.id, excludedContentItemId),
+        ne(schema.contentItem.sourceType, drivingSourceType),
+      ),
+    )
     .orderBy(asc(schema.contentItem.sourceType), desc(schema.contentItem.publishedAt), desc(schema.contentItem.id));
 
   return toCatalogContentListItems(db, rows);
@@ -717,10 +725,11 @@ interface CatalogContentListItemRow {
 
 /**
  * Shared projection for catalog content list rows: the item, its creator, how
- * many playback sources the item has, and how many cross-source mirror
- * siblings share its non-null cross_source_key (excluding itself; 0 when the
- * key is null). The mirror count subselect aliases the inner table so the
- * qualified outer columns correlate against the driving row.
+ * many playback sources the item has, and how many CROSS-SOURCE mirror
+ * siblings share its non-null cross_source_key (excluding itself and
+ * same-source duplicates; 0 when the key is null). The mirror count subselect
+ * aliases the inner table so the qualified outer columns correlate against
+ * the driving row.
  */
 function selectCatalogContentListItemRows(db: RepositoryDb) {
   return db
@@ -738,6 +747,7 @@ function selectCatalogContentListItemRows(db: RepositoryDb) {
         where mirror_item.cross_source_key is not null
           and mirror_item.cross_source_key = ${schema.contentItem.crossSourceKey}
           and mirror_item.id <> ${schema.contentItem.id}
+          and mirror_item.source_type <> ${schema.contentItem.sourceType}
       )`,
     })
     .from(schema.contentItem)

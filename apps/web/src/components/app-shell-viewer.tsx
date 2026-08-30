@@ -71,21 +71,38 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
   createEffect(() => {
     setUseNoCookieEmbed(toYoutubeNoCookieFromSettings(props.settings()));
   });
+  const [noCookieSavePending, setNoCookieSavePending] = createSignal(false);
   const [noCookieActionError, setNoCookieActionError] = createSignal<string | null>(null);
 
   const toggleNoCookieEmbed = async () => {
-    const next = !useNoCookieEmbed();
+    // Serialize authenticated saves: a second click while one is in flight
+    // could otherwise race the server and persist the older value while the
+    // label shows the newer one.
+    if (noCookieSavePending()) {
+      return;
+    }
+
+    // Capture the current value so a failed authenticated save can revert the
+    // optimistic flip instead of leaving the label diverged from the server
+    // until the next toggle. Anonymous users keep a session-local flip with
+    // nothing to save and nothing to revert.
+    const previous = useNoCookieEmbed();
+    const next = !previous;
     setUseNoCookieEmbed(next);
     if (!props.isAuthenticated()) {
       return;
     }
 
     setNoCookieActionError(null);
+    setNoCookieSavePending(true);
     try {
       await client.overlays.saveSetting({ key: youtubePrivacySettingKey, value: next ? "true" : "false" });
       await props.onSettingsChanged();
     } catch (error) {
+      setUseNoCookieEmbed(previous);
       setNoCookieActionError(formatError(error));
+    } finally {
+      setNoCookieSavePending(false);
     }
   };
   const playableSources = createMemo(() => {
@@ -420,9 +437,18 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                     <Show when={hasYouTubeSource()}>
                       <button
                         type="button"
-                        class="inline-flex items-center gap-1 border border-border px-2 py-1 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                        aria-label={useNoCookieEmbed() ? "Using privacy-enhanced embed" : "Using standard YouTube embed"}
-                        title={useNoCookieEmbed() ? "Privacy mode (click for standard)" : "Standard mode (click for privacy)"}
+                        class="inline-flex items-center gap-1 border border-border px-2 py-1 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                        aria-label={noCookieSavePending()
+                          ? "Saving privacy preference"
+                          : useNoCookieEmbed()
+                          ? "Using privacy-enhanced embed"
+                          : "Using standard YouTube embed"}
+                        title={noCookieSavePending()
+                          ? "Saving privacy preference"
+                          : useNoCookieEmbed()
+                          ? "Privacy mode (click for standard)"
+                          : "Standard mode (click for privacy)"}
+                        disabled={noCookieSavePending()}
                         onClick={toggleNoCookieEmbed}
                       >
                         {useNoCookieEmbed() ? <Shield size={12} /> : <ShieldOff size={12} />}
@@ -435,9 +461,18 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                   <div class="mt-2 flex justify-end">
                     <button
                       type="button"
-                      class="inline-flex items-center gap-1 border border-border px-2 py-1 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                      aria-label={useNoCookieEmbed() ? "Using privacy-enhanced embed" : "Using standard YouTube embed"}
-                      title={useNoCookieEmbed() ? "Privacy mode (click for standard)" : "Standard mode (click for privacy)"}
+                      class="inline-flex items-center gap-1 border border-border px-2 py-1 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                      aria-label={noCookieSavePending()
+                        ? "Saving privacy preference"
+                        : useNoCookieEmbed()
+                        ? "Using privacy-enhanced embed"
+                        : "Using standard YouTube embed"}
+                      title={noCookieSavePending()
+                        ? "Saving privacy preference"
+                        : useNoCookieEmbed()
+                        ? "Privacy mode (click for standard)"
+                        : "Standard mode (click for privacy)"}
+                      disabled={noCookieSavePending()}
                       onClick={toggleNoCookieEmbed}
                     >
                       {useNoCookieEmbed() ? <Shield size={12} /> : <ShieldOff size={12} />}

@@ -297,6 +297,12 @@ describe("Odysee content source building", () => {
       buildContentSources("def789", "https://mirror.example.test/@fixture/fixture-embed", null, null),
     ).toEqual([]);
   });
+
+  test("emits no source without throwing for an http:// odysee canonical URL", () => {
+    expect(
+      buildContentSources("def012", "http://odysee.com/@fixture:abc123/fixture-embed:def012", null, null),
+    ).toEqual([]);
+  });
 });
 
 async function resolveClaimPayload(claim: string, payload: string = odyseeRssFixture) {

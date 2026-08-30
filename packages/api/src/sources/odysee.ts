@@ -346,8 +346,9 @@ export function buildContentSources(
 
 /**
  * Build the odysee.com embed URL from a canonical item URL's path. Returns
- * null when the URL does not parse as http(s) or its host is not odysee.com,
- * so a malformed or foreign link never persists an unusable playback source.
+ * null when the URL does not parse as http(s), is not https, or its host is
+ * not odysee.com, so a malformed, insecure, or foreign link never persists an
+ * unusable playback source.
  */
 function odyseeEmbedUrlFromCanonical(canonicalUrl: string): string | null {
   const urlResult = parseHttpUrl(canonicalUrl);
@@ -356,7 +357,9 @@ function odyseeEmbedUrlFromCanonical(canonicalUrl: string): string | null {
   }
 
   const url = urlResult.value;
-  if (!isOdyseeHost(url.hostname)) {
+  // Defense-in-depth: the adapter itself only constructs https canonical URLs,
+  // but parseHttpUrl also accepts http, so require https explicitly.
+  if (url.protocol !== "https:" || !isOdyseeHost(url.hostname)) {
     return null;
   }
 

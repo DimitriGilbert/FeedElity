@@ -458,31 +458,56 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   });
 
   // Keep the selected creator row visible: scroll it into view whenever the
-  // selection changes. The lookup iterates the row elements and compares
-  // data-creator-id, so the creator id never gets interpolated into a CSS
-  // selector. The element lookups are guarded — the region or the row may not
-  // exist mid-render.
+  // selection changes, and retry when the row mounts later (e.g. the selection
+  // came from the viewer while the creator sat beyond the loaded catalog
+  // pages). The lookup iterates the row elements and compares data-creator-id,
+  // so the creator id never gets interpolated into a CSS selector. The element
+  // lookups are guarded — the region or the row may not exist mid-render.
   let creatorListRegionEl: HTMLDivElement | undefined;
+  // A failed lookup is remembered here so the list-data effect below retries
+  // exactly once per (selection, row appearance): it clears as soon as the row
+  // scrolls into view, when the selection changes, or when it clears, so an
+  // ordinary list refetch never auto-scrolls a second time.
+  const [pendingScrollCreatorId, setPendingScrollCreatorId] = createSignal<string | null>(null);
+  const scrollSelectedCreatorIntoView = (creatorId: string): boolean => {
+    const region = creatorListRegionEl;
+    if (region === undefined) {
+      return false;
+    }
+
+    const rows = region.querySelectorAll<HTMLElement>("[data-creator-id]");
+    for (const row of rows) {
+      if (row.dataset.creatorId === creatorId) {
+        row.scrollIntoView({ block: "nearest" });
+        return true;
+      }
+    }
+    return false;
+  };
   createEffect(
     on(props.selectedCreatorId, (creatorId) => {
       if (creatorId === null) {
+        setPendingScrollCreatorId(null);
         return;
       }
 
-      const region = creatorListRegionEl;
-      if (region === undefined) {
-        return;
-      }
-
-      const rows = region.querySelectorAll<HTMLElement>("[data-creator-id]");
-      for (const row of rows) {
-        if (row.dataset.creatorId === creatorId) {
-          row.scrollIntoView({ block: "nearest" });
-          return;
-        }
-      }
+      setPendingScrollCreatorId(scrollSelectedCreatorIntoView(creatorId) ? null : creatorId);
     }),
   );
+  // Retry only while a lookup is pending: this tracks the creator list data
+  // (pages appended, library loaded, search results swapped) so the scroll
+  // happens when the row actually mounts — not on every unrelated refetch.
+  createEffect(() => {
+    const pendingCreatorId = pendingScrollCreatorId();
+    if (pendingCreatorId === null) {
+      return;
+    }
+
+    listedCreators();
+    if (scrollSelectedCreatorIntoView(pendingCreatorId)) {
+      setPendingScrollCreatorId(null);
+    }
+  });
 
   const loadMoreCreators = async () => {
     if (props.mode === "library") {
@@ -1186,12 +1211,16 @@ export default function AppShell(props: AppShellProps) {
   // selectedCreator -> toContentListInput), so the viewer detail (keyed on the
   // content id) and the creator column stay mounted.
   const selectCreatorFromViewer = (creator: CatalogCreatorSummary) => {
+    // "Show me this creator's videos" must always drop an active feed filter,
+    // even when the creator is already selected (the early return used to keep
+    // it and silently do nothing); only the creator update is conditional on
+    // an actual id change.
+    setSelectedFeed(null);
     if (selectedCreator()?.id === creator.id) {
       return;
     }
 
     setSelectedCreator(creator);
-    setSelectedFeed(null);
   };
 
   // Shared unselect affordance (creator-column rows, subscription-triggered

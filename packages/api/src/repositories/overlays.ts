@@ -238,14 +238,16 @@ export async function listSubscribedContentItemsForUser(
         from ${schema.contentSource}
         where ${schema.contentSource.contentItemId} = ${schema.contentItem.id}
       )`,
-      // Mirror counts are catalog-global (source identity only), safe to expose
-      // inside a user-scoped list; the list itself stays scoped by subscription.
+      // Mirror counts are catalog-global (source identity only) and count only
+      // CROSS-SOURCE siblings, safe to expose inside a user-scoped list; the
+      // list itself stays scoped by subscription.
       mirrorCount: sql<number>`(
         select count(*)
         from ${schema.contentItem} as mirror_item
         where mirror_item.cross_source_key is not null
           and mirror_item.cross_source_key = ${schema.contentItem.crossSourceKey}
           and mirror_item.id <> ${schema.contentItem.id}
+          and mirror_item.source_type <> ${schema.contentItem.sourceType}
       )`,
     })
     .from(schema.contentItem)

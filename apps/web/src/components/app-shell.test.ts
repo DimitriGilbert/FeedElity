@@ -773,12 +773,16 @@ test("selected viewer is wired to anonymous catalog content detail", async () =>
   expect(source).toContain("const selectedContentItemId = createMemo(() => props.selectedContent()?.id ?? null)");
   expect(source).toContain("data-selected-content-item-id={selectedContentItemId() ?? \"\"}");
   // The creator name in the detail body is a real button wired to the shell's
-  // select-only viewer filter: it never toggles off and never keeps a feed.
+  // select-only viewer filter: it never toggles off and never keeps a feed —
+  // it clears the feed filter even when the creator is already selected.
   expect(source).toContain("<ContentDetailBody detail={detail()} onCreatorClick={props.onSelectCreator} />");
   expect(source).toContain("readonly onSelectCreator: (creator: CatalogCreatorSummary) => void;");
   expect(source).toContain("readonly onCreatorClick: (creator: CatalogCreatorSummary) => void;");
   expect(source).toContain("onClick={() => props.onCreatorClick(props.detail.creator)}");
   expect(source).toContain("const selectCreatorFromViewer = (creator: CatalogCreatorSummary) => {");
+  expect(source).toContain(
+    "setSelectedFeed(null);\n    if (selectedCreator()?.id === creator.id) {\n      return;\n    }\n\n    setSelectedCreator(creator);",
+  );
   expect(source).toContain("onSelectCreator={selectCreatorFromViewer}");
 });
 

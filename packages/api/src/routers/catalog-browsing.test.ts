@@ -376,6 +376,15 @@ describe("catalog browsing router", () => {
       publishedAt: new Date("2026-06-02T00:00:00.000Z"),
       crossSourceKey: "routormirrorcreator:routormirrorvideo",
     });
+    // Same-source duplicate: shares the key but must never count as a mirror.
+    const youtubeDuplicate = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "router-mirror-youtube-duplicate",
+      title: "Router mirror video",
+      publishedAt: new Date("2026-06-04T00:00:00.000Z"),
+      crossSourceKey: "routormirrorcreator:routormirrorvideo",
+    });
     const unkeyedItem = await findOrCreateContentItem(testDatabase.db, {
       creatorId: creator.id,
       sourceType: "peertube",
@@ -398,11 +407,15 @@ describe("catalog browsing router", () => {
     );
 
     // Both subscribers see identical catalog-global mirror counts; the overlay
-    // scoping of the parent list is unchanged (same rows, same order).
+    // scoping of the parent list is unchanged (same rows, same order). Counts
+    // cover only cross-source siblings: each youtube row sees the odysee copy
+    // (1), never its same-source duplicate; the odysee copy sees both youtube
+    // rows (2).
     const mirrorCountA = new Map(listA.map((row) => [row.id, row.mirrorCount]));
     const mirrorCountB = new Map(listB.map((row) => [row.id, row.mirrorCount]));
     expect(mirrorCountA.get(youtubeCopy.id)).toBe(1);
-    expect(mirrorCountA.get(odyseeCopy.id)).toBe(1);
+    expect(mirrorCountA.get(youtubeDuplicate.id)).toBe(1);
+    expect(mirrorCountA.get(odyseeCopy.id)).toBe(2);
     expect(mirrorCountA.get(unkeyedItem.id)).toBe(0);
     expect(mirrorCountB).toEqual(mirrorCountA);
     expect(listA.map((row) => row.id)).toEqual(listB.map((row) => row.id));
@@ -415,7 +428,7 @@ describe("catalog browsing router", () => {
       { context: anonymousContext(testDatabase.db) },
     );
     expect(detail.mirrors.map((mirror) => mirror.id)).toEqual([odyseeCopy.id]);
-    expect(detail.mirrors[0]).toMatchObject({ id: odyseeCopy.id, sourceType: "odysee", mirrorCount: 1 });
+    expect(detail.mirrors[0]).toMatchObject({ id: odyseeCopy.id, sourceType: "odysee", mirrorCount: 2 });
     const serializedDetail = JSON.stringify(detail);
     expect(serializedDetail).not.toContain("mirror-user-a");
     expect(serializedDetail).not.toContain("mirror-user-b");

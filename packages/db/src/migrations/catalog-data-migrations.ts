@@ -229,8 +229,12 @@ const catalogMigrationSteps: readonly CatalogMigrationStep[] = [
 
 function runCreatorCrossSourceMerge(db: Database, apply: boolean): readonly string[] {
   const before = inspectCatalog(db);
+  const divergentNameKeys = before.schema.hasNameKeyColumn ? countDivergentCreatorNameKeys(db) : 0;
 
-  if (before.mergeSummary.groups === 0 && isSchemaConverged(before.schema)) {
+  // A converged DB can still carry a damaged name_key (the old divergent SQL
+  // backfill stripped interior "@" etc.), which would hide the canonical row
+  // from ingestion's TS-computed lookup — so divergence blocks the early exit.
+  if (before.mergeSummary.groups === 0 && isSchemaConverged(before.schema) && divergentNameKeys === 0) {
     return [
       "already converged: 0 merge groups and the creator table already has the cross-source schema",
       `foreign_key_check violations (pre-existing, untouched): ${before.foreignKeyViolations}`,
@@ -238,11 +242,17 @@ function runCreatorCrossSourceMerge(db: Database, apply: boolean): readonly stri
   }
 
   if (!apply) {
-    return [
+    const details = [
       `would merge ${before.mergeSummary.groups} duplicate group(s): ${before.mergeSummary.creatorsMergedAway} creator row(s) absorbed by their canonical creator`,
       `schema work: ${describeSchemaWork(before.schema)}`,
-      "no writes performed (dry run)",
     ];
+    if (divergentNameKeys > 0) {
+      details.push(
+        `would recompute name_key for ${divergentNameKeys} creator row(s) whose stored key diverges from creatorNameKey(display_name)`,
+      );
+    }
+    details.push("no writes performed (dry run)");
+    return details;
   }
 
   for (const action of before.mergePlan.groups) {
@@ -422,8 +432,8 @@ function convergeCreatorSchema(
     details.push("added creator.last_content_published_at column");
   }
 
-  const backfilledNameKeys = backfillCreatorNameKeys(db);
-  details.push(`backfilled name_key for ${backfilledNameKeys} row(s)`);
+  const recomputedNameKeys = recomputeCreatorNameKeys(db);
+  details.push(`recomputed name_key for ${recomputedNameKeys} row(s)`);
 
   for (const indexName of schema.missingIndexes) {
     const ddl = CREATOR_INDEX_DDL[indexName];
@@ -450,31 +460,66 @@ function convergeCreatorSchema(
   }
 }
 
-/**
- * Backfill creator.name_key with creatorNameKey() — the same function the merge
- * plan and runtime ingestion use — so the stored key matches what
- * findCreatorByNameKey computes for every display-name shape (leading "@",
- * ":claimId" suffixes, internal "@", tabs/newlines). Parameterized per-row
- * UPDATE, same pattern as the cross_source_key backfill. Must run before the
- * unique creator_name_key_uidx index is created.
- */
-function backfillCreatorNameKeys(db: Database): number {
+interface CreatorNameKeyRow {
+  readonly id: string;
+  readonly displayName: string;
+  readonly storedKey: string | null;
+}
+
+function loadCreatorNameKeyRows(db: Database): CreatorNameKeyRow[] {
   const rows: readonly unknown[] = db
-    .query("SELECT id AS id, display_name AS displayName FROM creator WHERE name_key IS NULL")
+    .query("SELECT id AS id, display_name AS displayName, name_key AS storedKey FROM creator")
     .all();
-  let backfilled = 0;
-  for (const row of rows) {
+  return rows.map((row) => {
     if (!isRecord(row)) {
-      throw new Error("creator name_key backfill query returned a non-object row");
+      throw new Error("creator name_key query returned a non-object row");
     }
-    const displayName = requireStringField(row, "displayName", "creator.display_name");
-    const id = requireStringField(row, "id", "creator.id");
+    const storedKey = row["storedKey"];
+    if (storedKey !== null && typeof storedKey !== "string") {
+      throw new Error(`expected a string or null for creator.name_key, got ${describeValue(storedKey)}`);
+    }
+    return {
+      id: requireStringField(row, "id", "creator.id"),
+      displayName: requireStringField(row, "displayName", "creator.display_name"),
+      storedKey,
+    };
+  });
+}
+
+/**
+ * Recompute creator.name_key with creatorNameKey() for EVERY creator whose
+ * stored value diverges — NULL rows from the legacy schema AND non-NULL rows
+ * damaged by the old divergent SQL backfill (which stripped interior "@").
+ * Ingestion's findCreatorByNameKey uses the TS-computed key, so a stale stored
+ * key hides the canonical row and the unique index then blocks the duplicate
+ * insert. Parameterized per-row UPDATE; skipping equal values keeps re-runs
+ * cheap. Post-merge this cannot collide on creator_name_key_uidx:
+ * buildMergePlan groups rows by the same creatorNameKey derivation, so every
+ * display name sharing a computed key was already merged onto one canonical
+ * row above — surviving rows have pairwise-distinct computed keys. (A row
+ * whose stale stored key transiently equals another survivor's computed key
+ * would trip the unique index and roll the whole transaction back — an
+ * explicit, reported failure, never a silent corrupt state.) Must run before
+ * the unique index is created.
+ */
+function recomputeCreatorNameKeys(db: Database): number {
+  let recomputed = 0;
+  for (const row of loadCreatorNameKeyRows(db)) {
+    const computedKey = creatorNameKey(row.displayName);
+    if (row.storedKey === computedKey) {
+      continue;
+    }
     const updated = db
       .query("UPDATE creator SET name_key = ? WHERE id = ?")
-      .run(creatorNameKey(displayName), id).changes;
-    backfilled += updated;
+      .run(computedKey, row.id).changes;
+    recomputed += updated;
   }
-  return backfilled;
+  return recomputed;
+}
+
+/** Count creators whose stored name_key diverges from creatorNameKey(display_name). */
+function countDivergentCreatorNameKeys(db: Database): number {
+  return loadCreatorNameKeyRows(db).filter((row) => row.storedKey !== creatorNameKey(row.displayName)).length;
 }
 
 function isSchemaConverged(schema: CreatorSchemaState): boolean {

@@ -118,11 +118,12 @@ describe("source ingestion service", () => {
     // The creator now carries one feed per source.
     const creatorFeeds = await listCatalogFeedsForCreator(testDatabase.db, youtube.value.creator.id);
     expect(creatorFeeds.map((feed) => feed.sourceType).sort()).toEqual(["odysee", "youtube"]);
-    // Items from both sources are keyed under the same creator name_key prefix,
-    // so a true mirror (same title on both sources) collapses onto one shared
-    // cross_source_key.
+    // Items from both sources are keyed under the same creator name_key prefix.
+    // The odysee fixture reuses the exact YouTube title of video 1, so the
+    // mirrored pair derives the IDENTICAL cross_source_key, while video 2
+    // keeps its own distinct key.
     expect(await readCrossSourceKeysBySourceExternalId(testDatabase.db)).toEqual([
-      ["creator-one-odysee-video-1", "creatorone:creatoroneodyseevideo"],
+      ["creator-one-odysee-video-1", "creatorone:creatoronefirstvideo"],
       ["creator-one-video-1", "creatorone:creatoronefirstvideo"],
       ["creator-one-video-2", "creatorone:creatoronesecondvideo"],
     ]);
@@ -394,7 +395,9 @@ const odyseeCreatorOnePayload: NormalizedCatalogPayload = {
       contentItem: {
         sourceType: "odysee",
         sourceExternalId: "creator-one-odysee-video-1",
-        title: "Creator One Odysee Video",
+        // Same title as the YouTube "creator-one-video-1" item, so the mirrored
+        // pair must collapse onto one shared cross_source_key.
+        title: "Creator One First Video",
         publishedAt: new Date("2026-01-02T00:00:00.000Z"),
         canonicalUrl: "https://odysee.ingest.example.test/@CreatorOne:1",
       },

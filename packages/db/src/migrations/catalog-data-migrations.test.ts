@@ -19,6 +19,7 @@ const SCOTT_CANONICAL_ID = "11111111-1111-4111-8111-111111111111";
 const SCOTT_ODYSEE_ID = "22222222-2222-4222-8222-222222222222";
 const SCOTT_CLAIM_REVISION_ID = "33333333-3333-4333-8333-333333333333";
 const SOLO_ID = "44444444-4444-4444-8444-444444444444";
+const DAMAGED_KEY_ID = "55555555-5555-4555-8555-555555555555";
 
 function legacySchemaSql(options: { readonly withLastPublishedColumn: boolean }): string {
   const lastPublishedColumn = options.withLastPublishedColumn ? ",\n    last_content_published_at integer" : "";
@@ -221,6 +222,18 @@ function queryOptionalNumber(db: Database, sql: string, ...params: SQLQueryBindi
   return Number(v);
 }
 
+function queryString(db: Database, sql: string, ...params: SQLQueryBindings[]): string {
+  const row: unknown = db.query(sql).get(...params);
+  if (typeof row !== "object" || row === null || !("v" in row)) {
+    throw new Error(`scalar query returned an unexpected row: ${sql}`);
+  }
+  const v: unknown = row.v;
+  if (typeof v !== "string") {
+    throw new Error(`scalar query did not return a string: ${sql}`);
+  }
+  return v;
+}
+
 function loadColumnNames(db: Database, tableName: string): readonly string[] {
   const rows: readonly unknown[] = db.query(`PRAGMA table_info(${tableName})`).all();
   const names: string[] = [];
@@ -307,6 +320,31 @@ describe("name_key backfill parity", () => {
         }
         expect(row.nameKey).toBe(creatorNameKey(row.displayName));
       }
+    } finally {
+      db.close();
+    }
+  });
+
+  test("recomputes a wrong non-NULL name_key left by the divergent SQL backfill", async () => {
+    const path = await createLegacyDatabaseFile("feedelity-db-name-key-damaged-");
+    const seedDb = createLegacyDatabase(path, { withLastPublishedColumn: true });
+    insertCreator(seedDb, { withLastPublishedColumn: true }, DAMAGED_KEY_ID, "youtube", "UC-damaged", "Tech@Home", 0);
+    // Damage applied post-hoc to model the old SQL backfill: it stripped the
+    // interior "@", storing "techhome" instead of creatorNameKey("Tech@Home").
+    seedDb.exec("ALTER TABLE creator ADD COLUMN name_key text");
+    seedDb.query("UPDATE creator SET name_key = 'techhome' WHERE id = ?").run(DAMAGED_KEY_ID);
+    seedDb.close();
+
+    const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
+
+    expect(report.appliedCount).toBe(2);
+    const mergeDetails = report.steps[0]?.details.join("\n") ?? "";
+    expect(mergeDetails).toContain("recomputed name_key for 1 row(s)");
+
+    const db = openCatalogDatabase(path, { readOnly: true });
+    try {
+      expect(creatorNameKey("Tech@Home")).toBe("tech@home");
+      expect(queryString(db, "SELECT name_key AS v FROM creator WHERE id = ?", DAMAGED_KEY_ID)).toBe("tech@home");
     } finally {
       db.close();
     }
@@ -537,5 +575,41 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
 
     const secondRun = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
     expect(secondRun.appliedCount).toBe(0);
+  });
+
+  test("repairs a damaged name_key on an already-converged database instead of early-exiting", async () => {
+    const path = await createLegacyDatabaseFile("feedelity-db-catalog-damaged-key-");
+    const seedDb = createLegacyDatabase(path, { withLastPublishedColumn: true });
+    seedLegacyRows(seedDb, { withLastPublishedColumn: true });
+    seedDb.close();
+    await runCatalogDataMigrations({ databaseUrl: path, apply: true });
+
+    // Damage one stored key post-migration (the old divergent SQL backfill
+    // pattern), then clear the migration records to model a db:push-created
+    // database: converged schema, zero merge groups, but a stale key that
+    // would hide the canonical row from ingestion's TS-computed lookup.
+    const db = openCatalogDatabase(path, { readOnly: false });
+    try {
+      db.query("UPDATE creator SET name_key = 'damagedkey' WHERE id = ?").run(SOLO_ID);
+      db.exec("DELETE FROM __feedelity_migrations");
+    } finally {
+      db.close();
+    }
+
+    const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
+
+    expect(report.appliedCount).toBe(2);
+    const mergeDetails = report.steps[0]?.details.join("\n") ?? "";
+    expect(mergeDetails).not.toContain("already converged");
+    expect(mergeDetails).toContain("recomputed name_key for 1 row(s)");
+
+    const verify = openCatalogDatabase(path, { readOnly: true });
+    try {
+      expect(queryString(verify, "SELECT name_key AS v FROM creator WHERE id = ?", SOLO_ID)).toBe(
+        creatorNameKey("Unique Channel"),
+      );
+    } finally {
+      verify.close();
+    }
   });
 });
