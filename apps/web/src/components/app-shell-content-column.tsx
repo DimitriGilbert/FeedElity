@@ -8,6 +8,7 @@ import type {
   UserContentStatus,
 } from "@FeedElity/api";
 import { For, Match, Show, Switch, createEffect, createMemo, createResource, createSignal, on, untrack } from "solid-js";
+import { createVirtualizer } from "@tanstack/solid-virtual";
 import CheckCircle from "lucide-solid/icons/circle-check";
 import ChevronDown from "lucide-solid/icons/chevron-down";
 import ChevronUp from "lucide-solid/icons/chevron-up";
@@ -35,7 +36,9 @@ import {
   contentViewModeHistoryId,
   contentViewModePlayedId,
   contentViewModeSubscribedId,
+  createDesktopMediaQuerySignal,
   emptyAppendedPageState,
+  estimateContentItemRowHeight,
   formatError,
   formatContentDuration,
   formatContentPublishedAt,
@@ -469,6 +472,30 @@ export function ContentListColumn(props: ContentListColumnProps) {
   // metadata contribute nothing (toPlaybackPositionsByItemId).
   const playbackPositionByItemId = createMemo(() => toPlaybackPositionsByItemId(props.contentStatuses()));
 
+  // Decision D10: virtualize the content list only from the lg breakpoint up.
+  // Below lg the plain <For> branch renders every row unchanged.
+  const isDesktopViewport = createDesktopMediaQuerySignal();
+  let contentScrollRegionEl: HTMLDivElement | undefined;
+  // Option values that change over time are exposed as getters: the Solid
+  // adapter re-runs setOptions inside a tracked computation, so count and
+  // enabled stay live without recreating the virtualizer.
+  const contentVirtualizer = createVirtualizer({
+    get count() {
+      return displayedContentItems().length;
+    },
+    getScrollElement: () => contentScrollRegionEl ?? null,
+    estimateSize: () => estimateContentItemRowHeight(props.readerDensity()),
+    overscan: 5,
+    getItemKey: (index) => displayedContentItems()[index]?.id ?? index,
+    get enabled() {
+      return isDesktopViewport();
+    },
+  });
+  // estimateSize is not part of the virtualizer's own change detection: after a
+  // density switch the cached row sizes must be dropped explicitly so rows fall
+  // back to the new estimates (measureElement then re-locks real heights).
+  createEffect(on(() => props.readerDensity(), () => contentVirtualizer.measure(), { defer: true }));
+
   const visibleContentCollectionLabel = createMemo(() => {
     if (viewMode() === "favorites") {
       return "Favorite Library";
@@ -517,6 +544,30 @@ export function ContentListColumn(props: ContentListColumnProps) {
     props.onSelectPlaylist(playlistId);
     props.onPlaylistItemAdded();
   };
+
+  // One row renderer shared by both list branches (plain <For> below lg,
+  // virtualized rows on lg) so the two paths can never drift apart.
+  const renderContentItemRow = (contentItem: CatalogContentListItem) => (
+    <ContentListItemRow
+      contentItem={contentItem}
+      isAuthenticated={props.isAuthenticated}
+      isFavorite={() => favoriteContentItemIds().has(contentItem.id)}
+      status={() => toContentStatusFlags(props.contentStatuses(), contentItem.id)}
+      playbackPosition={() => playbackPositionByItemId().get(contentItem.id) ?? null}
+      selected={() => props.selectedContentItemId() === contentItem.id}
+      favoritesView={() => viewMode() === "favorites"}
+      readerDensity={props.readerDensity}
+      targetPlaylistId={listTargetPlaylistId}
+      formatError={formatError}
+      formatPublishedAt={formatContentPublishedAt}
+      formatDuration={formatContentDuration}
+      onSelectContent={props.onSelectContent}
+      onMarkOpened={markOpened}
+      onMarkPlayed={markPlayed}
+      onToggleFavorite={toggleFavorite}
+      onAddToPlaylist={addContentToPlaylist}
+    />
+  );
 
   const loadMoreContentItems = async () => {
     const mode = contentItemsResourceMode();
@@ -743,7 +794,13 @@ export function ContentListColumn(props: ContentListColumnProps) {
           />
         </div>
       </Show>
-      <div class={contentScrollRegionClass} data-content-scroll-region>
+      <div
+        class={contentScrollRegionClass}
+        data-content-scroll-region
+        ref={(el) => {
+          contentScrollRegionEl = el;
+        }}
+      >
         <Switch>
           <Match when={contentItems.loading && contentItemsValue() === undefined}>
             <p class="text-xs font-semibold text-card-foreground">Loading videos</p>
@@ -770,42 +827,51 @@ export function ContentListColumn(props: ContentListColumnProps) {
             </p>
           </Match>
           <Match when={displayedContentItems().length > 0}>
-              <ol aria-label={`${visibleContentCollectionLabel()} videos, ${contentCount()} shown`}>
-                <For each={displayedContentItems()}>
-                  {(contentItem) => (
-                    <li>
-                      <ContentListItemRow
-                        contentItem={contentItem}
-                        isAuthenticated={props.isAuthenticated}
-                        isFavorite={() => favoriteContentItemIds().has(contentItem.id)}
-                        status={() => toContentStatusFlags(props.contentStatuses(), contentItem.id)}
-                        playbackPosition={() => playbackPositionByItemId().get(contentItem.id) ?? null}
-                        selected={() => props.selectedContentItemId() === contentItem.id}
-                        favoritesView={() => viewMode() === "favorites"}
-                        readerDensity={props.readerDensity}
-                        targetPlaylistId={listTargetPlaylistId}
-                        formatError={formatError}
-                        formatPublishedAt={formatContentPublishedAt}
-                        formatDuration={formatContentDuration}
-                        onSelectContent={props.onSelectContent}
-                        onMarkOpened={markOpened}
-                        onMarkPlayed={markPlayed}
-                        onToggleFavorite={toggleFavorite}
-                        onAddToPlaylist={addContentToPlaylist}
-                      />
+            <Show
+              when={isDesktopViewport()}
+              fallback={
+                <ol aria-label={`${visibleContentCollectionLabel()} videos, ${contentCount()} shown`}>
+                  <For each={displayedContentItems()}>
+                    {(contentItem) => <li>{renderContentItemRow(contentItem)}</li>}
+                  </For>
+                </ol>
+              }
+            >
+              <ol
+                aria-label={`${visibleContentCollectionLabel()} videos, ${contentCount()} shown`}
+                style={{ position: "relative", height: `${contentVirtualizer.getTotalSize()}px` }}
+              >
+                <For each={contentVirtualizer.getVirtualItems()}>
+                  {(virtualItem) => (
+                    <li
+                      data-index={virtualItem.index}
+                      data-content-item-id={displayedContentItems()[virtualItem.index]?.id ?? ""}
+                      ref={(el) => contentVirtualizer.measureElement(el)}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${virtualItem.start}px)`,
+                      }}
+                    >
+                      <Show when={displayedContentItems()[virtualItem.index]}>
+                        {(contentItem) => renderContentItemRow(contentItem())}
+                      </Show>
                     </li>
                   )}
                 </For>
               </ol>
-              <ContentLoadMoreControl
-                shownCount={contentCount()}
-                pageSize={contentListLimit}
-                hasMore={contentPageHasMore()}
-                busy={contentPageBusy()}
-                errorMessage={contentPageError()}
-                label="Load more videos"
-                onLoadMore={loadMoreContentItems}
-              />
+            </Show>
+            <ContentLoadMoreControl
+              shownCount={contentCount()}
+              pageSize={contentListLimit}
+              hasMore={contentPageHasMore()}
+              busy={contentPageBusy()}
+              errorMessage={contentPageError()}
+              label="Load more videos"
+              onLoadMore={loadMoreContentItems}
+            />
           </Match>
         </Switch>
       </div>

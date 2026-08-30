@@ -5,6 +5,7 @@ import type { LeftPaneTab, MiddlePanePanel, ViewerMode } from "./app-shell.contr
 import {
   addSourceHelpId,
   addSourceInputId,
+  bindMediaQueryMatches,
   contentCatalogFiltersLabel,
   contentColumnClass,
   contentHeaderRegionClass,
@@ -55,6 +56,8 @@ import {
   collectionNameInputId,
   collectionDescriptionInputId,
   collectionMemberSearchInputId,
+  desktopMediaQuery,
+  estimateContentItemRowHeight,
   readerDensityInputId,
   readerDensitySettingKey,
   readerDensityValues,
@@ -1674,6 +1677,8 @@ test("hide played is state filtering and not DOM filtering", async () => {
 
   expect(source).toContain("const [hidePlayed, setHidePlayed] = createSignal<boolean>(readPersistedHidePlayed() ?? false)");
   expect(source).toContain("locallyFilteredItems.filter((contentItem) => !toContentStatusFlags(statuses, contentItem.id).played)");
+  // The plain <For> is the below-lg branch; the lg branch renders the same
+  // items through the virtualizer (asserted in the virtualization test).
   expect(source).toContain("<For each={displayedContentItems()}>");
   // The selected-creator scrollIntoView lookup reads the DOM with a static
   // [data-creator-id] query; hide-played itself never touches the DOM
@@ -1681,6 +1686,84 @@ test("hide played is state filtering and not DOM filtering", async () => {
   expect(source).not.toContain("getElementsByClassName");
   expect(source).not.toContain("classList");
   expect(source).not.toContain("hidden =");
+});
+
+test("content list virtualizes on lg only with stable keys and variable row heights", async () => {
+  const source = await readAppShellSource();
+
+  // Decision D10: the virtualized branch is gated on the shared desktop
+  // signal, and the virtualizer itself is disabled below lg.
+  expect(source).toContain("const isDesktopViewport = createDesktopMediaQuerySignal();");
+  expect(source).toContain("get enabled() {\n      return isDesktopViewport();\n    }");
+  // The existing scroll region doubles as the virtualizer scroll element.
+  expect(source).toContain("let contentScrollRegionEl: HTMLDivElement | undefined;");
+  expect(source).toContain("getScrollElement: () => contentScrollRegionEl ?? null");
+  expect(source).toContain("contentScrollRegionEl = el;");
+  // Virtualizer options: reactive item count, density-aware estimates,
+  // overscan 5, stable item identity by id.
+  expect(source).toContain("const contentVirtualizer = createVirtualizer({");
+  expect(source).toContain("get count() {\n      return displayedContentItems().length;\n    }");
+  expect(source).toContain("estimateSize: () => estimateContentItemRowHeight(props.readerDensity())");
+  expect(source).toContain("overscan: 5");
+  expect(source).toContain("getItemKey: (index) => displayedContentItems()[index]?.id ?? index");
+  // Virtual rows: absolutely positioned inside a total-size container, keyed
+  // for the later j/k row lookup, measured for real variable heights.
+  expect(source).toContain("<For each={contentVirtualizer.getVirtualItems()}>");
+  expect(source).toContain("data-content-item-id={displayedContentItems()[virtualItem.index]?.id ?? \"\"}");
+  expect(source).toContain("ref={(el) => contentVirtualizer.measureElement(el)}");
+  expect(source).toContain('style={{ position: "relative", height: `${contentVirtualizer.getTotalSize()}px` }}');
+  expect(source).toContain('position: "absolute"');
+  expect(source).toContain("transform: `translateY(${virtualItem.start}px)`");
+  // A density switch invalidates cached row sizes so the new estimates apply
+  // and measureElement re-locks the real heights.
+  expect(source).toContain("createEffect(on(() => props.readerDensity(), () => contentVirtualizer.measure(), { defer: true }));");
+  // Both branches share one row renderer; pagination stays explicit.
+  expect(source).toContain("const renderContentItemRow = (contentItem: CatalogContentListItem) => (");
+  expect(source).toContain("<ContentLoadMoreControl");
+});
+
+test("desktop media query binding pushes current state forwards changes and unsubscribes", () => {
+  expect(desktopMediaQuery).toBe("(min-width: 1024px)");
+
+  const listeners: Array<(event: { readonly matches: boolean }) => void> = [];
+  let matches = false;
+  const query = {
+    get matches() {
+      return matches;
+    },
+    addEventListener: (_type: "change", listener: (event: { readonly matches: boolean }) => void) => {
+      listeners.push(listener);
+    },
+    removeEventListener: (_type: "change", listener: (event: { readonly matches: boolean }) => void) => {
+      const index = listeners.indexOf(listener);
+      if (index >= 0) {
+        listeners.splice(index, 1);
+      }
+    },
+  };
+
+  const updates: boolean[] = [];
+  const unsubscribe = bindMediaQueryMatches(query, (next) => updates.push(next));
+
+  // Current state is pushed immediately on bind, matching the initial sync in
+  // createDesktopMediaQuerySignal's mount step.
+  expect(updates).toEqual([false]);
+
+  matches = true;
+  for (const listener of listeners) {
+    listener({ matches });
+  }
+  expect(updates).toEqual([false, true]);
+
+  unsubscribe();
+  expect(listeners).toHaveLength(0);
+});
+
+test("content list row height estimates are density-aware", () => {
+  expect(readerDensityValues).toEqual(["comfortable", "compact"]);
+  expect(estimateContentItemRowHeight("compact")).toBe(72);
+  expect(estimateContentItemRowHeight("comfortable")).toBe(76);
+  expect(estimateContentItemRowHeight("compact")).toBeLessThan(estimateContentItemRowHeight("comfortable"));
 });
 
 test("hide played defaults to on when connected unless an explicit preference exists", async () => {
@@ -1786,6 +1869,9 @@ test("mobile navigation adds no timers observers or unstable resource source obj
   const source = await readAppShellSource();
 
   expect(source).not.toContain("IntersectionObserver");
+  // The lg-only content-list virtualizer keeps its ResizeObserver encapsulated
+  // inside @tanstack/solid-virtual (and disabled below lg); the shell source
+  // itself never touches observer APIs.
   expect(source).not.toContain("ResizeObserver");
   expect(source).not.toContain("MutationObserver");
   expect(source).not.toContain("setInterval");

@@ -1,3 +1,4 @@
+import { createSignal, onCleanup, onMount } from "solid-js";
 import type {
   CatalogContentListItem,
   CatalogContentSource,
@@ -599,6 +600,59 @@ export function toReaderDensityFromSettings(settings: readonly UserSetting[]): R
   }
 
   return "comfortable";
+}
+
+export const desktopMediaQuery = "(min-width: 1024px)";
+
+/**
+ * Minimal structural view of a MediaQueryList so the change-listener wiring is
+ * testable without a DOM (tests pass a plain stub with matches + listeners).
+ */
+interface MediaQueryMatchesSource {
+  readonly matches: boolean;
+  addEventListener(type: "change", listener: (event: { readonly matches: boolean }) => void): void;
+  removeEventListener(type: "change", listener: (event: { readonly matches: boolean }) => void): void;
+}
+
+/**
+ * Subscribes to a media query on behalf of a setter: pushes the current
+ * matches state immediately, forwards every change event, and returns the
+ * unsubscribe function so callers can hook it into onCleanup.
+ */
+export function bindMediaQueryMatches(
+  query: MediaQueryMatchesSource,
+  onMatchesChange: (matches: boolean) => void,
+): () => void {
+  onMatchesChange(query.matches);
+  const handler = (event: { readonly matches: boolean }) => onMatchesChange(event.matches);
+  query.addEventListener("change", handler);
+  return () => query.removeEventListener("change", handler);
+}
+
+/**
+ * Reactive "(min-width: 1024px)" signal used to pick between the virtualized
+ * content list (lg and up) and the plain list below lg. Starts `false` so the
+ * first render matches the mobile layout, then syncs from the real query on
+ * mount; the change listener is removed when the owning scope is disposed.
+ */
+export function createDesktopMediaQuerySignal(): () => boolean {
+  const [isDesktop, setIsDesktop] = createSignal(false);
+  onMount(() => {
+    onCleanup(bindMediaQueryMatches(window.matchMedia(desktopMediaQuery), setIsDesktop));
+  });
+  return isDesktop;
+}
+
+/**
+ * Initial row-height estimate for the virtualized content list, derived from
+ * the row layout: the 7rem aspect-video thumbnail column (63px) plus the
+ * density vertical padding (compact py-1 = 8px, comfortable py-1.5 = 12px)
+ * plus the 1px bottom border. measureElement replaces estimates with real
+ * heights as rows mount, so estimates only seed the scroll-thumb size and the
+ * first-pass window calculation.
+ */
+export function estimateContentItemRowHeight(readerDensity: ReaderDensity): number {
+  return readerDensity === "compact" ? 72 : 76;
 }
 
 export function toCreatorListSortFromSettings(settings: readonly UserSetting[]): CreatorListSort {

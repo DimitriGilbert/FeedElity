@@ -20,6 +20,7 @@
     "@tanstack/solid-form": "^1.28.0",
     "@tanstack/solid-query": "^5.99.1",
     "@tanstack/solid-router": "^1.168.20",
+    "@tanstack/solid-virtual": "^3.13.37",
     "better-auth": "catalog:",
     "dotenv": "catalog:",
     "lucide-solid": "^1.8.0",
