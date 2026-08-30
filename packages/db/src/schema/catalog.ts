@@ -84,6 +84,7 @@ export const contentItem = sqliteTable(
     durationSeconds: integer("duration_seconds"),
     thumbnailUrl: text("thumbnail_url"),
     canonicalUrl: text("canonical_url"),
+    crossSourceKey: text("cross_source_key"),
     metadataJson: text("metadata_json"),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).default(currentTimestampMs).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" })
@@ -95,6 +96,7 @@ export const contentItem = sqliteTable(
     uniqueIndex("content_item_source_identity_uidx").on(table.sourceType, table.sourceExternalId),
     index("content_item_creator_id_idx").on(table.creatorId),
     index("content_item_published_at_idx").on(table.publishedAt),
+    index("content_item_cross_source_key_idx").on(table.crossSourceKey),
   ],
 );
 

@@ -23,7 +23,7 @@
 
 import { Database } from "bun:sqlite";
 
-import { buildMergePlan, summarizePlan, type CreatorRow } from "./merge-plan";
+import { buildMergePlan, creatorNameKey, summarizePlan, type CreatorRow } from "@FeedElity/db/creator-merge-plan";
 
 interface Args {
   db: string | null;
@@ -64,17 +64,40 @@ Merge duplicate creator rows and convert to the cross-source (name_key) model.
 --yes         Actually write. Without it, runs as a dry run (reports only).
 `;
 
-const NAME_KEY_SQL = `lower(
-  iif(
-    instr(replace(replace(\`display_name\`, '@', ''), ' ', ''), ':') > 0,
-    substr(
-      replace(replace(\`display_name\`, '@', ''), ' ', ''),
-      1,
-      instr(replace(replace(\`display_name\`, '@', ''), ' ', ''), ':') - 1
-    ),
-    replace(replace(\`display_name\`, '@', ''), ' ', '')
-  )
-)`;
+/**
+ * Recompute name_key with creatorNameKey() — the same function buildMergePlan
+ * and runtime ingestion use — for EVERY creator whose stored key diverges:
+ * NULL rows from the legacy schema AND non-NULL rows damaged by the old
+ * divergent SQL backfill (which stripped interior "@"). Parameterized per-row
+ * UPDATE; runs before the unique name_key index is (re-)created.
+ */
+function backfillNameKeys(db: Database): number {
+  const rows: readonly unknown[] = db
+    .query("SELECT id AS id, display_name AS displayName, name_key AS storedKey FROM creator")
+    .all();
+  let recomputed = 0;
+  for (const row of rows) {
+    if (typeof row !== "object" || row === null || !("id" in row) || !("displayName" in row) || !("storedKey" in row)) {
+      throw new Error("creator name_key query returned an unexpected row");
+    }
+    const id: unknown = row.id;
+    const displayName: unknown = row.displayName;
+    const storedKey: unknown = row.storedKey;
+    if (typeof id !== "string" || typeof displayName !== "string" || displayName.length === 0) {
+      throw new Error("creator name_key query returned non-string id/display_name");
+    }
+    if (storedKey !== null && typeof storedKey !== "string") {
+      throw new Error("creator name_key query returned a non-string name_key");
+    }
+    const computedKey = creatorNameKey(displayName);
+    if (storedKey === computedKey) {
+      continue;
+    }
+    db.query("UPDATE creator SET name_key = ? WHERE id = ?").run(computedKey, id);
+    recomputed += 1;
+  }
+  return recomputed;
+}
 
 function loadCreatorRows(db: Database): CreatorRow[] {
   const columns = new Set(
@@ -179,14 +202,23 @@ async function main(): Promise<void> {
       );
     }
 
-    // Schema change to the cross-source model.
+    // Schema change to the cross-source model. The name_key column and the key
+    // recompute must run for every schema shape (legacy columns present or
+    // not), so a DB with neither still converges before the unique index is
+    // created.
     if (hasLegacyColumns) {
       db.exec("DROP INDEX IF EXISTS creator_source_identity_uidx");
       db.exec("ALTER TABLE creator DROP COLUMN source_type");
       db.exec("ALTER TABLE creator DROP COLUMN source_external_id");
-      db.exec("ALTER TABLE creator ADD COLUMN name_key text");
-      db.exec(`UPDATE creator SET name_key = ${NAME_KEY_SQL} WHERE name_key IS NULL`);
     }
+    if (!hasNameKey) {
+      db.exec("ALTER TABLE creator ADD COLUMN name_key text");
+    }
+    // Recompute NULL rows and rows damaged by the old divergent SQL backfill,
+    // so stored keys match the TS derivation ingestion computes. The skip-equal
+    // check inside backfillNameKeys keeps this idempotent on converged DBs.
+    const recomputedNameKeys = backfillNameKeys(db);
+    console.log(`  name_key recomputed for ${recomputedNameKeys} creator row(s)`);
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS creator_name_key_uidx ON creator (name_key)");
     db.exec("CREATE INDEX IF NOT EXISTS creator_display_name_idx ON creator (display_name)");
 

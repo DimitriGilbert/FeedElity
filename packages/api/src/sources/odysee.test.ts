@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { odyseeAdapter } from "./odysee";
+import { buildContentSources, odyseeAdapter } from "./odysee";
 import type { CreatorMetadata, DetectedSourceInput, FetchCreatorMetadataInput, ResolvedSourceInput, SourceAdapterResult } from "./types";
 
 const odyseeRssFixture = `<?xml version="1.0" encoding="UTF-8"?>
@@ -28,6 +28,24 @@ Second line.]]></content:encoded>
       <enclosure url="https://player.odycdn.com/api/v4/streams/free/fixture-video/def456.mp4" length="123456" type="video/mp4" />
       <itunes:image href="https://thumbs.odycdn.com/video.png" />
       <itunes:duration>01:02:03</itunes:duration>
+    </item>
+  </channel>
+</rss>`;
+
+// Same channel as odyseeRssFixture but the item carries no enclosure, which is
+// how Odysee serves audio posts and some live replays.
+const odyseeRssNoEnclosureFixture = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Fixture Odysee Channel</title>
+    <link>https://odysee.com/@fixture:abc123</link>
+    <description>Creator description.</description>
+    <item>
+      <guid isPermaLink="false">lbry://@fixture:abc123/fixture-embed:def789</guid>
+      <title>Fixture Odysee Embed Video</title>
+      <link>https://odysee.com/@fixture:abc123/fixture-embed:def789</link>
+      <pubDate>Sat, 16 May 2026 12:30:00 GMT</pubDate>
+      <description>Embed fallback description.</description>
     </item>
   </channel>
 </rss>`;
@@ -201,9 +219,93 @@ describe("Odysee source adapter normalization", () => {
     expect(revisionA.feeds[0]?.url).toBe("https://odysee.com/$/rss/@fixture:abc123");
     expect(revisionB.feeds[0]?.url).toBe("https://odysee.com/$/rss/@fixture:def456");
   });
+
+  test("normalizes an Odysee item without an enclosure into an embed playback source", async () => {
+    const payload = await resolveClaimPayload("@fixture:abc123", odyseeRssNoEnclosureFixture);
+
+    expect(payload.items).toHaveLength(1);
+    const item = payload.items[0];
+    if (item === undefined) {
+      throw new Error("Expected one normalized Odysee item.");
+    }
+    expect(item.contentItem).toMatchObject({
+      sourceType: "odysee",
+      sourceExternalId: "def789",
+      title: "Fixture Odysee Embed Video",
+      canonicalUrl: "https://odysee.com/@fixture:abc123/fixture-embed:def789",
+    });
+    expect(item.sources).toEqual([
+      {
+        sourceType: "odysee",
+        sourceExternalId: "def789",
+        embedUrl: "https://odysee.com/$/embed/@fixture:abc123/fixture-embed:def789",
+        canonicalUrl: "https://odysee.com/@fixture:abc123/fixture-embed:def789",
+        priority: 0,
+        metadataJson: JSON.stringify({ playback: "odysee-embed" }),
+      },
+    ]);
+  });
 });
 
-async function resolveClaimPayload(claim: string) {
+describe("Odysee content source building", () => {
+  test("keeps the native media source for items with an enclosure", () => {
+    const sources = buildContentSources(
+      "def456",
+      "https://odysee.com/@fixture:abc123/fixture-video:def456",
+      "https://player.odycdn.com/api/v4/streams/free/fixture-video/def456.mp4",
+      "video/mp4",
+    );
+
+    expect(sources).toEqual([
+      {
+        sourceType: "odysee",
+        sourceExternalId: "def456",
+        nativeMediaUrl: "https://player.odycdn.com/api/v4/streams/free/fixture-video/def456.mp4",
+        canonicalUrl: "https://odysee.com/@fixture:abc123/fixture-video:def456",
+        priority: 0,
+        metadataJson: JSON.stringify({ playback: "odysee-native-media", mediaType: "video/mp4" }),
+      },
+    ]);
+  });
+
+  test("builds the odysee embed source from the canonical URL path when the enclosure is missing", () => {
+    const sources = buildContentSources(
+      "def789",
+      "https://odysee.com/@fixture:abc123/fixture-embed:def789",
+      null,
+      null,
+    );
+
+    expect(sources).toEqual([
+      {
+        sourceType: "odysee",
+        sourceExternalId: "def789",
+        embedUrl: "https://odysee.com/$/embed/@fixture:abc123/fixture-embed:def789",
+        canonicalUrl: "https://odysee.com/@fixture:abc123/fixture-embed:def789",
+        priority: 0,
+        metadataJson: JSON.stringify({ playback: "odysee-embed" }),
+      },
+    ]);
+  });
+
+  test("emits no source without throwing for a malformed canonical URL", () => {
+    expect(buildContentSources("def789", "not a url", null, null)).toEqual([]);
+  });
+
+  test("emits no source without throwing for a non-odysee canonical URL", () => {
+    expect(
+      buildContentSources("def789", "https://mirror.example.test/@fixture/fixture-embed", null, null),
+    ).toEqual([]);
+  });
+
+  test("emits no source without throwing for an http:// odysee canonical URL", () => {
+    expect(
+      buildContentSources("def012", "http://odysee.com/@fixture:abc123/fixture-embed:def012", null, null),
+    ).toEqual([]);
+  });
+});
+
+async function resolveClaimPayload(claim: string, payload: string = odyseeRssFixture) {
   const detection = odyseeAdapter.detect(`https://odysee.com/$/rss/${claim}`);
   if (!detection.ok || !isOdyseeDetection(detection.value)) {
     throw new Error(`Expected Odysee detection for ${claim}.`);
@@ -212,7 +314,7 @@ async function resolveClaimPayload(claim: string) {
   if (!resolution.ok || !isOdyseeResolution(resolution.value)) {
     throw new Error(`Expected Odysee resolution for ${claim}.`);
   }
-  const result = odyseeAdapter.normalizeCatalogPayload(resolution.value, odyseeRssFixture);
+  const result = odyseeAdapter.normalizeCatalogPayload(resolution.value, payload);
   if (!result.ok) {
     throw new Error(`Expected normalization to succeed for ${claim}.`);
   }

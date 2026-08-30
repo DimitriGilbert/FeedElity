@@ -32,8 +32,30 @@ export function creatorNameKey(displayName: string): string {
   return withoutClaimRevision.replace(/\s+/g, "").toLowerCase();
 }
 
+/**
+ * Derive the deterministic cross-source mirror key for a content item:
+ * `<creator name_key>:<title NFC-normalized, lowercased, with every character
+ * that is not a Unicode letter or number stripped>`. NFC runs before the strip
+ * so decomposed accents (e.g. "e" + U+0301) compose first and survive as
+ * letters instead of being stripped, keeping both accent forms on one key. Two
+ * items of the same creator whose titles normalize to the same value are
+ * mirrors of one video across sources. Returns null when the title carries no
+ * letters or numbers, so callers never persist a garbage key. Mirrored
+ * (without importing this package) by packages/db/src/cross-source-key.ts for
+ * the backfill migration; both implementations are pinned to the same case
+ * table by parity tests.
+ */
+export function contentCrossSourceKey(nameKey: string, title: string): string | null {
+  const normalizedTitle = title.normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  if (normalizedTitle.length === 0) {
+    return null;
+  }
+  return `${nameKey}:${normalizedTitle}`;
+}
+
 export interface CatalogCreator {
   readonly id: string;
+  readonly nameKey: string;
   readonly displayName: string;
   readonly description: string | null;
   readonly imageUrl: string | null;
@@ -81,6 +103,12 @@ export interface CatalogContentSource {
 export interface CatalogContentListItem extends CatalogContentItem {
   readonly creator: CatalogCreatorSummary;
   readonly sourceCount: number;
+  /**
+   * Number of sibling catalog items sharing the same non-null cross-source
+   * mirror key, excluding the item itself. 0 means "no mirrors" (or unknown,
+   * for overlay mappers that do not compute it); never user-owned data.
+   */
+  readonly mirrorCount: number;
 }
 
 export interface CatalogCreatorSummary {
@@ -95,6 +123,12 @@ export interface CatalogContentDetail extends CatalogContentItem {
   readonly creator: CatalogCreatorSummary;
   readonly feeds: readonly CatalogFeed[];
   readonly sources: readonly CatalogContentSource[];
+  /**
+   * Cross-source copies of the same video (same non-null mirror key), excluding
+   * the detail item itself. Full list-item shape so clients can select a mirror
+   * through their existing content-selection flow.
+   */
+  readonly mirrors: readonly CatalogContentListItem[];
 }
 
 export interface FeedContentLink {

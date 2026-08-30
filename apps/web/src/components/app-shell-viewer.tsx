@@ -1,5 +1,5 @@
-import type { CatalogContentDetail, CatalogContentListItem, CatalogContentSource, Playlist, UserContentStatus, UserSetting } from "@FeedElity/api";
-import { For, Match, Show, Switch, createMemo, createResource, createSignal } from "solid-js";
+import type { CatalogContentDetail, CatalogContentListItem, CatalogContentSource, CatalogCreatorSummary, Playlist, UserContentStatus, UserSetting } from "@FeedElity/api";
+import { For, Match, Show, Switch, createEffect, createMemo, createResource, createSignal } from "solid-js";
 import ArrowLeft from "lucide-solid/icons/arrow-left";
 import CircleCheck from "lucide-solid/icons/circle-check";
 import CirclePlay from "lucide-solid/icons/circle-play";
@@ -22,8 +22,10 @@ import {
   formatSourceLabel,
   toContentStatusFlags,
   toPlayableSources,
+  toYoutubeNoCookieFromSettings,
   viewerColumnClass,
   viewerScrollRegionClass,
+  youtubePrivacySettingKey,
   type PlayableSource,
   type ViewerMode,
 } from "./app-shell.contract";
@@ -48,6 +50,8 @@ export interface SelectedContentViewerProps {
   readonly onCloseSettings: () => void;
   readonly onSettingsChanged: () => Promise<void>;
   readonly onSelectPlaylist: (playlistId: string | null) => void;
+  readonly onSelectCreator: (creator: CatalogCreatorSummary) => void;
+  readonly onSelectContent: (contentItem: CatalogContentListItem) => Promise<void>;
   readonly onPlaylistItemAdded: () => void;
   readonly onFavoriteChanged: () => void;
   readonly onMarkContentOpened: (contentItemId: string) => Promise<void>;
@@ -59,7 +63,48 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
   const selectedContentItemId = createMemo(() => props.selectedContent()?.id ?? null);
   const [contentDetail] = createResource(selectedContentItemId, (id) => client.catalog.contentDetail({ id }));
   const contentDetailValue = createMemo(() => contentDetail.latest);
-  const [useNoCookieEmbed, setUseNoCookieEmbed] = createSignal(true);
+  // The YouTube no-cookie preference seeds from the user settings the viewer
+  // already receives and re-converges whenever those settings refetch
+  // (including after our own save below). Anonymous users keep a session-local
+  // toggle: nothing is saved without an authenticated session.
+  const [useNoCookieEmbed, setUseNoCookieEmbed] = createSignal(toYoutubeNoCookieFromSettings(props.settings()));
+  createEffect(() => {
+    setUseNoCookieEmbed(toYoutubeNoCookieFromSettings(props.settings()));
+  });
+  const [noCookieSavePending, setNoCookieSavePending] = createSignal(false);
+  const [noCookieActionError, setNoCookieActionError] = createSignal<string | null>(null);
+
+  const toggleNoCookieEmbed = async () => {
+    // Serialize authenticated saves: a second click while one is in flight
+    // could otherwise race the server and persist the older value while the
+    // label shows the newer one.
+    if (noCookieSavePending()) {
+      return;
+    }
+
+    // Capture the current value so a failed authenticated save can revert the
+    // optimistic flip instead of leaving the label diverged from the server
+    // until the next toggle. Anonymous users keep a session-local flip with
+    // nothing to save and nothing to revert.
+    const previous = useNoCookieEmbed();
+    const next = !previous;
+    setUseNoCookieEmbed(next);
+    if (!props.isAuthenticated()) {
+      return;
+    }
+
+    setNoCookieActionError(null);
+    setNoCookieSavePending(true);
+    try {
+      await client.overlays.saveSetting({ key: youtubePrivacySettingKey, value: next ? "true" : "false" });
+      await props.onSettingsChanged();
+    } catch (error) {
+      setUseNoCookieEmbed(previous);
+      setNoCookieActionError(formatError(error));
+    } finally {
+      setNoCookieSavePending(false);
+    }
+  };
   const playableSources = createMemo(() => {
     const noCookie = useNoCookieEmbed();
     const sources = contentDetail.latest?.sources ?? emptyCatalogContentSources;
@@ -76,6 +121,11 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
   const [playlists, { refetch: refetchPlaylists }] = createResource(authenticatedPlaylistSource, () =>
     client.overlays.playlists(),
   );
+  // Read playlists via .latest so refetchPlaylists (after adding a video to a
+  // playlist) never re-suspends: the viewer column is not wrapped in any
+  // <Suspense>, so a plain read would bubble to the route-level boundary and
+  // blank the app.
+  const playlistsValue = createMemo(() => playlists.latest);
   const [selectedSourceId, setSelectedSourceId] = createSignal<string | null>(null);
   const [targetPlaylistId, setTargetPlaylistId] = createSignal<string | null>(null);
   const [playlistActionError, setPlaylistActionError] = createSignal<string | null>(null);
@@ -126,7 +176,7 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
     playableSources().some((source) => source.sourceType === "youtube"),
   );
   const effectiveTargetPlaylistId = createMemo(() => {
-    const loadedPlaylists = playlists() ?? emptyPlaylists;
+    const loadedPlaylists = playlistsValue() ?? emptyPlaylists;
     const explicitTargetId = targetPlaylistId();
     const selectedPlaylistId = props.selectedPlaylistId();
 
@@ -303,6 +353,9 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                     <Show when={playlistActionError()}>
                       {(message) => <p class="text-xs text-destructive">{message()}</p>}
                     </Show>
+                    <Show when={noCookieActionError()}>
+                      {(message) => <p class="text-xs text-destructive">{message()}</p>}
+                    </Show>
                     <button
                       type="button"
                       class="inline-flex items-center justify-center gap-1 rounded-md border border-border p-1.5 text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
@@ -336,7 +389,7 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                     >
                       <Heart size={14} />
                     </button>
-                    <Show when={(playlists() ?? emptyPlaylists).length > 0}>
+                    <Show when={(playlistsValue() ?? emptyPlaylists).length > 0}>
                       <label class="sr-only" for="viewer-playlist-target">Save to playlist</label>
                       <select
                         id="viewer-playlist-target"
@@ -344,7 +397,7 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                         value={effectiveTargetPlaylistId() ?? ""}
                         onChange={(event) => setTargetPlaylistId(event.currentTarget.value)}
                       >
-                        <For each={playlists() ?? emptyPlaylists}>{(playlist) => <option value={playlist.id}>{playlist.name}</option>}</For>
+                        <For each={playlistsValue() ?? emptyPlaylists}>{(playlist) => <option value={playlist.id}>{playlist.name}</option>}</For>
                       </select>
                       <button
                         type="button"
@@ -384,10 +437,19 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                     <Show when={hasYouTubeSource()}>
                       <button
                         type="button"
-                        class="inline-flex items-center gap-1 border border-border px-2 py-1 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                        aria-label={useNoCookieEmbed() ? "Using privacy-enhanced embed" : "Using standard YouTube embed"}
-                        title={useNoCookieEmbed() ? "Privacy mode (click for standard)" : "Standard mode (click for privacy)"}
-                        onClick={() => setUseNoCookieEmbed((prev) => !prev)}
+                        class="inline-flex items-center gap-1 border border-border px-2 py-1 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                        aria-label={noCookieSavePending()
+                          ? "Saving privacy preference"
+                          : useNoCookieEmbed()
+                          ? "Using privacy-enhanced embed"
+                          : "Using standard YouTube embed"}
+                        title={noCookieSavePending()
+                          ? "Saving privacy preference"
+                          : useNoCookieEmbed()
+                          ? "Privacy mode (click for standard)"
+                          : "Standard mode (click for privacy)"}
+                        disabled={noCookieSavePending()}
+                        onClick={toggleNoCookieEmbed}
                       >
                         {useNoCookieEmbed() ? <Shield size={12} /> : <ShieldOff size={12} />}
                         <span class="text-xs">{useNoCookieEmbed() ? "Privacy" : "Standard"}</span>
@@ -399,17 +461,48 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                   <div class="mt-2 flex justify-end">
                     <button
                       type="button"
-                      class="inline-flex items-center gap-1 border border-border px-2 py-1 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                      aria-label={useNoCookieEmbed() ? "Using privacy-enhanced embed" : "Using standard YouTube embed"}
-                      title={useNoCookieEmbed() ? "Privacy mode (click for standard)" : "Standard mode (click for privacy)"}
-                      onClick={() => setUseNoCookieEmbed((prev) => !prev)}
+                      class="inline-flex items-center gap-1 border border-border px-2 py-1 text-xs text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                      aria-label={noCookieSavePending()
+                        ? "Saving privacy preference"
+                        : useNoCookieEmbed()
+                        ? "Using privacy-enhanced embed"
+                        : "Using standard YouTube embed"}
+                      title={noCookieSavePending()
+                        ? "Saving privacy preference"
+                        : useNoCookieEmbed()
+                        ? "Privacy mode (click for standard)"
+                        : "Standard mode (click for privacy)"}
+                      disabled={noCookieSavePending()}
+                      onClick={toggleNoCookieEmbed}
                     >
                       {useNoCookieEmbed() ? <Shield size={12} /> : <ShieldOff size={12} />}
                       <span class="text-xs">{useNoCookieEmbed() ? "Privacy" : "Standard"}</span>
                     </button>
                   </div>
                 </Show>
-                <ContentDetailBody detail={detail()} />
+                <Show when={detail().mirrors.length > 0}>
+                  <div class="mt-2 flex flex-wrap items-center gap-1.5" data-viewer-mirror-switcher>
+                    <span class="text-xs font-semibold text-muted-foreground">Also on</span>
+                    <For each={detail().mirrors}>
+                      {(mirror) => (
+                        <button
+                          type="button"
+                          class="inline-flex items-center gap-1 border border-border bg-background px-2 py-1 text-xs font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                          title={mirror.title}
+                          aria-label={`Also on ${formatSourceLabel(mirror.sourceType)}: ${mirror.title}`}
+                          data-viewer-mirror-option
+                          onClick={() => {
+                            void props.onSelectContent(mirror);
+                          }}
+                        >
+                          <SourceTypeIcon sourceType={mirror.sourceType} />
+                          {formatSourceLabel(mirror.sourceType)}
+                        </button>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+                <ContentDetailBody detail={detail()} onCreatorClick={props.onSelectCreator} />
               </div>
             )}
           </Match>
@@ -442,7 +535,7 @@ function PlaybackSurface(props: PlaybackSurfaceProps) {
         </Match>
         <Match when={props.source?.kind === "native" && props.source !== null}>
           <video class="h-full w-full" src={props.source?.url ?? ""} controls preload="metadata" onPlay={props.onNativePlay}>
-            <a class="text-primary underline" href={props.source?.url ?? ""}>
+            <a class="text-primary underline" href={props.source?.url ?? ""} rel="noreferrer" target="_blank">
               Open video source
             </a>
           </video>
@@ -459,6 +552,7 @@ function PlaybackSurface(props: PlaybackSurfaceProps) {
 
 interface ContentDetailBodyProps {
   readonly detail: CatalogContentDetail;
+  readonly onCreatorClick: (creator: CatalogCreatorSummary) => void;
 }
 
 function ContentDetailBody(props: ContentDetailBodyProps) {
@@ -467,7 +561,14 @@ function ContentDetailBody(props: ContentDetailBodyProps) {
       <div>
         <h3 class="text-lg font-semibold tracking-tight text-foreground">{props.detail.title}</h3>
         <p class="mt-1 text-sm text-muted-foreground">
-          {props.detail.creator.displayName} · {formatContentPublishedAt(props.detail.publishedAt)}
+          <button
+            type="button"
+            class="rounded-sm text-sm text-muted-foreground underline-offset-2 transition hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            onClick={() => props.onCreatorClick(props.detail.creator)}
+          >
+            {props.detail.creator.displayName}
+          </button>
+          {" · "}{formatContentPublishedAt(props.detail.publishedAt)}
           <Show when={props.detail.durationSeconds !== null}>
             {" · "}{formatContentDuration(props.detail.durationSeconds)}
           </Show>

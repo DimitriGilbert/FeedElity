@@ -1,6 +1,6 @@
 import type { CatalogContentListItem, CatalogFeed, PlaylistItemWithContent } from "@FeedElity/api";
 import type { JSX } from "solid-js";
-import { Show, createEffect, createMemo, createSignal, on } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, on } from "solid-js";
 import ChevronDown from "lucide-solid/icons/chevron-down";
 import ChevronUp from "lucide-solid/icons/chevron-up";
 import CircleCheck from "lucide-solid/icons/circle-check";
@@ -13,8 +13,14 @@ import RefreshCw from "lucide-solid/icons/refresh-cw";
 import Target from "lucide-solid/icons/target";
 import X from "lucide-solid/icons/x";
 
-import type { BrowsableCreator, ContentStatusFlags, ReaderDensity } from "./app-shell.contract";
-import { SourceIconBadge } from "./source-indicator";
+import {
+  formatSourceLabel,
+  toCreatorSourceTypes,
+  type BrowsableCreator,
+  type ContentStatusFlags,
+  type ReaderDensity,
+} from "./app-shell.contract";
+import { SourceIconBadge, SourceTypeIcon } from "./source-indicator";
 
 function readerDensityPaddingClass(readerDensity: ReaderDensity): string {
   return readerDensity === "compact" ? "px-2 py-1" : "px-2 py-1.5";
@@ -83,11 +89,19 @@ export interface CreatorSourceRowProps {
 
 export function CreatorSourceRow(props: CreatorSourceRowProps) {
   const creatorRowClass = createMemo(() =>
-    `group relative border-b border-border ${readerDensityPaddingClass(props.readerDensity)} transition hover:bg-accent hover:text-accent-foreground ${props.isSelected ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : "text-card-foreground"}`,
+    `group relative border-b border-border ${readerDensityPaddingClass(props.readerDensity)} transition hover:bg-accent hover:text-accent-foreground ${props.isSelected ? "bg-selected text-selected-foreground ring-1 ring-ring ring-inset hover:bg-selected hover:text-selected-foreground" : "text-card-foreground"}`,
+  );
+  const sourceTypes = createMemo(() => toCreatorSourceTypes(props.creator));
+  const sourceBadgesLabel = createMemo(() =>
+    `Sources: ${sourceTypes().map((sourceType) => formatSourceLabel(sourceType)).join(" + ")}`,
   );
 
   return (
-    <div class={creatorRowClass()} data-selected={props.isSelected ? "true" : "false"}>
+    <div
+      class={creatorRowClass()}
+      data-selected={props.isSelected ? "true" : "false"}
+      aria-current={props.isSelected ? "true" : undefined}
+    >
       <Show when={props.isSelected}>
         <span class="absolute inset-y-1 left-0 w-0.5 rounded-full bg-ring" aria-hidden="true" />
       </Show>
@@ -117,6 +131,17 @@ export function CreatorSourceRow(props: CreatorSourceRowProps) {
             )}
           </Show>
           <span class="block truncate text-sm font-semibold">{props.creator.displayName}</span>
+          <Show when={sourceTypes().length > 0}>
+            <span
+              class="flex shrink-0 items-center gap-0.5 text-muted-foreground"
+              role="img"
+              aria-label={sourceBadgesLabel()}
+              title={sourceBadgesLabel()}
+              data-creator-source-badges
+            >
+              <For each={sourceTypes()}>{(sourceType) => <SourceTypeIcon sourceType={sourceType} />}</For>
+            </span>
+          </Show>
         </button>
         <Show when={props.isAuthenticated}>
           <div class="pointer-events-none flex items-center gap-1 opacity-0 transition-opacity delay-100 duration-100 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
@@ -322,6 +347,10 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
   const [playlistError, setPlaylistError] = createSignal<string | null>(null);
   const rowImageUrl = createMemo(() => props.contentItem.thumbnailUrl ?? props.contentItem.creator.imageUrl);
   const rowImageSource = createMemo(() => (props.contentItem.thumbnailUrl !== null ? "content" : props.contentItem.creator.imageUrl !== null ? "creator" : null));
+  const mirrorCountLabel = createMemo(() => {
+    const count = props.contentItem.mirrorCount;
+    return `This video also appears on ${count} other source${count === 1 ? "" : "s"}; open it to switch.`;
+  });
 
   const isAuthenticated = createMemo(() => props.isAuthenticated());
   const isFavorite = createMemo(() => props.isFavorite());
@@ -446,6 +475,17 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
               <span data-content-source-indicator>
                 <SourceIconBadge sourceType={props.contentItem.sourceType} context="content" sourceCount={props.contentItem.sourceCount} />
               </span>
+              <Show when={props.contentItem.mirrorCount > 0}>
+                <span
+                  class="text-[0.62rem] font-semibold tabular-nums text-muted-foreground"
+                  role="img"
+                  aria-label={mirrorCountLabel()}
+                  title={mirrorCountLabel()}
+                  data-content-mirror-count
+                >
+                  +{props.contentItem.mirrorCount}
+                </span>
+              </Show>
             </span>
           </span>
         </span>

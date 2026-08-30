@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { CatalogContentSource, CatalogFeed, RefreshFeedResult, RefreshRun, RefreshRunReport, UserSetting } from "@FeedElity/api";
+import type { CatalogContentSource, CatalogCreator, CatalogCreatorSummary, CatalogFeed, RefreshFeedResult, RefreshRun, RefreshRunReport, UserSetting } from "@FeedElity/api";
 import type { LeftPaneTab, MiddlePanePanel, ViewerMode } from "./app-shell.contract";
 
 import {
@@ -74,11 +74,14 @@ import {
   toFeedListInput,
   toPlayableSources,
   toCreatorListSortFromSettings,
+  toCreatorSourceTypes,
   toReaderDensityFromSettings,
   toSafePlaybackUrl,
   toShellContentSelectionState,
   toCreatorListInput,
   toShellSelectionState,
+  toYoutubeNoCookieFromSettings,
+  youtubePrivacySettingKey,
   viewerColumnClass,
   viewerScrollRegionClass,
 } from "./app-shell.contract";
@@ -341,11 +344,33 @@ test("creator source-type filter scopes the creator list without changing playba
   const source = await readAppShellSource();
 
   expect(source).toContain("const [sourceType, setSourceType] = createSignal<SourceType | null>(null)");
-  expect(source).toContain("() => toCreatorListInput(search(), sourceType(), props.creatorSort())");
+  // Catalog search is debounced: the list input reads the 300 ms debounced
+  // mirror of the search signal, not the raw keystroke value.
+  expect(source).toContain("() => toCreatorListInput(debouncedSearch(), sourceType(), props.creatorSort())");
+  // The filter is a compact native details/summary popover: the id moved onto
+  // the summary trigger so selectors stay meaningful.
   expect(source).toContain(`id={creatorSourceFilterId}`);
-  expect(source).toContain(`aria-label="Creator source-type filter"`);
+  expect(source).toContain(`<details class="relative shrink-0">`);
+  // The trigger aria-label states the active filter ("All" or a source label).
+  expect(source).toContain("aria-label={`Filter creators by source: ${activeCreatorSourceTypeLabel()}`}");
   expect(source).toContain(`title="Filters creator rows by catalog source type. Select a creator to inspect all feeds."`);
-  expect(source).toContain("creator.sourceType === sourceType()");
+  expect(source).toContain("const activeCreatorSourceTypeLabel = createMemo(() => {");
+  // The trigger icon is the neutral grid for "All" and the source icon otherwise.
+  expect(source).toContain('fallback={<LayoutGrid size={14} aria-hidden="true" />}');
+  expect(source).toContain("(activeSourceType: SourceType) => <SourceTypeIcon sourceType={activeSourceType} />");
+  // Options are pressed-state buttons (All + one per source) that close the
+  // popover and apply the filter through the shared handler.
+  expect(source).toContain("aria-pressed={sourceType() === null}");
+  expect(source).toContain("const isActive = createMemo(() => sourceType() === source);");
+  expect(source).toContain("aria-pressed={isActive()}");
+  expect(source).toContain("const applyCreatorSourceType = (nextSourceType: SourceType | null) => {");
+  // Three popover close sites exist: the force-refresh action plus the All and
+  // per-source filter options — every selection closes its popover.
+  expect((source.match(/removeAttribute\("open"\)/g) ?? [])).toHaveLength(3);
+  // Multi-source creators belong to every source they publish on, so the
+  // filter checks membership in sourceTypes (a creator must stay visible for
+  // each of its sources, not a single legacy sourceType field).
+  expect(source).toContain("creator.sourceTypes.includes(sourceType()");
   expect(source).toContain("id=\"viewer-source-switcher\"");
   expect(source).toContain("onClick={() => setSelectedSourceId(source.id)}");
 });
@@ -449,8 +474,12 @@ test("content pane is wired to anonymous catalog content items", async () => {
 
 test("content filters are Solid state backed and avoid class-name filtering", async () => {
   const source = await readAppShellSource();
+  // Filtering must stay Solid-state driven: no DOM class/tag sniffing, no
+  // attribute-styled filtering, no hidden-element toggling. A bare
+  // querySelector is not banned outright because the selected-creator row
+  // lookup (scrollIntoView targeting, a static [data-creator-id] query) is a
+  // legitimate imperative DOM read that filters nothing.
   const forbiddenDomFilteringSnippets = [
-    "querySelector",
     "getElementsByClassName",
     "classList",
     "dataset.sourceType",
@@ -743,7 +772,18 @@ test("selected viewer is wired to anonymous catalog content detail", async () =>
   expect(source).toContain("client.catalog.contentDetail({ id })");
   expect(source).toContain("const selectedContentItemId = createMemo(() => props.selectedContent()?.id ?? null)");
   expect(source).toContain("data-selected-content-item-id={selectedContentItemId() ?? \"\"}");
-  expect(source).toContain("<ContentDetailBody detail={detail()} />");
+  // The creator name in the detail body is a real button wired to the shell's
+  // select-only viewer filter: it never toggles off and never keeps a feed —
+  // it clears the feed filter even when the creator is already selected.
+  expect(source).toContain("<ContentDetailBody detail={detail()} onCreatorClick={props.onSelectCreator} />");
+  expect(source).toContain("readonly onSelectCreator: (creator: CatalogCreatorSummary) => void;");
+  expect(source).toContain("readonly onCreatorClick: (creator: CatalogCreatorSummary) => void;");
+  expect(source).toContain("onClick={() => props.onCreatorClick(props.detail.creator)}");
+  expect(source).toContain("const selectCreatorFromViewer = (creator: CatalogCreatorSummary) => {");
+  expect(source).toContain(
+    "setSelectedFeed(null);\n    if (selectedCreator()?.id === creator.id) {\n      return;\n    }\n\n    setSelectedCreator(creator);",
+  );
+  expect(source).toContain("onSelectCreator={selectCreatorFromViewer}");
 });
 
 test("viewer has no internal metadata aside or rejected selection bar copy", async () => {
@@ -759,7 +799,7 @@ test("viewer has no internal metadata aside or rejected selection bar copy", asy
 test("selected viewer places playback before body in source order", async () => {
   const source = await readAppShellSource();
   const playbackIndex = source.indexOf("<PlaybackSurface\n                  source={selectedPlayableSource()}");
-  const bodyIndex = source.indexOf("<ContentDetailBody detail={detail()} />");
+  const bodyIndex = source.indexOf("<ContentDetailBody detail={detail()} onCreatorClick={props.onSelectCreator} />");
 
   expect(playbackIndex).toBeGreaterThan(-1);
   expect(bodyIndex).toBeGreaterThan(playbackIndex);
@@ -835,7 +875,144 @@ test("selected viewer derives playable sources only from safe API source URLs", 
       canonicalUrl: "https://peertube.example.test/w/video-1",
       priority: 2,
     },
+    {
+      id: "odysee-1",
+      sourceType: "odysee",
+      label: "Odysee embed",
+      kind: "embed",
+      url: "https://odysee.example.test/$/embed/odysee-video-1",
+      canonicalUrl: "https://odysee.example.test/odysee-video-1",
+      priority: 3,
+    },
   ]);
+});
+
+test("odysee embed sources are playable while odysee sources without any URL stay dropped", () => {
+  const odyseeEmbed: readonly CatalogContentSource[] = [
+    {
+      id: "odysee-embed-1",
+      contentItemId: "content-1",
+      sourceType: "odysee",
+      sourceExternalId: null,
+      embedUrl: "https://odysee.com/$/embed/@creator/video",
+      nativeMediaUrl: null,
+      canonicalUrl: "https://odysee.com/@creator/video",
+      priority: 1,
+      metadataJson: null,
+    },
+  ];
+
+  expect(toPlayableSources(odyseeEmbed)).toEqual([
+    {
+      id: "odysee-embed-1",
+      sourceType: "odysee",
+      label: "Odysee embed",
+      kind: "embed",
+      url: "https://odysee.com/$/embed/@creator/video",
+      canonicalUrl: "https://odysee.com/@creator/video",
+      priority: 1,
+    },
+  ]);
+
+  // Without an enclosure and without a safe embed URL there is nothing to play.
+  const odyseeUnplayable: readonly CatalogContentSource[] = [
+    {
+      id: "odysee-bare-1",
+      contentItemId: "content-1",
+      sourceType: "odysee",
+      sourceExternalId: null,
+      embedUrl: null,
+      nativeMediaUrl: null,
+      canonicalUrl: "https://odysee.com/@creator/video",
+      priority: 1,
+      metadataJson: null,
+    },
+    {
+      id: "odysee-unsafe-1",
+      contentItemId: "content-1",
+      sourceType: "odysee",
+      sourceExternalId: null,
+      embedUrl: "javascript:alert(1)",
+      nativeMediaUrl: null,
+      canonicalUrl: "https://odysee.com/@creator/video",
+      priority: 2,
+      metadataJson: null,
+    },
+  ];
+
+  expect(toPlayableSources(odyseeUnplayable)).toEqual([]);
+});
+
+test("creator source badges read sourceTypes from summaries and stay empty without them", () => {
+  const summary: CatalogCreatorSummary = {
+    id: "creator-1",
+    displayName: "Scott Manley",
+    imageUrl: null,
+    canonicalUrl: null,
+    sourceTypes: ["youtube", "odysee"],
+  };
+  const plainCreator: CatalogCreator = {
+    id: "creator-2",
+    nameKey: "scottmanley",
+    displayName: "Scott Manley",
+    description: null,
+    imageUrl: null,
+    canonicalUrl: null,
+    metadataJson: null,
+  };
+
+  expect(toCreatorSourceTypes(summary)).toEqual(["youtube", "odysee"]);
+  expect(toCreatorSourceTypes(plainCreator)).toEqual([]);
+});
+
+test("youtube privacy setting key satisfies the setting key pattern and round-trips", () => {
+  const privacySetting: UserSetting = {
+    id: "setting-3",
+    userId: "user-1",
+    key: youtubePrivacySettingKey,
+    valueJson: JSON.stringify("true"),
+  };
+
+  expect(youtubePrivacySettingKey).toBe("playback.youtube.nocookie");
+  expect(new RegExp(settingKeyPattern).test(youtubePrivacySettingKey)).toBe(true);
+  // No stored preference defaults to privacy-enhanced embeds.
+  expect(toYoutubeNoCookieFromSettings([])).toBe(true);
+  // The save path stores JSON.stringify("true"/"false"); the parse round-trips.
+  expect(toYoutubeNoCookieFromSettings([privacySetting])).toBe(true);
+  expect(toYoutubeNoCookieFromSettings([{ ...privacySetting, valueJson: JSON.stringify("false") }])).toBe(false);
+  // A bare JSON boolean is tolerated as an alternative encoding.
+  expect(toYoutubeNoCookieFromSettings([{ ...privacySetting, valueJson: "false" }])).toBe(false);
+  expect(toYoutubeNoCookieFromSettings([{ ...privacySetting, valueJson: "true" }])).toBe(true);
+  // Non-boolean and malformed values fall back to the safe default.
+  expect(toYoutubeNoCookieFromSettings([{ ...privacySetting, valueJson: JSON.stringify("standard") }])).toBe(true);
+  expect(toYoutubeNoCookieFromSettings([{ ...privacySetting, valueJson: "not json" }])).toBe(true);
+  // Other settings never leak into the preference.
+  expect(toYoutubeNoCookieFromSettings([{ ...privacySetting, key: readerDensitySettingKey, valueJson: JSON.stringify("false") }])).toBe(true);
+});
+
+test("multi-source rows badges mirror chip and persisted privacy toggle are wired", async () => {
+  const source = await readAppShellSource();
+
+  // Creator rows: per-source icons next to the display name, hidden when empty.
+  expect(source).toContain("const sourceTypes = createMemo(() => toCreatorSourceTypes(props.creator));");
+  expect(source).toContain("data-creator-source-badges");
+  expect(source).toContain("<For each={sourceTypes()}>{(sourceType) => <SourceTypeIcon sourceType={sourceType} />}</For>");
+  // Content rows: +N mirror chip beside the source indicator, pure display.
+  expect(source).toContain("data-content-mirror-count");
+  expect(source).toContain("This video also appears on ${count} other source${count === 1 ? \"\" : \"s\"}; open it to switch.");
+  // Viewer: "Also on" switcher drives the existing selection flow.
+  expect(source).toContain("readonly onSelectContent: (contentItem: CatalogContentListItem) => Promise<void>;");
+  expect(source).toContain("data-viewer-mirror-switcher");
+  expect(source).toContain("void props.onSelectContent(mirror)");
+  expect(source).toContain("const selectContent = async (contentItem: CatalogContentListItem) => {");
+  // Privacy preference: seeds and re-converges from the settings overlay,
+  // persists only for authenticated users, and surfaces save failures.
+  expect(source).toContain("const [useNoCookieEmbed, setUseNoCookieEmbed] = createSignal(toYoutubeNoCookieFromSettings(props.settings()))");
+  expect(source).toContain("setUseNoCookieEmbed(toYoutubeNoCookieFromSettings(props.settings()))");
+  expect(source).toContain("await client.overlays.saveSetting({ key: youtubePrivacySettingKey, value: next ? \"true\" : \"false\" });");
+  expect(source).toContain("await props.onSettingsChanged();");
+  expect(source).toContain("setNoCookieActionError(formatError(error))");
+  expect(source).toContain("onClick={toggleNoCookieEmbed}");
 });
 
 test("selected viewer supports source switching and real playback render contracts", async () => {
@@ -859,7 +1036,7 @@ test("native video playback marks selected content played after authenticated gu
   expect(source).toContain("await props.onAutoMarkContentPlayed(contentItemId);");
   expect(source).toContain("const autoMarkContentPlayed = async (contentItemId: string) => {");
   expect(source).toContain("const result = await client.overlays.markContentPlayed({ contentItemId });");
-  expect(source).toContain("if (result.status !== null) {\n      patchContentStatus(result.status);\n      setStatusReloadKey((key) => key + 1);\n    }");
+  expect(source).toContain("if (result.status !== null) {\n      patchContentStatus(result.status);\n    }");
 });
 
 test("iframe playback has explicit real mark played workflow", async () => {
@@ -963,6 +1140,26 @@ test("playlist items reload through resource key without effect refetch loop", a
   expect(playlistSectionSource).not.toMatch(refetchEffectPattern);
 });
 
+test("playlist and collection rows are owner-filtered so stale .latest rows never render", async () => {
+  const source = await readAppShellSource();
+
+  // .latest keeps the PREVIOUS playlist/collection's rows while the fetch for a
+  // newly selected owner is pending; visible rows must match the current owner
+  // so stale rows (and their remove/move actions) never render.
+  expect(source).toContain("const visiblePlaylistItems = createMemo(() =>");
+  expect(source).toContain("(item) => item.playlistId === props.selectedPlaylistId()");
+  expect(source).toContain("const visibleCollectionMembers = createMemo(() =>");
+  expect(source).toContain("(member) => member.collectionId === props.selectedCollectionId()");
+  // Row lists, reorder input, and member "Added" markers derive from visible rows.
+  expect(source).toContain("<For each={visiblePlaylistItems()}>");
+  expect(source).toContain("<For each={visibleCollectionMembers()}>");
+  expect(source).toContain("const items = visiblePlaylistItems();");
+  expect(source).toContain("new Set(visibleCollectionMembers().map((member) => member.creatorId))");
+  // A stale-owner pending state renders the new selection's loading state.
+  expect(source).toContain("selectedPlaylistItems.loading && visiblePlaylistItems().length === 0");
+  expect(source).toContain("selectedCollectionMembers.loading && visibleCollectionMembers().length === 0");
+});
+
 test("playlist edit form changes only through explicit playlist selection", async () => {
   const source = await readAppShellSource();
 
@@ -1064,7 +1261,8 @@ test("reader density setting is applied to real row spacing", async () => {
   const source = await readAppShellSource();
 
   expect(source).toContain("const emptyUserSettings: readonly UserSetting[] = [];");
-  expect(source).toContain("const readerDensity = createMemo(() => toReaderDensityFromSettings(settings() ?? emptyUserSettings));");
+  expect(source).toContain("const settingsValue = createMemo(() => settings.latest);");
+  expect(source).toContain("const readerDensity = createMemo(() => toReaderDensityFromSettings(settingsValue() ?? emptyUserSettings));");
   expect(source).toContain("data-reader-density={readerDensity()}");
   expect(source).toContain("function readerDensityPaddingClass(readerDensity: ReaderDensity): string");
   expect(source).toContain("readerDensityPaddingClass(props.readerDensity)");
@@ -1158,7 +1356,10 @@ test("hide played is state filtering and not DOM filtering", async () => {
   expect(source).toContain("const [hidePlayed, setHidePlayed] = createSignal<boolean>(readPersistedHidePlayed() ?? false)");
   expect(source).toContain("locallyFilteredItems.filter((contentItem) => !toContentStatusFlags(statuses, contentItem.id).played)");
   expect(source).toContain("<For each={displayedContentItems()}>");
-  expect(source).not.toContain("querySelector");
+  // The selected-creator scrollIntoView lookup reads the DOM with a static
+  // [data-creator-id] query; hide-played itself never touches the DOM
+  // (no class/tag sniffing, no hidden-element toggling).
+  expect(source).not.toContain("getElementsByClassName");
   expect(source).not.toContain("classList");
   expect(source).not.toContain("hidden =");
 });
@@ -1246,18 +1447,20 @@ test("resource reload dependencies use stable primitive source keys", async () =
   expect(source).toContain("input.offset.toString()");
   expect(source).toContain("createResource(contentItemsResourceKey, () =>");
   expect(source).toContain('return "content-statuses";');
-  expect(source).toContain("const [statusReloadKey, setStatusReloadKey] = createSignal(0);");
-  expect(source).toContain("statusReloadKey={statusReloadKey}");
+  // History views are snapshots: opened/played markers propagate through local
+  // status patches (patchContentStatus/removeContentStatus), so no status
+  // reload key may exist anywhere — it would refetch and reorder the history
+  // list on every video selection. (The identifier is split so this grep-style
+  // assertion does not itself contain the forbidden symbol.)
+  expect(source).not.toContain(`status${"ReloadKey"}`);
   // The viewer's favoriteItems source must NOT embed favoritesReloadKey: doing
   // so re-suspends the viewer's resource and tears down the playing video on
   // every favorite toggle. The viewer refetches in place instead.
   expect(source).toContain("return contentItemId;");
   expect(source).not.toContain("props.favoritesReloadKey().toString()");
-  expect(source).not.toContain("statusReloadKey={() => 0}");
   expect(source).not.toContain("return { mode: \"catalog\", input: contentListInput(), reloadKey: props.catalogReloadKey() }");
   expect(source).not.toContain("return { mode: \"subscribed\", input: contentListInput(), reloadKey: props.catalogReloadKey() }");
   expect(source).not.toContain("return { contentItemId, reloadKey: props.favoritesReloadKey() }");
-  expect(source).not.toContain("return { reloadKey: statusReloadKey() };");
 });
 
 test("mobile navigation adds no timers observers or unstable resource source objects", async () => {
@@ -1322,10 +1525,19 @@ test("app shell uses stable module-level empty arrays for fallback accessors", a
   expect(source).toContain("const emptyUserContentStatuses: readonly UserContentStatus[] = [];");
   expect(source).toContain("const emptyPlaylists: readonly Playlist[] = [];");
   expect(source).toContain("const emptyCatalogContentSources: readonly CatalogContentSource[] = [];");
-  expect(source).toContain("settings={() => settings.latest ?? emptyUserSettings}");
+  expect(source).toContain("settings={() => settingsValue() ?? emptyUserSettings}");
   expect(source).toContain("contentStatuses={() => contentStatuses.latest ?? emptyUserContentStatuses}");
-  expect(source).toContain("playlists() ?? emptyPlaylists");
+  expect(source).toContain("playlistsValue() ?? emptyPlaylists");
+  expect(source).toContain("const playlistsValue = createMemo(() => playlists.latest);");
   expect(source).toContain("contentDetail.latest?.sources ?? emptyCatalogContentSources");
+  // Plain resource reads would suspend on refetch and blank the app (no
+  // column-level <Suspense> fallbacks); the shell and the viewer read only
+  // .latest-backed memos. Scoped to these two files: the content column and
+  // the left-pane panels convert their own reads in later phases.
+  const shellSource = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+  const viewerSource = await Bun.file(new URL("./app-shell-viewer.tsx", import.meta.url)).text();
+  expect(shellSource).not.toContain("settings() ?? emptyUserSettings");
+  expect(viewerSource).not.toContain("playlists() ?? emptyPlaylists");
   expect(source).not.toContain("settings() ?? []");
   expect(source).not.toContain("contentStatuses() ?? []");
   expect(source).not.toContain("playlists() ?? []");
@@ -1495,13 +1707,17 @@ test("creator pane keeps header refresh action beside subscription actions", asy
 });
 
 test("catalog and library routes deliberately select distinct shell modes", async () => {
-  const indexRoute = await Bun.file(new URL("../routes/index.tsx", import.meta.url)).text();
-  const dashboardRoute = await Bun.file(new URL("../routes/dashboard.tsx", import.meta.url)).text();
+  const shellLayoutRoute = await Bun.file(new URL("../routes/_shell.tsx", import.meta.url)).text();
+  const indexRoute = await Bun.file(new URL("../routes/_shell.index.tsx", import.meta.url)).text();
+  const dashboardRoute = await Bun.file(new URL("../routes/_shell.dashboard.tsx", import.meta.url)).text();
   const headerSource = await Bun.file(new URL("./header.tsx", import.meta.url)).text();
 
-  expect(indexRoute).toContain('<AppShell mode="catalog" />');
-  expect(dashboardRoute).toContain('<AppShell mode="library" />');
-  expect(dashboardRoute).toContain('createFileRoute("/dashboard")');
+  expect(shellLayoutRoute).toContain('<AppShell mode={mode()} />');
+  expect(shellLayoutRoute).toContain('location().pathname.startsWith("/dashboard") ? "library" : "catalog"');
+  expect(indexRoute).toContain('createFileRoute("/_shell/")');
+  expect(dashboardRoute).toContain('createFileRoute("/_shell/dashboard")');
+  expect(dashboardRoute).toContain('to: "/login"');
+  expect(dashboardRoute).toContain("authClient.getSession()");
   expect(headerSource).toContain('{ to: "/", label: "Catalog", helper: "Browse" }');
   expect(headerSource).toContain('{ to: "/dashboard", label: "Library", helper: "Saved" }');
   expect(headerSource).not.toContain("Dashboard");
@@ -1534,7 +1750,7 @@ test("subscribed library content uses one protected endpoint without client fan-
   expect(source).toContain("return client.overlays.subscribedContentItems(input);");
   expect(source).not.toContain("subscriptions.flatMap");
   expect(source).not.toContain("toSubscribedCreatorContentListInputs");
-  expect(source).toContain("if (mode === \"library\") {\n              await client.overlays.subscribeToCreator({ creatorId: value.creator.id });\n            }");
+  expect(source).toContain("if (mode() === \"library\") {\n              await client.overlays.subscribeToCreator({ creatorId: value.creator.id });\n            }");
 });
 
 test("viewer empty state uses neutral video copy", async () => {
@@ -1745,7 +1961,7 @@ test("viewer source switcher uses button group with SourceTypeIcon instead of se
   expect(source).toContain("aria-label={source.label}");
 });
 
-test("creator list sort select persists a typed setting and refetches the list", async () => {
+test("creator list sort toggle persists a typed setting and refetches the list", async () => {
   const source = await readAppShellSource();
   const lastUpdateSetting: UserSetting = {
     id: "setting-2",
@@ -1762,17 +1978,22 @@ test("creator list sort select persists a typed setting and refetches the list",
   // Invalid stored values fall back to "name" safely.
   expect(toCreatorListSortFromSettings([{ ...lastUpdateSetting, valueJson: JSON.stringify("bogus") }])).toBe("name");
   expect(toCreatorListSortFromSettings([{ ...lastUpdateSetting, valueJson: "not json" }])).toBe("name");
-  // The select sits beside the search box with exactly the two approved orders.
+  // The sort control is a compact icon button that cycles exactly the two
+  // approved orders; the id moved onto the trigger so selectors stay meaningful.
   expect(source).toContain("id={creatorListSortInputId}");
-  expect(source).toContain("aria-label=\"Creator list sort order\"");
-  expect(source).toContain('<option value="name">By name</option>');
-  expect(source).toContain('<option value="lastUpdate">By last video update</option>');
+  expect(source).toContain('import ArrowDownAZ from "lucide-solid/icons/arrow-down-a-z";');
+  expect(source).toContain('import ClockArrowDown from "lucide-solid/icons/clock-arrow-down";');
+  expect(source).toContain("aria-label={creatorSortToggleLabel()}");
+  expect(source).toContain("title={creatorSortToggleLabel()}");
+  expect(source).toContain('"Sorted by name. Activate to sort by last video update."');
+  expect(source).toContain('"Sorted by last video update. Activate to sort by name."');
+  expect(source).toContain("creatorListSortValues[(creatorListSortValues.indexOf(props.creatorSort()) + 1) % creatorListSortValues.length]");
   // Anonymous browsing stays usable: the persisted control is gated on auth.
   expect(source).toContain("disabled={!props.isAuthenticated()}");
   // Changes flow through the typed settings overlay, then back into the list input.
   expect(source).toContain("const saveCreatorSortSetting = async (sort: CreatorListSort) => {");
   expect(source).toContain("await client.overlays.saveSetting({ key: creatorListSortSettingKey, value: sort });");
-  expect(source).toContain("const creatorSort = createMemo(() => toCreatorListSortFromSettings(settings() ?? emptyUserSettings));");
+  expect(source).toContain("const creatorSort = createMemo(() => toCreatorListSortFromSettings(settingsValue() ?? emptyUserSettings));");
   expect(source).toContain("creatorSort={creatorSort}");
   // Sort participates in the resource key so changing it refetches the list.
   expect(source).toContain("input.sort,");

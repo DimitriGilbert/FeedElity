@@ -1,9 +1,8 @@
 import { createFileRoute, redirect } from "@tanstack/solid-router";
 
-import AppShell from "@/components/app-shell";
 import { authClient } from "@/lib/auth-client";
 
-export const Route = createFileRoute("/dashboard")({
+export const Route = createFileRoute("/_shell/dashboard")({
   component: RouteComponent,
   beforeLoad: async ({ location }) => {
     const session = await authClient.getSession();
@@ -21,5 +20,5 @@ export const Route = createFileRoute("/dashboard")({
 });
 
 function RouteComponent() {
-  return <AppShell mode="library" />;
+  return null;
 }

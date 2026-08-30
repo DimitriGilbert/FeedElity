@@ -68,6 +68,20 @@ export type ReaderDensity = "comfortable" | "compact";
 
 export type BrowsableCreator = CatalogCreator | UserSubscriptionWithCreator["creator"];
 
+/**
+ * Source types a creator row should badge. Catalog and subscription creators
+ * arrive as `CatalogCreatorSummary` (which always carries `sourceTypes`), while
+ * the ingestion-internal `CatalogCreator` (still used by add-source results)
+ * carries none and badges as an empty list.
+ */
+export function toCreatorSourceTypes(creator: BrowsableCreator): readonly SourceType[] {
+  if ("sourceTypes" in creator) {
+    return creator.sourceTypes;
+  }
+
+  return [];
+}
+
 export interface ContentStatusFlags {
   readonly opened: boolean;
   readonly played: boolean;
@@ -150,6 +164,11 @@ export const creatorListSortInputId = "creator-list-sort";
 export const creatorListSortSettingKey = "creator.list.sort";
 
 export const creatorListSortValues: readonly CreatorListSort[] = ["name", "lastUpdate"];
+
+// YouTube embeds default to the privacy-enhanced youtube-nocookie.com host;
+// toggling them off persists this user setting. Lowercase only: the key must
+// satisfy settingKeyPattern (the server rejects any other casing).
+export const youtubePrivacySettingKey = "playback.youtube.nocookie";
 
 export const refreshStatusRegionId = "refresh-status-history";
 
@@ -600,6 +619,40 @@ export function toCreatorListSortFromSettings(settings: readonly UserSetting[]):
   return "name";
 }
 
+/**
+ * Parses the persisted YouTube no-cookie preference, defaulting to `true`
+ * (privacy-enhanced embeds). Settings store string values via saveSetting, so
+ * the persisted form is `JSON.stringify("true"/"false")` — parsing it yields
+ * the strings "true"/"false", which are the round-trip encoding of the save
+ * path. A bare JSON boolean is accepted as a tolerated alternative; anything
+ * else (or malformed JSON) falls back to the privacy-preserving default.
+ */
+export function toYoutubeNoCookieFromSettings(settings: readonly UserSetting[]): boolean {
+  const setting = settings.find((candidate) => candidate.key === youtubePrivacySettingKey);
+  if (setting === undefined) {
+    return true;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(setting.valueJson);
+    if (typeof parsed === "boolean") {
+      return parsed;
+    }
+
+    if (parsed === "true") {
+      return true;
+    }
+
+    if (parsed === "false") {
+      return false;
+    }
+  } catch {
+    return true;
+  }
+
+  return true;
+}
+
 export function toSafePlaybackUrl(value: string | null): string | null {
   if (value === null) {
     return null;
@@ -633,7 +686,9 @@ export function toPlayableSources(sources: readonly CatalogContentSource[]): rea
         };
       }
 
-      if (source.sourceType !== "youtube" && source.sourceType !== "peertube") {
+      // Odysee items without a native enclosure are playable through the
+      // provider's $/embed page (mirroring the YouTube/PeerTube embed path).
+      if (source.sourceType !== "youtube" && source.sourceType !== "peertube" && source.sourceType !== "odysee") {
         return null;
       }
 

@@ -75,7 +75,10 @@ describe("source ingestion service", () => {
     const dependencies = { db: testDatabase.db, sourceRegistry: registry };
 
     const first = await addSource(dependencies, { sourceInput: "https://ingest.example.test/creator-one" });
+    const keysAfterFirst = await readCrossSourceKeysBySourceExternalId(testDatabase.db);
+
     const second = await addSource(dependencies, { sourceInput: "https://ingest.example.test/creator-one" });
+    const keysAfterSecond = await readCrossSourceKeysBySourceExternalId(testDatabase.db);
 
     expect(first.ok).toBe(true);
     expect(second.ok).toBe(true);
@@ -88,6 +91,13 @@ describe("source ingestion service", () => {
     expect(second.value.creator.id).toBe(first.value.creator.id);
     expect(second.value.created).toEqual({ creators: 0, feeds: 0, contentItems: 0, contentSources: 0 });
     expect(await listCatalogContentItems(testDatabase.db)).toHaveLength(2);
+    // The mirror keys are deterministic: the repeated payload produces the exact
+    // same values instead of churning the column.
+    expect(keysAfterSecond).toEqual(keysAfterFirst);
+    expect(keysAfterSecond).toEqual([
+      ["creator-one-video-1", "creatorone:creatoronefirstvideo"],
+      ["creator-one-video-2", "creatorone:creatoronesecondvideo"],
+    ]);
   });
 
   test("a creator mirrored across sources is deduplicated by display name into one creator with multiple feeds", async () => {
@@ -108,6 +118,31 @@ describe("source ingestion service", () => {
     // The creator now carries one feed per source.
     const creatorFeeds = await listCatalogFeedsForCreator(testDatabase.db, youtube.value.creator.id);
     expect(creatorFeeds.map((feed) => feed.sourceType).sort()).toEqual(["odysee", "youtube"]);
+    // Items from both sources are keyed under the same creator name_key prefix.
+    // The odysee fixture reuses the exact YouTube title of video 1, so the
+    // mirrored pair derives the IDENTICAL cross_source_key, while video 2
+    // keeps its own distinct key.
+    expect(await readCrossSourceKeysBySourceExternalId(testDatabase.db)).toEqual([
+      ["creator-one-odysee-video-1", "creatorone:creatoronefirstvideo"],
+      ["creator-one-video-1", "creatorone:creatoronefirstvideo"],
+      ["creator-one-video-2", "creatorone:creatoronesecondvideo"],
+    ]);
+  });
+
+  test("a title that normalizes to empty yields a null cross_source_key that is not written", async () => {
+    const registry = createSourceAdapterRegistry([createFixtureAdapter()]);
+
+    const result = await addSource(
+      { db: testDatabase.db, sourceRegistry: registry },
+      { sourceInput: "https://ingest.example.test/symbol-title" },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.error.message);
+    }
+    const keys = await readCrossSourceKeysBySourceExternalId(testDatabase.db);
+    expect(keys).toEqual([["symbol-title-video-1", null]]);
   });
 
   test("anonymous source add does not create user overlay records", async () => {
@@ -360,7 +395,9 @@ const odyseeCreatorOnePayload: NormalizedCatalogPayload = {
       contentItem: {
         sourceType: "odysee",
         sourceExternalId: "creator-one-odysee-video-1",
-        title: "Creator One Odysee Video",
+        // Same title as the YouTube "creator-one-video-1" item, so the mirrored
+        // pair must collapse onto one shared cross_source_key.
+        title: "Creator One First Video",
         publishedAt: new Date("2026-01-02T00:00:00.000Z"),
         canonicalUrl: "https://odysee.ingest.example.test/@CreatorOne:1",
       },
@@ -384,6 +421,9 @@ function payloadForSource(sourceExternalId: string): NormalizedCatalogPayload {
   }
   if (sourceExternalId === "creator-two") {
     return creatorTwoPayload;
+  }
+  if (sourceExternalId === "symbol-title") {
+    return symbolTitlePayload;
   }
   return creatorOnePayload;
 }
@@ -477,6 +517,43 @@ const creatorTwoPayload: NormalizedCatalogPayload = {
   ],
 };
 
+// Every character is a symbol or emoji, so the title normalizes to an empty
+// string and ingestion must not write a cross_source_key for it.
+const symbolTitlePayload: NormalizedCatalogPayload = {
+  creator: {
+    displayName: "Symbol Creator",
+    canonicalUrl: "https://ingest.example.test/symbol-title",
+  },
+  feeds: [
+    {
+      sourceType: "youtube",
+      sourceExternalId: "symbol-title-feed",
+      url: "https://ingest.example.test/symbol-title/feed.xml",
+      title: "Symbol Creator uploads",
+    },
+  ],
+  items: [
+    {
+      contentItem: {
+        sourceType: "youtube",
+        sourceExternalId: "symbol-title-video-1",
+        title: "!!! 🚀🚀!!!",
+        canonicalUrl: "https://ingest.example.test/watch/symbol-title-video-1",
+      },
+      feedContent: { sourceExternalId: "symbol-title-video-1" },
+      sources: [
+        {
+          sourceType: "youtube",
+          sourceExternalId: "symbol-title-video-1",
+          canonicalUrl: "https://ingest.example.test/watch/symbol-title-video-1",
+          embedUrl: "https://ingest.example.test/embed/symbol-title-video-1",
+          priority: 0,
+        },
+      ],
+    },
+  ],
+};
+
 const multiFeedPayload: NormalizedCatalogPayload = {
   creator: {
     displayName: "Multi Feed Creator",
@@ -546,6 +623,17 @@ function unsupported(input: string): SourceDetectionFailure {
 async function readCreatorLastPublishedAt(db: RepositoryDb, creatorId: string): Promise<number | null> {
   const row = await db.query.creator.findFirst({ where: eq(schema.creator.id, creatorId) });
   return row === undefined || row.lastContentPublishedAt === null ? null : row.lastContentPublishedAt.getTime();
+}
+
+/** Mirror keys keyed by source external id, sorted for deterministic assertions. */
+async function readCrossSourceKeysBySourceExternalId(
+  db: RepositoryDb,
+): Promise<readonly (readonly [string, string | null])[]> {
+  const rows = await db
+    .select({ sourceExternalId: schema.contentItem.sourceExternalId, crossSourceKey: schema.contentItem.crossSourceKey })
+    .from(schema.contentItem)
+    .orderBy(schema.contentItem.sourceExternalId);
+  return rows.map((row) => [row.sourceExternalId, row.crossSourceKey] as const);
 }
 
 async function insertUser(db: RepositoryDb, id: string, email: string): Promise<void> {
@@ -621,6 +709,7 @@ const schemaStatements = [
     duration_seconds INTEGER,
     thumbnail_url TEXT,
     canonical_url TEXT,
+    cross_source_key TEXT,
     metadata_json TEXT,
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))

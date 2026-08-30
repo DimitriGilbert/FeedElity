@@ -1,7 +1,8 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as LoginRouteImport } from './routes/login'
-import { Route as DashboardRouteImport } from './routes/dashboard'
-import { Route as IndexRouteImport } from './routes/index'
+import { Route as ShellRouteImport } from './routes/_shell'
+import { Route as ShellIndexRouteImport } from './routes/_shell.index'
+import { Route as ShellDashboardRouteImport } from './routes/_shell.dashboard'
 
 const LoginRouteOptions: NonNullable<Parameters<typeof LoginRouteImport.update>[0]> & {
   id: string
@@ -13,54 +14,62 @@ const LoginRouteOptions: NonNullable<Parameters<typeof LoginRouteImport.update>[
   getParentRoute: () => rootRouteImport,
 }
 const LoginRoute = LoginRouteImport.update(LoginRouteOptions)
-const DashboardRouteOptions: NonNullable<Parameters<typeof DashboardRouteImport.update>[0]> & {
+const ShellRouteOptions: NonNullable<Parameters<typeof ShellRouteImport.update>[0]> & {
   id: string
-  path: string
   getParentRoute: () => typeof rootRouteImport
 } = {
-  id: '/dashboard',
-  path: '/dashboard',
+  id: '/_shell',
   getParentRoute: () => rootRouteImport,
 }
-const DashboardRoute = DashboardRouteImport.update(DashboardRouteOptions)
-const IndexRouteOptions: NonNullable<Parameters<typeof IndexRouteImport.update>[0]> & {
+const ShellRoute = ShellRouteImport.update(ShellRouteOptions)
+const ShellIndexRouteOptions: NonNullable<Parameters<typeof ShellIndexRouteImport.update>[0]> & {
   id: string
   path: string
-  getParentRoute: () => typeof rootRouteImport
+  getParentRoute: () => typeof ShellRoute
 } = {
   id: '/',
   path: '/',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => ShellRoute,
 }
-const IndexRoute = IndexRouteImport.update(IndexRouteOptions)
+const ShellIndexRoute = ShellIndexRouteImport.update(ShellIndexRouteOptions)
+const ShellDashboardRouteOptions: NonNullable<Parameters<typeof ShellDashboardRouteImport.update>[0]> & {
+  id: string
+  path: string
+  getParentRoute: () => typeof ShellRoute
+} = {
+  id: '/dashboard',
+  path: '/dashboard',
+  getParentRoute: () => ShellRoute,
+}
+const ShellDashboardRoute = ShellDashboardRouteImport.update(ShellDashboardRouteOptions)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
-  '/dashboard': typeof DashboardRoute
+  '/': typeof ShellIndexRoute
   '/login': typeof LoginRoute
+  '/dashboard': typeof ShellDashboardRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
-  '/dashboard': typeof DashboardRoute
   '/login': typeof LoginRoute
+  '/dashboard': typeof ShellDashboardRoute
+  '/': typeof ShellIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
-  '/dashboard': typeof DashboardRoute
+  '/_shell': typeof ShellRouteWithChildren
   '/login': typeof LoginRoute
+  '/_shell/dashboard': typeof ShellDashboardRoute
+  '/_shell/': typeof ShellIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/dashboard' | '/login'
+  fullPaths: '/' | '/login' | '/dashboard'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/dashboard' | '/login'
-  id: '__root__' | '/' | '/dashboard' | '/login'
+  to: '/login' | '/dashboard' | '/'
+  id: '__root__' | '/_shell' | '/login' | '/_shell/dashboard' | '/_shell/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
-  DashboardRoute: typeof DashboardRoute
+  ShellRoute: typeof ShellRouteWithChildren
   LoginRoute: typeof LoginRoute
 }
 
@@ -73,26 +82,44 @@ declare module '@tanstack/solid-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/dashboard': {
-      id: '/dashboard'
-      path: '/dashboard'
-      fullPath: '/dashboard'
-      preLoaderRoute: typeof DashboardRouteImport
+    '/_shell': {
+      id: '/_shell'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof ShellRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/': {
-      id: '/'
+    '/_shell/': {
+      id: '/_shell/'
       path: '/'
       fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof ShellIndexRouteImport
+      parentRoute: typeof ShellRoute
+    }
+    '/_shell/dashboard': {
+      id: '/_shell/dashboard'
+      path: '/dashboard'
+      fullPath: '/dashboard'
+      preLoaderRoute: typeof ShellDashboardRouteImport
+      parentRoute: typeof ShellRoute
     }
   }
 }
 
+interface ShellRouteChildren {
+  ShellDashboardRoute: typeof ShellDashboardRoute
+  ShellIndexRoute: typeof ShellIndexRoute
+}
+
+const ShellRouteChildren: ShellRouteChildren = {
+  ShellDashboardRoute: ShellDashboardRoute,
+  ShellIndexRoute: ShellIndexRoute,
+}
+
+const ShellRouteWithChildren = ShellRoute._addFileChildren(ShellRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
-  DashboardRoute: DashboardRoute,
+  ShellRoute: ShellRouteWithChildren,
   LoginRoute: LoginRoute,
 }
 export const routeTree = rootRouteImport

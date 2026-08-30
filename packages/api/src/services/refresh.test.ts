@@ -266,7 +266,7 @@ describe("manual refresh orchestration", () => {
     expect(result.selectedFeeds).toHaveLength(4);
     expect(result.feedResults).toHaveLength(4);
     expect(result.run).toMatchObject({ force: true, feedsRequestedCount: 4, feedsSucceededCount: 4, feedsSkippedCount: 0 });
-    expect(waitedMilliseconds).toEqual([3_000, 3_000, 3_000]);
+    expect(waitedMilliseconds).toEqual([1_000, 1_000, 1_000]);
   });
 
   test("refresh skips the wait when the last two completed feeds used different providers", async () => {
@@ -282,7 +282,7 @@ describe("manual refresh orchestration", () => {
     }), { force: true });
 
     expect(result.selectedFeeds.map((feed) => feed.sourceType)).toEqual(["youtube", "odysee", "youtube"]);
-    expect(waitedMilliseconds).toEqual([3_000]);
+    expect(waitedMilliseconds).toEqual([1_000]);
   });
 
   test("provider refusals defer subsequent feed queries for that provider", async () => {
@@ -702,6 +702,7 @@ const schemaStatements = [
     duration_seconds INTEGER,
     thumbnail_url TEXT,
     canonical_url TEXT,
+    cross_source_key TEXT,
     metadata_json TEXT,
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer))

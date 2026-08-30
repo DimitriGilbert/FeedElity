@@ -7,7 +7,7 @@ import type {
   SourceType,
   UserContentStatus,
 } from "@FeedElity/api";
-import { For, Match, Show, Switch, createEffect, createMemo, createResource, createSignal, untrack } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createMemo, createResource, createSignal, on, untrack } from "solid-js";
 import CheckCircle from "lucide-solid/icons/circle-check";
 import ChevronDown from "lucide-solid/icons/chevron-down";
 import ChevronUp from "lucide-solid/icons/chevron-up";
@@ -258,6 +258,7 @@ export interface ContentListColumnProps {
   readonly selectedPlaylistId: () => string | null;
   readonly selectedCollectionId: () => string | null;
   readonly onClearCollection: () => void;
+  readonly onClearCreator: () => void;
   readonly collectionsReloadKey: () => number;
   readonly selectedCreator: () => BrowsableCreator | null;
   readonly selectedFeed: () => CatalogFeed | null;
@@ -266,7 +267,6 @@ export interface ContentListColumnProps {
   readonly subscriptionsReloadKey: () => number;
   readonly favoritesReloadKey: () => number;
   readonly contentStatuses: () => readonly UserContentStatus[];
-  readonly statusReloadKey: () => number;
   readonly listLiveReloadKey: () => number;
   readonly middlePanePanel: () => MiddlePanePanel | null;
   readonly onCloseMiddlePanePanel: () => void;
@@ -312,6 +312,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
 
   const authenticatedPlaylistSource = createMemo(() => (props.isAuthenticated() ? "content-list-playlists" : null));
   const [playlists] = createResource(authenticatedPlaylistSource, () => client.overlays.playlists());
+  const playlistsValue = createMemo(() => playlists.latest);
   const selectedCollectionMemberSource = createMemo(() => {
     if (!props.isAuthenticated()) {
       return null;
@@ -322,19 +323,21 @@ export function ContentListColumn(props: ContentListColumnProps) {
   const [selectedCollectionMembers] = createResource(selectedCollectionMemberSource, (collectionId) =>
     client.overlays.collectionMembers({ collectionId }),
   );
+  const selectedCollectionMembersValue = createMemo(() => selectedCollectionMembers.latest);
   const collectionMemberCreatorIds = createMemo(
-    () => new Set((selectedCollectionMembers() ?? emptyCollectionMembers).map((member) => member.creatorId)),
+    () => new Set((selectedCollectionMembersValue() ?? emptyCollectionMembers).map((member) => member.creatorId)),
   );
   const collectionsResourceSource = createMemo(() =>
     props.isAuthenticated() ? `content-list-collections-${props.collectionsReloadKey().toString()}` : null,
   );
   const [collections] = createResource(collectionsResourceSource, () => client.overlays.collections());
+  const collectionsValue = createMemo(() => collections.latest);
   const selectedCollectionName = createMemo(() => {
     const collectionId = props.selectedCollectionId();
     if (collectionId === null) {
       return null;
     }
-    return collections()?.find((collection) => collection.id === collectionId)?.name ?? null;
+    return collectionsValue()?.find((collection) => collection.id === collectionId)?.name ?? null;
   });
   const contentListInput = createMemo(() =>
     toContentListInput(
@@ -366,12 +369,14 @@ export function ContentListColumn(props: ContentListColumnProps) {
   });
   const contentItemsResourceKey = createMemo(() => {
     const mode = contentItemsResourceMode();
+    // History views are snapshots: opened/played markers propagate through local
+    // status patches (app-shell.tsx patchContentStatus/removeContentStatus)
+    // instead of a reload key, so selecting or playing a video never refetches
+    // or reorders the history list under the user's cursor.
     const reloadKey = mode === "subscribed"
       ? props.subscriptionsReloadKey()
       : mode === "favorites"
       ? props.favoritesReloadKey()
-      : mode === "history-opened" || mode === "played"
-      ? props.statusReloadKey()
       : props.catalogReloadKey();
     // listLiveReloadKey ticks per-feed during a refresh so the list refetches on
     // the fly as content is ingested. It is intentionally a separate signal from
@@ -392,23 +397,26 @@ export function ContentListColumn(props: ContentListColumnProps) {
   const contentItemsQueryKey = createMemo(() =>
     toContentItemsQueryKey(contentItemsResourceMode(), contentListInput()),
   );
-  const favoriteItemsResourceInput = createMemo(() => {
-    if (!props.isAuthenticated() || contentItemsResourceMode() === "favorites") {
-      return null;
-    }
-
-    return props.favoritesReloadKey();
-  });
+  // The favorites overlay source is deliberately NOT keyed on
+  // favoritesReloadKey: re-keying it on every viewer-side toggle would
+  // re-suspend the resource read below and blank the whole column. The
+  // on-effect after the resource refetches in place on each bump instead.
+  const favoriteItemsResourceInput = createMemo(() => (props.isAuthenticated() ? "content-list-favorite-items" : null));
   const [favoriteItems, { refetch: refetchFavoriteItems }] = createResource(favoriteItemsResourceInput, () =>
     client.overlays.favoriteContentItems(),
   );
+  const favoriteItemsValue = createMemo(() => favoriteItems.latest);
+  // Viewer-side favorite toggles bump favoritesReloadKey from app-shell.tsx.
+  // The bump refetches this overlay in place (server reconciliation) while the
+  // .latest read keeps the column mounted — no suspense, no blank.
+  createEffect(on(() => props.favoritesReloadKey(), () => { void refetchFavoriteItems(); }, { defer: true }));
   const favoriteContentItemIds = createMemo(() => {
-    const favoriteSourceItems = contentItemsResourceMode() === "favorites" ? contentItemsValue() : favoriteItems();
+    const favoriteSourceItems = contentItemsResourceMode() === "favorites" ? contentItemsValue() : favoriteItemsValue();
 
     return new Set((favoriteSourceItems ?? emptyCatalogContentItems).map((contentItem) => contentItem.id));
   });
   const listTargetPlaylistId = createMemo(() => {
-    const loadedPlaylists = playlists() ?? emptyPlaylists;
+    const loadedPlaylists = playlistsValue() ?? emptyPlaylists;
     const selectedId = props.selectedPlaylistId();
 
     if (selectedId !== null && loadedPlaylists.some((playlist) => playlist.id === selectedId)) {
@@ -608,6 +616,24 @@ export function ContentListColumn(props: ContentListColumnProps) {
                 aria-label="Clear collection filter"
                 title="Clear collection filter"
                 onClick={() => props.onClearCollection()}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          )}
+        </Show>
+        <Show when={props.selectedCreator()}>
+          {(creator) => (
+            <div class="mt-2 flex items-center gap-2" data-creator-filter-active>
+              <span class="min-w-0 flex-1 truncate rounded-md border border-border bg-muted px-2 py-1 text-[0.72rem] text-muted-foreground">
+                Creator: {creator().displayName}
+              </span>
+              <button
+                type="button"
+                class="shrink-0 rounded-md border border-border bg-background p-1 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                aria-label="Clear creator filter"
+                title="Clear creator filter"
+                onClick={() => props.onClearCreator()}
               >
                 <X size={12} />
               </button>
