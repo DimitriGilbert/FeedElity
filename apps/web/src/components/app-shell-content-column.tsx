@@ -17,6 +17,7 @@ import Heart from "lucide-solid/icons/heart";
 import LayoutGrid from "lucide-solid/icons/layout-grid";
 import X from "lucide-solid/icons/x";
 
+import { clampActiveIndex } from "@/lib/keyboard-shortcuts";
 import { client } from "@/utils/orpc";
 
 import { ContentListItemRow } from "./app-shell-rows";
@@ -255,6 +256,18 @@ function ContentLoadMoreControl(props: ContentLoadMoreControlProps) {
   );
 }
 
+/**
+ * One keyboard-shortcut command issued by AppShell's single window keydown
+ * listener (qol-features-plan.md F3). AppShell sends a fresh object per
+ * keypress and the column executes it against its own active-row state —
+ * declarative prop data flow instead of an imperative handle, so the column
+ * keeps ownership of activeIndex and of the two scroll mechanisms.
+ */
+export type ContentShortcutCommand =
+  | { readonly kind: "move"; readonly delta: 1 | -1 }
+  | { readonly kind: "open" }
+  | { readonly kind: "toggle-favorite" };
+
 export interface ContentListColumnProps {
   readonly isAuthenticated: () => boolean;
   readonly mode: ShellMode;
@@ -273,6 +286,8 @@ export interface ContentListColumnProps {
   readonly contentStatuses: () => readonly UserContentStatus[];
   readonly listLiveReloadKey: () => number;
   readonly middlePanePanel: () => MiddlePanePanel | null;
+  readonly searchClearKey: () => number;
+  readonly contentShortcutCommand: () => ContentShortcutCommand | null;
   readonly onCloseMiddlePanePanel: () => void;
   readonly onAddSource: (value: AddSourceValue) => Promise<void>;
   readonly onSelectContent: (contentItem: CatalogContentListItem) => Promise<void>;
@@ -293,6 +308,10 @@ export function ContentListColumn(props: ContentListColumnProps) {
   const [contentPageBusy, setContentPageBusy] = createSignal(false);
   const [contentPageError, setContentPageError] = createSignal<string | null>(null);
   const [controlsExpanded, setControlsExpanded] = createSignal(false);
+  // Failure surface for keyboard-shortcut commands (currently the f toggle):
+  // shortcut failures must be visible even though the row action cluster they
+  // normally report through is hover-only.
+  const [contentCommandError, setContentCommandError] = createSignal<string | null>(null);
 
   createEffect(() => {
     if (props.middlePanePanel() !== null) {
@@ -467,6 +486,18 @@ export function ContentListColumn(props: ContentListColumnProps) {
       : visibleItems;
   });
   const contentCount = createMemo(() => displayedContentItems().length);
+  // Keyboard-active row for the j/k shortcuts (qol-features-plan.md F3). The
+  // raw index lives in the signal; the memo clamps it against the displayed
+  // list length so the active row can never point outside the rendered list
+  // even when local filters shrink it without a resource-key change.
+  const [requestedActiveIndex, setRequestedActiveIndex] = createSignal(0);
+  const activeIndex = createMemo(() => clampActiveIndex(requestedActiveIndex(), displayedContentItems().length));
+  const activeContentItemId = createMemo(() => displayedContentItems()[activeIndex()]?.id ?? null);
+  // j/k restart from the top whenever the list identity (mode, filters, reload
+  // tick) changes, per the F3 spec.
+  createEffect(on(contentItemsResourceKey, () => setRequestedActiveIndex(0), { defer: true }));
+  // Escape clears both column searches through the shared app-shell counter.
+  createEffect(on(() => props.searchClearKey(), () => setSearch(""), { defer: true }));
   // List progress for opened rows: contentItemId -> the playback position
   // parsed from the opened row's metadataJson. Played rows and unparseable
   // metadata contribute nothing (toPlaybackPositionsByItemId).
@@ -526,6 +557,79 @@ export function ContentListColumn(props: ContentListColumnProps) {
     }
   };
 
+  // Scroll follow-up for j/k. On lg the virtualizer scrolls the active index
+  // into its window; below lg the plain list is scanned by the same
+  // data-content-item-id attribute both branches render on their <li>. The
+  // row is always mounted here: the index was just clamped against this same
+  // array and the list branch renders from it, so a single immediate lookup
+  // is enough.
+  const scrollActiveRowIntoView = (index: number): void => {
+    if (isDesktopViewport()) {
+      contentVirtualizer.scrollToIndex(index);
+      return;
+    }
+
+    const region = contentScrollRegionEl;
+    const activeItem = displayedContentItems()[index];
+    if (region === undefined || activeItem === undefined) {
+      return;
+    }
+
+    const rows = region.querySelectorAll<HTMLElement>("[data-content-item-id]");
+    for (const row of rows) {
+      if (row.dataset.contentItemId === activeItem.id) {
+        row.scrollIntoView({ block: "nearest" });
+        return;
+      }
+    }
+  };
+
+  // Executes one command sent by AppShell's keydown listener. on() keeps the
+  // effect's only dependency on the command itself, so the activeIndex and
+  // list reads below stay untracked.
+  const executeContentShortcutCommand = async (command: ContentShortcutCommand) => {
+    if (command.kind === "move") {
+      setRequestedActiveIndex(requestedActiveIndex() + command.delta);
+      scrollActiveRowIntoView(activeIndex());
+      return;
+    }
+
+    const activeItem = displayedContentItems()[activeIndex()];
+    if (activeItem === undefined) {
+      return;
+    }
+
+    if (command.kind === "open") {
+      await props.onSelectContent(activeItem);
+      return;
+    }
+
+    // The favorite overlay is authenticated-only (the row action cluster
+    // renders behind the same gate), so an anonymous f press stays a no-op.
+    if (!props.isAuthenticated()) {
+      return;
+    }
+
+    setContentCommandError(null);
+    try {
+      await toggleFavorite(activeItem.id);
+    } catch (error) {
+      setContentCommandError(formatError(error));
+    }
+  };
+
+  createEffect(
+    on(
+      () => props.contentShortcutCommand(),
+      (command) => {
+        if (command !== null) {
+          void executeContentShortcutCommand(command);
+        }
+      },
+      { defer: true },
+    ),
+  );
+
   const markOpened = async (contentItemId: string) => {
     await props.onMarkContentOpened(contentItemId);
   };
@@ -555,6 +659,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
       status={() => toContentStatusFlags(props.contentStatuses(), contentItem.id)}
       playbackPosition={() => playbackPositionByItemId().get(contentItem.id) ?? null}
       selected={() => props.selectedContentItemId() === contentItem.id}
+      active={() => activeContentItemId() === contentItem.id}
       favoritesView={() => viewMode() === "favorites"}
       readerDensity={props.readerDensity}
       targetPlaylistId={listTargetPlaylistId}
@@ -696,6 +801,9 @@ export function ContentListColumn(props: ContentListColumnProps) {
             </div>
           )}
         </Show>
+        <Show when={contentCommandError()}>
+          {(message) => <p class="mt-2 text-xs text-destructive" data-content-command-error>{message()}</p>}
+        </Show>
         <Show when={controlsExpanded()}>
           <Show when={props.isAuthenticated()}>
             <div class="mt-2 grid grid-cols-4 gap-2" aria-label="Content view">
@@ -832,7 +940,9 @@ export function ContentListColumn(props: ContentListColumnProps) {
               fallback={
                 <ol aria-label={`${visibleContentCollectionLabel()} videos, ${contentCount()} shown`}>
                   <For each={displayedContentItems()}>
-                    {(contentItem) => <li>{renderContentItemRow(contentItem)}</li>}
+                    {(contentItem) => (
+                      <li data-content-item-id={contentItem.id}>{renderContentItemRow(contentItem)}</li>
+                    )}
                   </For>
                 </ol>
               }

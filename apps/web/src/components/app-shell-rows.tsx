@@ -329,6 +329,10 @@ export interface ContentListItemRowProps {
   readonly status: () => ContentStatusFlags;
   readonly playbackPosition: () => PlaybackPosition | null;
   readonly selected: () => boolean;
+  // Keyboard-active row (j/k): renders the SAME highlight classes as
+  // selected() but never claims selection semantics — data-active marks it,
+  // aria-current stays reserved for the actually-selected row.
+  readonly active: () => boolean;
   readonly favoritesView: () => boolean;
   readonly readerDensity: () => ReaderDensity;
   readonly targetPlaylistId: () => string | null;
@@ -361,6 +365,7 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
   const status = createMemo(() => props.status());
   const playbackPosition = createMemo(() => props.playbackPosition());
   const selected = createMemo(() => props.selected());
+  const active = createMemo(() => props.active());
   const favoritesView = createMemo(() => props.favoritesView());
   const readerDensity = createMemo(() => props.readerDensity());
   const targetPlaylistId = createMemo(() => props.targetPlaylistId());
@@ -424,8 +429,9 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
 
   return (
     <div
-      class={`group relative border-b border-border ${readerDensityPaddingClass(readerDensity())} transition hover:bg-accent hover:text-accent-foreground ${selected() ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : status().played ? "bg-muted" : status().opened ? "bg-card" : "bg-background"}`}
+      class={`group relative border-b border-border ${readerDensityPaddingClass(readerDensity())} transition hover:bg-accent hover:text-accent-foreground ${selected() || active() ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : status().played ? "bg-muted" : status().opened ? "bg-card" : "bg-background"}`}
       data-selected={selected() ? "true" : "false"}
+      data-active={active() ? "true" : "false"}
       data-opened={status().opened ? "true" : "false"}
       data-played={status().played ? "true" : "false"}
       data-favorite={isFavorite() ? "true" : "false"}

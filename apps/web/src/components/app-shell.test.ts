@@ -1722,6 +1722,87 @@ test("content list virtualizes on lg only with stable keys and variable row heig
   expect(source).toContain("<ContentLoadMoreControl");
 });
 
+test("keyboard shortcuts bind one guarded window keydown listener and route every action", async () => {
+  const source = await readAppShellSource();
+
+  // ONE listener for the whole shell, registered on mount and removed on
+  // dispose (the user-menu.tsx listener pattern).
+  expect(source).toContain("window.addEventListener(\"keydown\", handleShellKeyDown);");
+  expect(source).toContain("onCleanup(() => window.removeEventListener(\"keydown\", handleShellKeyDown));");
+  // Guards: text-entry targets and open native dialogs short-circuit first.
+  expect(source).toContain("if (isShortcutTargetBlocked(event.target) || isDialogOpen()) {");
+  // The g prefix resolves through the pure keymap and its lifecycle updates
+  // on every non-guarded keydown.
+  expect(source).toContain("const action = resolveShortcut(event, goPrefixActive);");
+  expect(source).toContain("goPrefixActive = nextGoPrefixActive(event, goPrefixActive);");
+  // Enter keeps native activation on interactive elements.
+  expect(source).toContain("if (action === \"open-active\" && isActivationTarget(event.target)) {");
+  // Action routing: "/" focuses the creator search, Escape clears the
+  // selection AND both column searches through the shared counter, g l / g c
+  // navigate through the router (the dashboard guard handles anonymous users).
+  expect(source).toContain("document.getElementById(creatorSearchInputId)?.focus();");
+  expect(source).toContain("const [searchClearKey, setSearchClearKey] = createSignal(0);");
+  expect(source).toContain("case \"clear-selection\":\n        clearSelectedCreator();\n        setSearchClearKey((key) => key + 1);");
+  expect(source).toContain("void navigate({ to: \"/dashboard\" });");
+  expect(source).toContain("void navigate({ to: \"/\" });");
+  // j/k/Enter/f are delegated to the content column as typed commands.
+  expect(source).toContain("const [contentShortcutCommand, setContentShortcutCommand] = createSignal<ContentShortcutCommand | null>(null);");
+  expect(source).toContain("setContentShortcutCommand({ kind: \"move\", delta: 1 });");
+  expect(source).toContain("setContentShortcutCommand({ kind: \"move\", delta: -1 });");
+  expect(source).toContain("setContentShortcutCommand({ kind: \"open\" });");
+  expect(source).toContain("setContentShortcutCommand({ kind: \"toggle-favorite\" });");
+  // Both columns observe the search-clear counter; the content column also
+  // receives the command stream.
+  expect((source.match(/searchClearKey=\{searchClearKey\}/g) ?? [])).toHaveLength(2);
+  expect(source).toContain("contentShortcutCommand={contentShortcutCommand}");
+  expect((source.match(/createEffect\(on\(\(\) => props\.searchClearKey\(\), \(\) => setSearch\(\"\"\), \{ defer: true \}\)\);/g) ?? [])).toHaveLength(2);
+});
+
+test("content column owns the keyboard-active row with clamped moves and both scroll paths", async () => {
+  const source = await Bun.file(new URL("./app-shell-content-column.tsx", import.meta.url)).text();
+
+  // The active row state lives in the column that renders the list: the raw
+  // signal is clamped through the pure keymap helper against the displayed
+  // list length, and resets when the list identity changes.
+  expect(source).toContain("const [requestedActiveIndex, setRequestedActiveIndex] = createSignal(0);");
+  expect(source).toContain("const activeIndex = createMemo(() => clampActiveIndex(requestedActiveIndex(), displayedContentItems().length));");
+  expect(source).toContain("const activeContentItemId = createMemo(() => displayedContentItems()[activeIndex()]?.id ?? null);");
+  expect(source).toContain("createEffect(on(contentItemsResourceKey, () => setRequestedActiveIndex(0), { defer: true }));");
+  // Commands execute against the active row: moves clamp then scroll, Enter
+  // opens through onSelectContent, f reuses the column's toggleFavorite path.
+  expect(source).toContain("if (command.kind === \"move\") {");
+  expect(source).toContain("setRequestedActiveIndex(requestedActiveIndex() + command.delta);");
+  expect(source).toContain("scrollActiveRowIntoView(activeIndex());");
+  expect(source).toContain("await props.onSelectContent(activeItem);");
+  expect(source).toContain("await toggleFavorite(activeItem.id);");
+  // f is an authenticated overlay action: anonymous presses stay no-ops.
+  expect(source).toContain("if (!props.isAuthenticated()) {\n      return;\n    }");
+  // Scroll: virtualizer.scrollToIndex on lg, row lookup below lg. The
+  // below-lg <li> must carry the lookup attribute on BOTH branches.
+  expect(source).toContain("if (isDesktopViewport()) {\n      contentVirtualizer.scrollToIndex(index);");
+  expect(source).toContain("const rows = region.querySelectorAll<HTMLElement>(\"[data-content-item-id]\");");
+  expect(source).toContain("row.scrollIntoView({ block: \"nearest\" });");
+  expect(source).toContain("<li data-content-item-id={contentItem.id}>");
+  expect(source).toContain("data-content-item-id={displayedContentItems()[virtualItem.index]?.id ?? \"\"}");
+  // The active row is highlighted through the shared row renderer.
+  expect(source).toContain("active={() => activeContentItemId() === contentItem.id}");
+  // Shortcut failures surface in the column instead of being swallowed.
+  expect(source).toContain("data-content-command-error");
+  expect(source).toContain("setContentCommandError(formatError(error));");
+});
+
+test("content rows expose keyboard-active state without claiming selection semantics", async () => {
+  const source = await readAppShellSource();
+
+  expect(source).toContain("readonly active: () => boolean;");
+  // Active maps to the SAME visual classes as selected...
+  expect(source).toContain("selected() || active() ? \"bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground\"");
+  // ...but is marked data-active; aria-current stays reserved for selection.
+  expect(source).toContain("data-active={active() ? \"true\" : \"false\"}");
+  expect(source).toContain("data-selected={selected() ? \"true\" : \"false\"}");
+  expect((source.match(/aria-current=/g) ?? [])).toHaveLength(1);
+});
+
 test("desktop media query binding pushes current state forwards changes and unsubscribes", () => {
   expect(desktopMediaQuery).toBe("(min-width: 1024px)");
 

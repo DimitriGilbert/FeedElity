@@ -10,6 +10,7 @@ import type {
   UserSubscriptionWithCreator,
 } from "@FeedElity/api";
 import { For, Match, Show, Suspense, Switch, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
+import { useNavigate } from "@tanstack/solid-router";
 import ArrowDownAZ from "lucide-solid/icons/arrow-down-a-z";
 import ClockArrowDown from "lucide-solid/icons/clock-arrow-down";
 import LayoutGrid from "lucide-solid/icons/layout-grid";
@@ -22,10 +23,17 @@ import X from "lucide-solid/icons/x";
 import Zap from "lucide-solid/icons/zap";
 
 import { authClient } from "@/lib/auth-client";
+import {
+  isActivationTarget,
+  isDialogOpen,
+  isShortcutTargetBlocked,
+  nextGoPrefixActive,
+  resolveShortcut,
+} from "@/lib/keyboard-shortcuts";
 import { createDebouncedValue } from "@/utils/debounce";
 import { client } from "@/utils/orpc";
 
-import { ContentListColumn } from "./app-shell-content-column";
+import { ContentListColumn, type ContentShortcutCommand } from "./app-shell-content-column";
 import { PaneResizer } from "./pane-resizer";
 import { CreatorSourceRow, FeedRow } from "./app-shell-rows";
 import { RefreshStatusDialog } from "./refresh-status-dialog";
@@ -265,6 +273,7 @@ interface CreatorSourceColumnProps {
   readonly collectionsReloadKey: () => number;
   readonly onCollectionsChanged: () => void;
   readonly middlePanePanel: () => MiddlePanePanel | null;
+  readonly searchClearKey: () => number;
   readonly onContentListLiveReload: () => void;
   readonly onSubscriptionsChanged: () => void;
   readonly onClearCreator: () => void;
@@ -328,6 +337,9 @@ function LoadMoreControl(props: LoadMoreControlProps) {
 
 function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [search, setSearch] = createSignal("");
+  // Escape (via the shared app-shell searchClearKey counter) resets the
+  // creator search alongside the content-column search.
+  createEffect(on(() => props.searchClearKey(), () => setSearch(""), { defer: true }));
   // User-typed input debounce: the creator list (the catalog fetch input and
   // the client-side library filter) follows the search field only after typing
   // has settled for 300 ms, so catalog search no longer refetches per
@@ -1153,6 +1165,7 @@ export interface AppShellProps {
 
 export default function AppShell(props: AppShellProps) {
   const mode = () => props.mode ?? "catalog";
+  const navigate = useNavigate();
   const session = authClient.useSession();
   // Single auth gate for every overlay resource below, derived straight from
   // the better-auth session hook (the same source the header uses) so startup
@@ -1170,6 +1183,13 @@ export default function AppShell(props: AppShellProps) {
   const [subscriptionsReloadKey, setSubscriptionsReloadKey] = createSignal(0);
   const [favoritesReloadKey, setFavoritesReloadKey] = createSignal(0);
   const [listLiveReloadKey, setListLiveReloadKey] = createSignal(0);
+  // Escape clears the creator/content column searches: bumping this counter is
+  // observed by both columns, which reset their local search signals.
+  const [searchClearKey, setSearchClearKey] = createSignal(0);
+  // Keyboard-shortcut commands for the content column (j/k/Enter/f). Each
+  // keypress sends a fresh command object the column executes against its own
+  // active-row state.
+  const [contentShortcutCommand, setContentShortcutCommand] = createSignal<ContentShortcutCommand | null>(null);
   const [statusSelectionError, setStatusSelectionError] = createSignal<string | null>(null);
   const [activeTab, setActiveTab] = createSignal<LeftPaneTab>("library");
   const [middlePanePanel, setMiddlePanePanel] = createSignal<MiddlePanePanel | null>(null);
@@ -1266,6 +1286,66 @@ export default function AppShell(props: AppShellProps) {
     setSelectedFeed(null);
     setSelectedContent(null);
   };
+
+  // F3 keyboard shortcuts: ONE window keydown listener for the whole shell,
+  // removed on dispose (the user-menu.tsx listener pattern). Text-entry
+  // targets and open dialogs never receive shell shortcuts, and they cancel a
+  // pending g prefix so it cannot leak across guard boundaries.
+  let goPrefixActive = false;
+  const handleShellKeyDown = (event: KeyboardEvent) => {
+    if (isShortcutTargetBlocked(event.target) || isDialogOpen()) {
+      goPrefixActive = false;
+      return;
+    }
+
+    const action = resolveShortcut(event, goPrefixActive);
+    goPrefixActive = nextGoPrefixActive(event, goPrefixActive);
+    if (action === null) {
+      return;
+    }
+
+    // Enter keeps its native activation on interactive elements (row buttons,
+    // tabs, resizer); only a passive target opens the active content row.
+    if (action === "open-active" && isActivationTarget(event.target)) {
+      return;
+    }
+
+    event.preventDefault();
+    switch (action) {
+      case "move-down":
+        setContentShortcutCommand({ kind: "move", delta: 1 });
+        return;
+      case "move-up":
+        setContentShortcutCommand({ kind: "move", delta: -1 });
+        return;
+      case "open-active":
+        setContentShortcutCommand({ kind: "open" });
+        return;
+      case "toggle-favorite":
+        setContentShortcutCommand({ kind: "toggle-favorite" });
+        return;
+      case "focus-creator-search":
+        document.getElementById(creatorSearchInputId)?.focus();
+        return;
+      case "clear-selection":
+        clearSelectedCreator();
+        setSearchClearKey((key) => key + 1);
+        return;
+      case "go-library":
+        // The dashboard route's beforeLoad auth-guard redirects anonymous
+        // users to login.
+        void navigate({ to: "/dashboard" });
+        return;
+      case "go-catalog":
+        void navigate({ to: "/" });
+        return;
+    }
+  };
+
+  onMount(() => {
+    window.addEventListener("keydown", handleShellKeyDown);
+    onCleanup(() => window.removeEventListener("keydown", handleShellKeyDown));
+  });
 
   const patchContentStatus = (status: UserContentStatus) => {
     mutateContentStatuses((currentStatuses = emptyUserContentStatuses) => [
@@ -1446,6 +1526,7 @@ export default function AppShell(props: AppShellProps) {
           collectionsReloadKey={collectionsReloadKey}
           onCollectionsChanged={() => setCollectionsReloadKey((key) => key + 1)}
           middlePanePanel={middlePanePanel}
+          searchClearKey={searchClearKey}
           onContentListLiveReload={() => setListLiveReloadKey((key) => key + 1)}
           onSubscriptionsChanged={() => setSubscriptionsReloadKey((key) => key + 1)}
           onClearCreator={clearSelectedCreator}
@@ -1477,6 +1558,8 @@ export default function AppShell(props: AppShellProps) {
           contentStatuses={() => contentStatuses() ?? emptyUserContentStatuses}
           listLiveReloadKey={listLiveReloadKey}
           middlePanePanel={middlePanePanel}
+          searchClearKey={searchClearKey}
+          contentShortcutCommand={contentShortcutCommand}
           onCloseMiddlePanePanel={() => setMiddlePanePanel(null)}
           onAddSource={async (value) => {
             if (mode() === "library") {
