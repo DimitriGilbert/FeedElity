@@ -30,10 +30,12 @@ import {
   desktopShellGridClass,
   feedListLimit,
   firstPageOffset,
+  formatPlaybackPosition,
   formatRefreshReportSummary,
   formatRefreshRunSummary,
   formatSettingValue,
   hidePlayedLocalStorageKey,
+  isYouTubeEmbedUrl,
   parseRefreshErrorSummaries,
   getShellColumnCount,
   hasInternalAppHeader,
@@ -63,6 +65,7 @@ import {
   shellPaneIds,
   shellRootClass,
   showsCatalogFilters,
+  shouldFlushPlaybackPosition,
   sourceActionsRegionClass,
   sourceCatalogRegionClass,
   sourceColumnClass,
@@ -71,7 +74,9 @@ import {
   sourceHeaderRegionClass,
   toContentListInput,
   toDesktopColumnTemplate,
+  toEmbedUrlWithApi,
   toFeedListInput,
+  toPlaybackPosition,
   toPlayableSources,
   toCreatorListSortFromSettings,
   toCreatorSourceTypes,
@@ -952,6 +957,98 @@ test("odysee embed sources are playable while odysee sources without any URL sta
   expect(toPlayableSources(odyseeUnplayable)).toEqual([]);
 });
 
+test("toPlaybackPosition parses the opened-row playback metadata narrowly", () => {
+  expect(toPlaybackPosition(null)).toBeNull();
+  expect(toPlaybackPosition("not json")).toBeNull();
+  expect(toPlaybackPosition("{}")).toBeNull();
+  expect(toPlaybackPosition(JSON.stringify({ playback: null }))).toBeNull();
+  expect(toPlaybackPosition(JSON.stringify({ playback: "fast" }))).toBeNull();
+  expect(toPlaybackPosition(JSON.stringify({ playback: {} }))).toBeNull();
+  expect(toPlaybackPosition(JSON.stringify({ playback: { positionSeconds: "12" } }))).toBeNull();
+  expect(toPlaybackPosition(JSON.stringify({ playback: { positionSeconds: -1 } }))).toBeNull();
+  // 1e999 overflows to Infinity during JSON.parse and must be rejected.
+  expect(toPlaybackPosition('{"playback":{"positionSeconds":1e999}}')).toBeNull();
+  expect(toPlaybackPosition(JSON.stringify({ playback: { positionSeconds: 754, durationSeconds: -5 } }))).toBeNull();
+  expect(toPlaybackPosition(JSON.stringify({ playback: { positionSeconds: 754, durationSeconds: "45:00" } }))).toBeNull();
+  expect(toPlaybackPosition(JSON.stringify("754"))).toBeNull();
+
+  expect(
+    toPlaybackPosition(JSON.stringify({ playback: { positionSeconds: 754, durationSeconds: 2700, updatedAt: "2026-08-30T00:00:00.000Z" } })),
+  ).toEqual({ positionSeconds: 754, durationSeconds: 2700 });
+  // Phase 2 persists durationSeconds: null when the duration is unknown.
+  expect(
+    toPlaybackPosition(JSON.stringify({ playback: { positionSeconds: 754, durationSeconds: null, updatedAt: "2026-08-30T00:00:00.000Z" } })),
+  ).toEqual({ positionSeconds: 754, durationSeconds: null });
+  expect(toPlaybackPosition(JSON.stringify({ playback: { positionSeconds: 0, durationSeconds: 0 } }))).toEqual({
+    positionSeconds: 0,
+    durationSeconds: 0,
+  });
+});
+
+test("toEmbedUrlWithApi rewrites only allowlisted YouTube embed URLs", () => {
+  const appOrigin = "https://app.example.test";
+
+  // Existing params are preserved; enablejsapi and origin are set.
+  expect(toEmbedUrlWithApi("https://www.youtube-nocookie.com/embed/yt-video-1?rel=0", appOrigin)).toBe(
+    "https://www.youtube-nocookie.com/embed/yt-video-1?rel=0&enablejsapi=1&origin=https%3A%2F%2Fapp.example.test",
+  );
+  // The standard youtube.com host is allowlisted too (standard-embed mode).
+  expect(toEmbedUrlWithApi("https://www.youtube.com/embed/yt-video-1", appOrigin)).toBe(
+    "https://www.youtube.com/embed/yt-video-1?enablejsapi=1&origin=https%3A%2F%2Fapp.example.test",
+  );
+  // start is floored and only added for a resume position >= 10s.
+  expect(toEmbedUrlWithApi("https://www.youtube-nocookie.com/embed/v", appOrigin, 754.9)).toBe(
+    "https://www.youtube-nocookie.com/embed/v?enablejsapi=1&origin=https%3A%2F%2Fapp.example.test&start=754",
+  );
+  expect(toEmbedUrlWithApi("https://www.youtube-nocookie.com/embed/v", appOrigin, 9.9)).not.toContain("start=");
+  expect(toEmbedUrlWithApi("https://www.youtube-nocookie.com/embed/v", appOrigin, 0)).toBe(
+    "https://www.youtube-nocookie.com/embed/v?enablejsapi=1&origin=https%3A%2F%2Fapp.example.test",
+  );
+  // Negative or non-finite start values reject the whole rewrite.
+  expect(toEmbedUrlWithApi("https://www.youtube-nocookie.com/embed/v", appOrigin, -1)).toBeNull();
+  expect(toEmbedUrlWithApi("https://www.youtube-nocookie.com/embed/v", appOrigin, Number.NaN)).toBeNull();
+
+  // Non-YouTube embeds, insecure URLs, and garbage are rejected.
+  expect(toEmbedUrlWithApi("https://odysee.com/$/embed/@c/v", appOrigin)).toBeNull();
+  expect(toEmbedUrlWithApi("https://peertube.example.test/videos/embed/v", appOrigin)).toBeNull();
+  expect(toEmbedUrlWithApi("http://www.youtube-nocookie.com/embed/v", appOrigin)).toBeNull();
+  expect(toEmbedUrlWithApi("javascript:alert(1)", appOrigin)).toBeNull();
+  expect(toEmbedUrlWithApi("not a url", appOrigin)).toBeNull();
+});
+
+test("isYouTubeEmbedUrl gates the tracked-embed decision on the same allowlist", () => {
+  expect(isYouTubeEmbedUrl("https://www.youtube-nocookie.com/embed/v")).toBe(true);
+  expect(isYouTubeEmbedUrl("https://www.youtube.com/embed/v")).toBe(true);
+  expect(isYouTubeEmbedUrl("http://www.youtube-nocookie.com/embed/v")).toBe(false);
+  expect(isYouTubeEmbedUrl("https://odysee.com/$/embed/@c/v")).toBe(false);
+  expect(isYouTubeEmbedUrl("https://peertube.example.test/videos/embed/v")).toBe(false);
+  expect(isYouTubeEmbedUrl("not a url")).toBe(false);
+});
+
+test("formatPlaybackPosition renders a clock pair consistent with formatContentDuration", () => {
+  expect(formatPlaybackPosition({ positionSeconds: 754, durationSeconds: 2700 })).toBe("12:34 / 45:00");
+  expect(formatPlaybackPosition({ positionSeconds: 0, durationSeconds: 0 })).toBe("0:00 / 0:00");
+  // Hour-long formatting follows the same rules as the duration badge.
+  expect(formatPlaybackPosition({ positionSeconds: 3600, durationSeconds: 5400 })).toBe("1:00:00 / 1:30:00");
+  // Without a known duration only the current position is rendered.
+  expect(formatPlaybackPosition({ positionSeconds: 754, durationSeconds: null })).toBe("12:34");
+});
+
+test("shouldFlushPlaybackPosition implements the pure save throttle", () => {
+  const base = { lastSavedSeconds: 100, nextSeconds: 102, lastSavedAtMs: 1_000, nowMs: 5_000, force: false };
+
+  // A fresh session (never saved) always flushes.
+  expect(shouldFlushPlaybackPosition({ ...base, lastSavedSeconds: null, lastSavedAtMs: null })).toBe(true);
+  // Forced flushes bypass the throttle.
+  expect(shouldFlushPlaybackPosition({ ...base, force: true })).toBe(true);
+  // >= 10s since the last save flushes; a younger save with a small delta does not.
+  expect(shouldFlushPlaybackPosition({ ...base, nowMs: 11_000 })).toBe(true);
+  expect(shouldFlushPlaybackPosition(base)).toBe(false);
+  // >= 5s position delta flushes even inside the time window.
+  expect(shouldFlushPlaybackPosition({ ...base, nextSeconds: 105 })).toBe(true);
+  expect(shouldFlushPlaybackPosition({ ...base, nextSeconds: 104.9 })).toBe(false);
+});
+
 test("creator source badges read sourceTypes from summaries and stay empty without them", () => {
   const summary: CatalogCreatorSummary = {
     id: "creator-1",
@@ -1029,19 +1126,48 @@ test("selected viewer supports source switching and real playback render contrac
 
   expect(source).toContain("id=\"viewer-source-switcher\"");
   expect(source).toContain("onClick={() => setSelectedSourceId(source.id)}");
+  // YouTube embeds render through the IFrame API URL builder; every other
+  // embed keeps its bare provider URL with no tracker.
   expect(source).toContain("<iframe");
-  expect(source).toContain("src={props.source?.url ?? \"\"}");
-  expect(source).toContain("<video class=\"h-full w-full\" src={props.source?.url ?? \"\"} controls preload=\"metadata\" onPlay={props.onNativePlay}>");
+  expect(source).toContain("src={embedSrc}");
+  expect(source).toContain("src={source().url}");
+  // Native video keeps real controls without any play-start auto-mark.
+  expect(source).toContain("src={props.source.url}\n      controls\n      preload=\"metadata\"");
 });
 
-test("native video playback marks selected content played after authenticated guard", async () => {
+test("near-end and ended playback auto-mark played exactly once per selection (D2)", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("onNativePlay={autoMarkSelectedContentPlayed}");
-  expect(source).toContain("readonly onNativePlay: () => Promise<void>;");
-  expect(source).toContain("onPlay={props.onNativePlay}");
+  // D2: the onPlay auto-mark is gone; near-end and ended playback trigger the
+  // existing auto-mark flow instead, for BOTH native and bridge surfaces.
+  expect(source).not.toContain("onNativePlay");
+  expect(source).not.toContain("onPlay=");
+  expect(source).toContain("onNearEnd={autoMarkSelectedContentPlayed}");
+  expect(source).toContain("onExplicitEnded={autoMarkSelectedContentPlayed}");
   expect(source).toContain("const autoMarkSelectedContentPlayed = async () => {");
-  expect(source).toContain("if (!props.isAuthenticated() || contentItemId === null) {\n      return;\n    }\n\n    setStatusActionError(null);\n    try {");
+  expect(source).toContain("if (autoMarkPlayedHandled) {\n      return;\n    }\n\n    autoMarkPlayedHandled = true;");
+  // The guard re-arms whenever the selection changes.
+  expect(source).toContain("on(selectedContentItemId, () => {\n      flushLastKnownPlaybackPosition();\n      autoMarkPlayedHandled = false;\n    }, { defer: true })");
+  // Native near-end detection: within 30s of the end or past 90% when the
+  // duration is known; the explicit ended event is guarded separately.
+  expect(source).toContain("!nearEndReported && (position >= duration - 30 || position >= duration * 0.9)");
+  expect(source).toContain("nearEndReported = true;\n          props.onNearEnd();");
+  expect(source).toContain("explicitEndedReported = true;\n        props.onExplicitEnded();");
+  // Bridge surface (tracked YouTube embed) carries the same contract: the
+  // tracked embed declares and receives the shared onNearEnd flow, and its
+  // IFrame-bridge position path runs the identical once-per-session check.
+  expect(source).toContain("interface TrackedEmbedPlayerProps {\n  readonly source: PlayableSource;\n  readonly title: string;\n  readonly contentItemId: string;\n  readonly resumePosition: () => PlaybackPosition | null;\n  readonly onPositionUpdate: (positionSeconds: number, durationSeconds: number | null) => void;\n  readonly onNearEnd: () => void;");
+  expect(source).toContain("<TrackedEmbedPlayer\n              source={source()}\n              title={props.title}\n              contentItemId={props.contentItemId}\n              resumePosition={props.resumePosition}\n              onPositionUpdate={props.onPositionUpdate}\n              onNearEnd={props.onNearEnd}");
+  expect(source).toContain("!nearEndReported &&\n          (position.positionSeconds >= position.durationSeconds - 30 || position.positionSeconds >= position.durationSeconds * 0.9)\n        ) {\n          nearEndReported = true;\n          props.onNearEnd();\n        }");
+  // Bridge duration inputs require a positive value: YouTube reports 0 until
+  // the video's metadata loads, and a 0 duration would trivially satisfy the
+  // near-end check (position >= 0 - 30) and auto-mark the item on open.
+  const bridgeSource = await Bun.file(new URL("../lib/youtube-player-bridge.ts", import.meta.url)).text();
+  expect(bridgeSource).toContain("if (duration !== null && duration > 0) {");
+  expect(bridgeSource).toContain('command === "getDuration" && numericReply > 0');
+  expect(bridgeSource).not.toContain("duration !== null && duration >= 0");
+  expect(bridgeSource).not.toContain('command === "getDuration" && numericReply >= 0');
+  // The flow still lands on the real protected procedure with in-place patching.
   expect(source).toContain("await props.onAutoMarkContentPlayed(contentItemId);");
   expect(source).toContain("const autoMarkContentPlayed = async (contentItemId: string) => {");
   expect(source).toContain("const result = await client.overlays.markContentPlayed({ contentItemId });");
@@ -1056,6 +1182,87 @@ test("iframe playback has explicit real mark played workflow", async () => {
   expect(source).toContain("await props.onMarkContentPlayed(contentItemId);");
   expect(source).toContain("await client.overlays.toggleContentPlayed({ contentItemId });");
   expect(source).toContain("onClick={toggleSelectedContentPlayed}");
+});
+
+test("playback tracking wires the bridge, resume position, and saved-status patching", async () => {
+  const viewerSource = await Bun.file(new URL("./app-shell-viewer.tsx", import.meta.url)).text();
+  const shellSource = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  // The viewer creates the YouTube bridge tracker and disposes it per session.
+  expect(viewerSource).toContain('import { createYouTubePlaybackTracker, type YouTubePlaybackTracker } from "@/lib/youtube-player-bridge";');
+  expect(viewerSource).toContain("tracker = createYouTubePlaybackTracker({");
+  expect(viewerSource).toContain("tracker?.dispose();");
+  // Resume position derives from the opened row's playback metadata and feeds
+  // both the embed start param (frozen at mount) and the native metadata seek.
+  expect(viewerSource).toContain("const selectedResumePosition = createMemo(() => {");
+  expect(viewerSource).toContain("toPlaybackPosition(openedStatus.metadataJson)");
+  expect(viewerSource).toContain("resumePosition={selectedResumePosition}");
+  expect(viewerSource).toContain("contentItemId={selectedContentItemId() ?? \"\"}");
+  expect(viewerSource).toContain(
+    "toEmbedUrlWithApi(props.source.url, window.location.origin, props.resumePosition()?.positionSeconds) ?? props.source.url",
+  );
+  expect(viewerSource).toContain("if (duration !== null && resume.positionSeconds < duration - 10) {\n          video.currentTime = resume.positionSeconds;\n        }");
+  // Throttled position reports flow into the real protected save procedure and
+  // land as an in-place status patch in the shell (no refetch).
+  expect(viewerSource).toContain("shouldFlushPlaybackPosition({ lastSavedSeconds, nextSeconds: positionSeconds, lastSavedAtMs, nowMs: Date.now(), force: false })");
+  expect(viewerSource).toContain("shouldFlushPlaybackPosition({ lastSavedSeconds, nextSeconds: position, lastSavedAtMs, nowMs: Date.now(), force: false })");
+  expect(viewerSource).toContain("await client.overlays.savePlaybackPosition({");
+  expect(viewerSource).toContain("props.onPlaybackPositionSaved(result.status);");
+  expect(shellSource).toContain("onPlaybackPositionSaved={patchContentStatus}");
+  // Last-chance flushes on page hide and hidden tabs, listeners cleaned up.
+  expect(viewerSource).toContain('window.addEventListener("pagehide", handlePageHide);');
+  expect(viewerSource).toContain('document.addEventListener("visibilitychange", handleVisibilityChange);');
+  expect(viewerSource).toContain('if (document.visibilityState === "hidden") {');
+  expect(viewerSource).toContain('window.removeEventListener("pagehide", handlePageHide);');
+  expect(viewerSource).toContain('document.removeEventListener("visibilitychange", handleVisibilityChange);');
+  // Both tracked surfaces flush their session position on cleanup.
+  expect(viewerSource).toContain("props.onPositionUpdate(lastKnownPositionSeconds, lastKnownDurationSeconds);");
+  expect(viewerSource).toContain("props.onPositionUpdate(position, toNativeDuration(video));");
+});
+
+test("anonymous users never save playback positions", async () => {
+  const viewerSource = await Bun.file(new URL("./app-shell-viewer.tsx", import.meta.url)).text();
+
+  expect(viewerSource).toContain("if (!props.isAuthenticated() || contentItemId === null) {\n      return;\n    }\n\n    lastKnownPlayback = { contentItemId, positionSeconds, durationSeconds };");
+  expect(viewerSource).toContain("if (known === null || !props.isAuthenticated()) {\n      return;\n    }");
+});
+
+test("playback flushes are tagged by content id and never mis-attribute across switches", async () => {
+  const viewerSource = await Bun.file(new URL("./app-shell-viewer.tsx", import.meta.url)).text();
+
+  // The selection-change flush uses the tagged id, so the previous item's tail
+  // is saved for the item it belongs to.
+  expect(viewerSource).toContain("on(selectedContentItemId, () => {\n      flushLastKnownPlaybackPosition();\n      autoMarkPlayedHandled = false;\n    }, { defer: true })");
+  // Each surface captures its session content id once and skips its cleanup
+  // flush when the selection already moved on (avoids saving the old video's
+  // position under the new item's id).
+  expect(viewerSource).toContain("const sessionContentItemId = props.contentItemId;");
+  expect((viewerSource.match(/props\.contentItemId !== sessionContentItemId/g) ?? [])).toHaveLength(2);
+});
+
+test("postMessage and message listeners stay confined to the YouTube bridge module", async () => {
+  const componentFiles = [
+    "./app-shell.tsx",
+    "./app-shell-content-column.tsx",
+    "./app-shell-rows.tsx",
+    "./app-shell-source-sections.tsx",
+    "./app-shell-viewer.tsx",
+    "./app-shell.contract.ts",
+    "./refresh-status-dialog.tsx",
+    "./user-menu.tsx",
+  ];
+  const sources = await Promise.all(
+    componentFiles.map(async (filePath) => Bun.file(new URL(filePath, import.meta.url)).text()),
+  );
+  const combined = sources.join("\n");
+
+  expect(combined).not.toContain("postMessage");
+  expect(combined).not.toContain('addEventListener("message"');
+  expect(combined).not.toContain('removeEventListener("message"');
+
+  const bridgeSource = await Bun.file(new URL("../lib/youtube-player-bridge.ts", import.meta.url)).text();
+  expect(bridgeSource).toContain('window.addEventListener("message", handleMessage);');
+  expect(bridgeSource).toContain("contentWindow.postMessage(JSON.stringify(payload), targetOrigin);");
 });
 
 test("anonymous users never call protected played procedure from viewer or playback", async () => {

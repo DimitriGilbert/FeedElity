@@ -1518,6 +1518,7 @@ export default function AppShell(props: AppShellProps) {
           onMarkContentOpened={markContentOpened}
           onMarkContentPlayed={markContentPlayed}
           onAutoMarkContentPlayed={autoMarkContentPlayed}
+          onPlaybackPositionSaved={patchContentStatus}
         />
         <Show when={isDesktop()}>
           <div

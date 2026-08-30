@@ -1,5 +1,5 @@
 import type { CatalogContentDetail, CatalogContentListItem, CatalogContentSource, CatalogCreatorSummary, Playlist, UserContentStatus, UserSetting } from "@FeedElity/api";
-import { For, Match, Show, Switch, createEffect, createMemo, createResource, createSignal } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount } from "solid-js";
 import ArrowLeft from "lucide-solid/icons/arrow-left";
 import CircleCheck from "lucide-solid/icons/circle-check";
 import CirclePlay from "lucide-solid/icons/circle-play";
@@ -12,6 +12,7 @@ import Plus from "lucide-solid/icons/plus";
 import Shield from "lucide-solid/icons/shield";
 import ShieldOff from "lucide-solid/icons/shield-off";
 
+import { createYouTubePlaybackTracker, type YouTubePlaybackTracker } from "@/lib/youtube-player-bridge";
 import { client } from "@/utils/orpc";
 
 import { SettingsColumnSection } from "./app-shell-source-sections";
@@ -20,12 +21,17 @@ import {
   formatContentDuration,
   formatContentPublishedAt,
   formatSourceLabel,
+  isYouTubeEmbedUrl,
+  shouldFlushPlaybackPosition,
   toContentStatusFlags,
+  toEmbedUrlWithApi,
+  toPlaybackPosition,
   toPlayableSources,
   toYoutubeNoCookieFromSettings,
   viewerColumnClass,
   viewerScrollRegionClass,
   youtubePrivacySettingKey,
+  type PlaybackPosition,
   type PlayableSource,
   type ViewerMode,
 } from "./app-shell.contract";
@@ -57,6 +63,7 @@ export interface SelectedContentViewerProps {
   readonly onMarkContentOpened: (contentItemId: string) => Promise<void>;
   readonly onMarkContentPlayed: (contentItemId: string) => Promise<void>;
   readonly onAutoMarkContentPlayed: (contentItemId: string) => Promise<void>;
+  readonly onPlaybackPositionSaved: (status: UserContentStatus) => void;
 }
 
 export function SelectedContentViewer(props: SelectedContentViewerProps) {
@@ -265,12 +272,21 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
     }
   };
 
+  // D2: auto "played" fires once per selected content id from NEAR-END/ended
+  // playback; the flag resets whenever the selection changes so a later replay
+  // of the same video re-arms it.
+  let autoMarkPlayedHandled = false;
   const autoMarkSelectedContentPlayed = async () => {
     const contentItemId = selectedContentItemId();
     if (!props.isAuthenticated() || contentItemId === null) {
       return;
     }
 
+    if (autoMarkPlayedHandled) {
+      return;
+    }
+
+    autoMarkPlayedHandled = true;
     setStatusActionError(null);
     try {
       await props.onAutoMarkContentPlayed(contentItemId);
@@ -278,6 +294,106 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
       setStatusActionError(formatError(error));
     }
   };
+
+  // ---- Playback position tracking (F1b) ---------------------------------
+  // Only tracked surfaces report positions (native <video> and YouTube embeds
+  // through the IFrame API bridge); PeerTube/Odysee embeds render untracked.
+  // The surfaces own the per-session shouldFlushPlaybackPosition throttle, so
+  // every report that arrives here is worth saving. Saves are gated on the
+  // authenticated session; failures are logged with context (a handled
+  // degradation — background position saves have no action for the user) and
+  // never interrupt playback.
+  let lastKnownPlayback: {
+    readonly contentItemId: string;
+    readonly positionSeconds: number;
+    readonly durationSeconds: number | null;
+  } | null = null;
+
+  const savePlaybackPosition = async (
+    contentItemId: string,
+    positionSeconds: number,
+    durationSeconds: number | null,
+  ): Promise<void> => {
+    // Mirrors the server's zod bounds (0..86400 integer); clamping keeps saves
+    // for ultra-long videos working instead of failing validation forever.
+    const boundedPositionSeconds = Math.min(86_400, Math.max(0, Math.floor(positionSeconds)));
+    const boundedDurationSeconds = durationSeconds === null ? null : Math.min(86_400, Math.max(0, Math.floor(durationSeconds)));
+    try {
+      const result = await client.overlays.savePlaybackPosition({
+        contentItemId,
+        positionSeconds: boundedPositionSeconds,
+        ...(boundedDurationSeconds === null ? {} : { durationSeconds: boundedDurationSeconds }),
+      });
+      props.onPlaybackPositionSaved(result.status);
+    } catch (error) {
+      console.error(`Playback position save failed for content item ${contentItemId}.`, error);
+    }
+  };
+
+  const handlePlaybackPositionUpdate = (positionSeconds: number, durationSeconds: number | null): void => {
+    const contentItemId = selectedContentItemId();
+    if (!props.isAuthenticated() || contentItemId === null) {
+      return;
+    }
+
+    lastKnownPlayback = { contentItemId, positionSeconds, durationSeconds };
+    void savePlaybackPosition(contentItemId, positionSeconds, durationSeconds);
+  };
+
+  // Flushes the last reported position under ITS OWN content id tag, so a
+  // flush fired after the selection moved on can never land on the new item.
+  const flushLastKnownPlaybackPosition = (): void => {
+    const known = lastKnownPlayback;
+    if (known === null || !props.isAuthenticated()) {
+      return;
+    }
+
+    void savePlaybackPosition(known.contentItemId, known.positionSeconds, known.durationSeconds);
+  };
+
+  // Last-chance flushes: selection change (previous item's tail), page hide,
+  // tab hiding, and viewer teardown — all force-saved through the same
+  // idempotent, id-tagged save.
+  createEffect(
+    on(selectedContentItemId, () => {
+      flushLastKnownPlaybackPosition();
+      autoMarkPlayedHandled = false;
+    }, { defer: true }),
+  );
+  onMount(() => {
+    const handlePageHide = () => {
+      flushLastKnownPlaybackPosition();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushLastKnownPlaybackPosition();
+      }
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    onCleanup(() => {
+      window.removeEventListener("pagehide", handlePageHide);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    });
+  });
+  onCleanup(() => {
+    flushLastKnownPlaybackPosition();
+  });
+
+  // Resume position for the selected item, read from the opened row's
+  // metadataJson. The active playback surfaces read this once per session so
+  // later position patches never rewrite a live player's source.
+  const selectedResumePosition = createMemo(() => {
+    const contentItemId = selectedContentItemId();
+    if (contentItemId === null) {
+      return null;
+    }
+
+    const openedStatus = props.contentStatuses().find(
+      (status) => status.contentItemId === contentItemId && status.status === "opened",
+    );
+    return openedStatus === undefined ? null : toPlaybackPosition(openedStatus.metadataJson);
+  });
 
   return (
     <section
@@ -337,7 +453,11 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                 <PlaybackSurface
                   source={selectedPlayableSource()}
                   title={detail().title}
-                  onNativePlay={autoMarkSelectedContentPlayed}
+                  contentItemId={selectedContentItemId() ?? ""}
+                  resumePosition={selectedResumePosition}
+                  onPositionUpdate={handlePlaybackPositionUpdate}
+                  onNearEnd={autoMarkSelectedContentPlayed}
+                  onExplicitEnded={autoMarkSelectedContentPlayed}
                 />
                 <Show when={props.isAuthenticated()}>
                   <div class="mt-2 flex flex-wrap items-center gap-1.5">
@@ -516,29 +636,83 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
 interface PlaybackSurfaceProps {
   readonly source: PlayableSource | null;
   readonly title: string;
-  readonly onNativePlay: () => Promise<void>;
+  readonly contentItemId: string;
+  readonly resumePosition: () => PlaybackPosition | null;
+  readonly onPositionUpdate: (positionSeconds: number, durationSeconds: number | null) => void;
+  readonly onNearEnd: () => void;
+  readonly onExplicitEnded: () => void;
 }
 
 function PlaybackSurface(props: PlaybackSurfaceProps) {
+  // Tracked YouTube embeds get the IFrame API bridge; every other embed
+  // (PeerTube, Odysee) renders its bare embed URL with NO tracker, and native
+  // media tracks through <video> media events. Keyed matches remount the
+  // active player per source identity, so each playback session (content or
+  // source switch) gets a fresh tracker, throttle clock, and near-end guard.
+  const trackedEmbedSource = createMemo(() => {
+    const source = props.source;
+    if (source !== null && source.kind === "embed" && isYouTubeEmbedUrl(source.url)) {
+      return source;
+    }
+
+    return undefined;
+  });
+  const bareEmbedSource = createMemo(() => {
+    const source = props.source;
+    if (source !== null && source.kind === "embed" && !isYouTubeEmbedUrl(source.url)) {
+      return source;
+    }
+
+    return undefined;
+  });
+  const nativeSource = createMemo(() => {
+    const source = props.source;
+    if (source !== null && source.kind === "native") {
+      return source;
+    }
+
+    return undefined;
+  });
+
   return (
     <div class="aspect-video overflow-hidden rounded-lg border border-border bg-muted">
       <Switch>
-        <Match when={props.source?.kind === "embed" && props.source !== null}>
-          <iframe
-            class="h-full w-full"
-            src={props.source?.url ?? ""}
-            title={props.title}
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-            allowfullscreen
-            referrerpolicy="strict-origin-when-cross-origin"
-          />
+        <Match when={trackedEmbedSource()}>
+          {(source) => (
+            <TrackedEmbedPlayer
+              source={source()}
+              title={props.title}
+              contentItemId={props.contentItemId}
+              resumePosition={props.resumePosition}
+              onPositionUpdate={props.onPositionUpdate}
+              onNearEnd={props.onNearEnd}
+              onExplicitEnded={props.onExplicitEnded}
+            />
+          )}
         </Match>
-        <Match when={props.source?.kind === "native" && props.source !== null}>
-          <video class="h-full w-full" src={props.source?.url ?? ""} controls preload="metadata" onPlay={props.onNativePlay}>
-            <a class="text-primary underline" href={props.source?.url ?? ""} rel="noreferrer" target="_blank">
-              Open video source
-            </a>
-          </video>
+        <Match when={bareEmbedSource()}>
+          {(source) => (
+            <iframe
+              class="h-full w-full"
+              src={source().url}
+              title={props.title}
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowfullscreen
+              referrerpolicy="strict-origin-when-cross-origin"
+            />
+          )}
+        </Match>
+        <Match when={nativeSource()}>
+          {(source) => (
+            <NativeVideoPlayer
+              source={source()}
+              contentItemId={props.contentItemId}
+              resumePosition={props.resumePosition}
+              onPositionUpdate={props.onPositionUpdate}
+              onNearEnd={props.onNearEnd}
+              onExplicitEnded={props.onExplicitEnded}
+            />
+          )}
         </Match>
         <Match when={true}>
           <div class="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
@@ -547,6 +721,230 @@ function PlaybackSurface(props: PlaybackSurfaceProps) {
         </Match>
       </Switch>
     </div>
+  );
+}
+
+interface TrackedEmbedPlayerProps {
+  readonly source: PlayableSource;
+  readonly title: string;
+  readonly contentItemId: string;
+  readonly resumePosition: () => PlaybackPosition | null;
+  readonly onPositionUpdate: (positionSeconds: number, durationSeconds: number | null) => void;
+  readonly onNearEnd: () => void;
+  readonly onExplicitEnded: () => void;
+}
+
+function TrackedEmbedPlayer(props: TrackedEmbedPlayerProps) {
+  let iframeEl: HTMLIFrameElement | undefined;
+  let tracker: YouTubePlaybackTracker | null = null;
+  // Session-scoped throttle clock, last-known position, and near-end guard; a
+  // fresh surface (content or source switch) starts a fresh session and
+  // disposes the old one here.
+  let lastSavedSeconds: number | null = null;
+  let lastSavedAtMs: number | null = null;
+  let lastKnownPositionSeconds: number | null = null;
+  let lastKnownDurationSeconds: number | null = null;
+  let nearEndReported = false;
+  // The content item this playback session belongs to, captured once at
+  // creation so a cleanup flush that fires after the selection moved on can
+  // be skipped (the viewer's id-tagged flush already saved that tail).
+  const sessionContentItemId = props.contentItemId;
+  // The embed src is frozen at creation: resumePosition is read exactly once
+  // so later position patches (from our own saves) can never rewrite the
+  // iframe src and reload the player mid-playback. Resume itself rides the
+  // start param (floor >= 10s, Phase 4 consumes the same helper for restore).
+  const embedSrc = toEmbedUrlWithApi(props.source.url, window.location.origin, props.resumePosition()?.positionSeconds) ?? props.source.url;
+
+  const reportThrottledPosition = (positionSeconds: number, durationSeconds: number | null): void => {
+    lastKnownPositionSeconds = positionSeconds;
+    lastKnownDurationSeconds = durationSeconds;
+    if (!shouldFlushPlaybackPosition({ lastSavedSeconds, nextSeconds: positionSeconds, lastSavedAtMs, nowMs: Date.now(), force: false })) {
+      return;
+    }
+
+    lastSavedSeconds = positionSeconds;
+    lastSavedAtMs = Date.now();
+    props.onPositionUpdate(positionSeconds, durationSeconds);
+  };
+
+  onMount(() => {
+    if (iframeEl === undefined) {
+      return;
+    }
+
+    tracker = createYouTubePlaybackTracker({
+      iframe: iframeEl,
+      onPosition: (position) => {
+        // D2 near-end detection, mirroring the native surface: within 30s of
+        // the end or past 90% when the duration is known; fired exactly once
+        // per playback session (keyed remounts re-arm the guard above).
+        if (
+          position.durationSeconds !== null &&
+          !nearEndReported &&
+          (position.positionSeconds >= position.durationSeconds - 30 || position.positionSeconds >= position.durationSeconds * 0.9)
+        ) {
+          nearEndReported = true;
+          props.onNearEnd();
+        }
+
+        if (position.ended) {
+          // The ended report carries the final position: deliver unthrottled.
+          lastKnownPositionSeconds = position.positionSeconds;
+          lastKnownDurationSeconds = position.durationSeconds;
+          lastSavedSeconds = position.positionSeconds;
+          lastSavedAtMs = Date.now();
+          props.onPositionUpdate(position.positionSeconds, position.durationSeconds);
+          return;
+        }
+
+        reportThrottledPosition(position.positionSeconds, position.durationSeconds);
+      },
+      onEnded: props.onExplicitEnded,
+    });
+  });
+
+  onCleanup(() => {
+    tracker?.dispose();
+    tracker = null;
+    // Flush the last known embed position on video switch/close — but not when
+    // the selection already changed (that tail was flushed under its own id).
+    if (props.contentItemId !== sessionContentItemId) {
+      return;
+    }
+    // The save is idempotent, so duplicating the final throttled save is
+    // harmless.
+    if (lastKnownPositionSeconds !== null) {
+      props.onPositionUpdate(lastKnownPositionSeconds, lastKnownDurationSeconds);
+    }
+  });
+
+  return (
+    <iframe
+      class="h-full w-full"
+      src={embedSrc}
+      title={props.title}
+      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+      allowfullscreen
+      referrerpolicy="strict-origin-when-cross-origin"
+      ref={(el) => { iframeEl = el; }}
+    />
+  );
+}
+
+interface NativeVideoPlayerProps {
+  readonly source: PlayableSource;
+  readonly contentItemId: string;
+  readonly resumePosition: () => PlaybackPosition | null;
+  readonly onPositionUpdate: (positionSeconds: number, durationSeconds: number | null) => void;
+  readonly onNearEnd: () => void;
+  readonly onExplicitEnded: () => void;
+}
+
+function NativeVideoPlayer(props: NativeVideoPlayerProps) {
+  let videoEl: HTMLVideoElement | undefined;
+  // Session-scoped throttle clock and guards; fresh per mounted <video>.
+  let lastSavedSeconds: number | null = null;
+  let lastSavedAtMs: number | null = null;
+  let nearEndReported = false;
+  let explicitEndedReported = false;
+  // The content item this playback session belongs to, captured once at
+  // creation so a cleanup flush that fires after the selection moved on can
+  // be skipped (the viewer's id-tagged flush already saved that tail).
+  const sessionContentItemId = props.contentItemId;
+
+  const toNativeDuration = (video: HTMLVideoElement): number | null => {
+    const duration = video.duration;
+    return typeof duration === "number" && Number.isFinite(duration) && duration > 0 ? duration : null;
+  };
+
+  onCleanup(() => {
+    const video = videoEl;
+    if (video === undefined) {
+      return;
+    }
+
+    // Flush the freshest position on video switch/close — but not when the
+    // selection already changed (that tail was flushed under its own id).
+    if (props.contentItemId !== sessionContentItemId) {
+      return;
+    }
+
+    // The save path is idempotent, so duplicating the final throttled save is
+    // harmless.
+    const position = video.currentTime;
+    if (Number.isFinite(position) && position > 0) {
+      props.onPositionUpdate(position, toNativeDuration(video));
+    }
+  });
+
+  return (
+    <video
+      class="h-full w-full"
+      src={props.source.url}
+      controls
+      preload="metadata"
+      ref={(el) => { videoEl = el; }}
+      onLoadedMetadata={(event) => {
+        const resume = props.resumePosition();
+        if (resume === null) {
+          return;
+        }
+
+        const video = event.currentTarget;
+        const duration = toNativeDuration(video);
+        // Seek back only when meaningful video remains after the resume point;
+        // reopening a finished (or nearly finished) video starts fresh instead.
+        if (duration !== null && resume.positionSeconds < duration - 10) {
+          video.currentTime = resume.positionSeconds;
+        }
+      }}
+      onTimeUpdate={(event) => {
+        const video = event.currentTarget;
+        const position = video.currentTime;
+        if (!Number.isFinite(position) || position < 0) {
+          return;
+        }
+
+        const duration = toNativeDuration(video);
+        // D2 near-end detection: within 30s of the end or past 90% when the
+        // duration is known; reported exactly once per playback session.
+        if (duration !== null && !nearEndReported && (position >= duration - 30 || position >= duration * 0.9)) {
+          nearEndReported = true;
+          props.onNearEnd();
+        }
+
+        if (shouldFlushPlaybackPosition({ lastSavedSeconds, nextSeconds: position, lastSavedAtMs, nowMs: Date.now(), force: false })) {
+          lastSavedSeconds = position;
+          lastSavedAtMs = Date.now();
+          props.onPositionUpdate(position, duration);
+        }
+      }}
+      onPause={(event) => {
+        const video = event.currentTarget;
+        const position = video.currentTime;
+        if (!Number.isFinite(position)) {
+          return;
+        }
+
+        // Immediate (unthrottled) flush on pause.
+        const duration = toNativeDuration(video);
+        lastSavedSeconds = position;
+        lastSavedAtMs = Date.now();
+        props.onPositionUpdate(position, duration);
+      }}
+      onEnded={() => {
+        if (explicitEndedReported) {
+          return;
+        }
+
+        explicitEndedReported = true;
+        props.onExplicitEnded();
+      }}
+    >
+      <a class="text-primary underline" href={props.source.url} rel="noreferrer" target="_blank">
+        Open video source
+      </a>
+    </video>
   );
 }
 

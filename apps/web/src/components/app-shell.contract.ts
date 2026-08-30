@@ -653,6 +653,159 @@ export function toYoutubeNoCookieFromSettings(settings: readonly UserSetting[]):
   return true;
 }
 
+/**
+ * Playback resume position for the selected content item, narrowed from the
+ * `playback` payload stored inside the item's `opened` row metadataJson
+ * (packages/api PlaybackPositionMetadata, qol-features-plan.md decision D1).
+ */
+export interface PlaybackPosition {
+  readonly positionSeconds: number;
+  readonly durationSeconds: number | null;
+}
+
+/**
+ * Embed hosts whose players are tracked through the YouTube IFrame API bridge.
+ * The single source of truth for the allowlist used by `toEmbedUrlWithApi`,
+ * `isYouTubeEmbedUrl`, and the viewer's tracked-source decision.
+ */
+const youTubeEmbedHosts: readonly string[] = ["www.youtube-nocookie.com", "www.youtube.com"];
+
+/**
+ * True when the URL is an https URL hosted on one of the YouTube embed hosts.
+ * Anything unparseable, non-https, or from another provider is not tracked.
+ */
+export function isYouTubeEmbedUrl(embedUrl: string): boolean {
+  try {
+    const url = new URL(embedUrl);
+    return url.protocol === "https:" && youTubeEmbedHosts.includes(url.host);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Parses the playback position stored under the `playback` key of an `opened`
+ * content status row's metadataJson. Requires `playback.positionSeconds` to be
+ * a finite number >= 0; `durationSeconds` may be absent or null (unknown) and
+ * otherwise must be a finite number >= 0. Returns null for null input,
+ * malformed JSON, or any shape violation. Never throws.
+ */
+export function toPlaybackPosition(metadataJson: string | null): PlaybackPosition | null {
+  if (metadataJson === null) {
+    return null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(metadataJson);
+  } catch {
+    return null;
+  }
+
+  if (typeof parsed !== "object" || parsed === null) {
+    return null;
+  }
+
+  const metadata = parsed as Record<string, unknown>;
+  const playback = metadata.playback;
+  if (typeof playback !== "object" || playback === null) {
+    return null;
+  }
+
+  const candidate = playback as Record<string, unknown>;
+  const positionSeconds = candidate.positionSeconds;
+  if (typeof positionSeconds !== "number" || !Number.isFinite(positionSeconds) || positionSeconds < 0) {
+    return null;
+  }
+
+  const durationSeconds = candidate.durationSeconds;
+  if (durationSeconds === undefined || durationSeconds === null) {
+    return { positionSeconds, durationSeconds: null };
+  }
+
+  if (typeof durationSeconds !== "number" || !Number.isFinite(durationSeconds) || durationSeconds < 0) {
+    return null;
+  }
+
+  return { positionSeconds, durationSeconds };
+}
+
+/**
+ * Rewrites a YouTube embed URL for the IFrame API bridge: only https URLs on
+ * the allowlisted YouTube hosts are accepted; `enablejsapi=1` and
+ * `origin=<appOrigin>` are set (overwriting any previous values) while all
+ * other existing params are preserved. `start=<floor(startSeconds)>` is added
+ * only when `startSeconds` is provided and >= 10 (short leftovers are not
+ * worth a seek). Returns null for any other host or unsafe URL.
+ */
+export function toEmbedUrlWithApi(embedUrl: string, appOrigin: string, startSeconds?: number): string | null {
+  if (startSeconds !== undefined && (!Number.isFinite(startSeconds) || startSeconds < 0)) {
+    return null;
+  }
+
+  let url: URL;
+  try {
+    url = new URL(embedUrl);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== "https:" || !youTubeEmbedHosts.includes(url.host)) {
+    return null;
+  }
+
+  url.searchParams.set("enablejsapi", "1");
+  url.searchParams.set("origin", appOrigin);
+  if (startSeconds !== undefined && startSeconds >= 10) {
+    url.searchParams.set("start", Math.floor(startSeconds).toString());
+  }
+
+  return url.toString();
+}
+
+/**
+ * Formats a playback position as "12:34 / 45:00" using the same clock rules as
+ * `formatContentDuration`. When no duration is known only the current position
+ * is rendered.
+ */
+export function formatPlaybackPosition(position: PlaybackPosition): string {
+  const current = formatContentDuration(position.positionSeconds);
+  if (position.durationSeconds === null) {
+    return current;
+  }
+
+  return `${current} / ${formatContentDuration(position.durationSeconds)}`;
+}
+
+export interface PlaybackPositionFlushInput {
+  readonly lastSavedSeconds: number | null;
+  readonly nextSeconds: number;
+  readonly lastSavedAtMs: number | null;
+  readonly nowMs: number;
+  readonly force: boolean;
+}
+
+/**
+ * Pure throttle decision for playback position saves: flush when never saved,
+ * when forced, when at least 10s have passed since the last save, or when the
+ * position moved by at least 5s since the last save.
+ */
+export function shouldFlushPlaybackPosition(input: PlaybackPositionFlushInput): boolean {
+  if (input.force) {
+    return true;
+  }
+
+  if (input.lastSavedSeconds === null || input.lastSavedAtMs === null) {
+    return true;
+  }
+
+  if (input.nowMs - input.lastSavedAtMs >= 10_000) {
+    return true;
+  }
+
+  return Math.abs(input.nextSeconds - input.lastSavedSeconds) >= 5;
+}
+
 export function toSafePlaybackUrl(value: string | null): string | null {
   if (value === null) {
     return null;
