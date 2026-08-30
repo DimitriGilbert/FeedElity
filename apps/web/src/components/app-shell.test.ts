@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { CatalogContentSource, CatalogCreator, CatalogCreatorSummary, CatalogFeed, RefreshFeedResult, RefreshRun, RefreshRunReport, UserSetting } from "@FeedElity/api";
+import type { CatalogContentSource, CatalogCreator, CatalogCreatorSummary, CatalogFeed, RefreshFeedResult, RefreshRun, RefreshRunReport, UserContentStatus, UserSetting } from "@FeedElity/api";
 import type { LeftPaneTab, MiddlePanePanel, ViewerMode } from "./app-shell.contract";
 
 import {
@@ -31,10 +31,12 @@ import {
   feedListLimit,
   firstPageOffset,
   formatPlaybackPosition,
+  formatPlaybackResumeLabel,
   formatRefreshReportSummary,
   formatRefreshRunSummary,
   formatSettingValue,
   hidePlayedLocalStorageKey,
+  isResumablePlaybackPosition,
   isYouTubeEmbedUrl,
   parseRefreshErrorSummaries,
   getShellColumnCount,
@@ -77,6 +79,7 @@ import {
   toEmbedUrlWithApi,
   toFeedListInput,
   toPlaybackPosition,
+  toPlaybackPositionsByItemId,
   toPlayableSources,
   toCreatorListSortFromSettings,
   toCreatorSourceTypes,
@@ -1034,6 +1037,79 @@ test("formatPlaybackPosition renders a clock pair consistent with formatContentD
   expect(formatPlaybackPosition({ positionSeconds: 754, durationSeconds: null })).toBe("12:34");
 });
 
+test("formatPlaybackResumeLabel announces position and known duration", () => {
+  expect(formatPlaybackResumeLabel({ positionSeconds: 754, durationSeconds: 2700 })).toBe("Resume at 12:34 of 45:00");
+  expect(formatPlaybackResumeLabel({ positionSeconds: 754, durationSeconds: null })).toBe("Resume at 12:34");
+  expect(formatPlaybackResumeLabel({ positionSeconds: 3600, durationSeconds: 5400 })).toBe("Resume at 1:00:00 of 1:30:00");
+});
+
+test("isResumablePlaybackPosition suppresses resume near a known end", () => {
+  // Unknown saved duration stays resumable; the surfaces' live-duration guards
+  // still apply at seek time.
+  expect(isResumablePlaybackPosition({ positionSeconds: 754, durationSeconds: null })).toBe(true);
+  // More than 10s of video remains.
+  expect(isResumablePlaybackPosition({ positionSeconds: 754, durationSeconds: 2700 })).toBe(true);
+  // Exactly 10s remaining matches the native live guard: not resumable.
+  expect(isResumablePlaybackPosition({ positionSeconds: 2690, durationSeconds: 2700 })).toBe(false);
+  // Watched to (or past) the end.
+  expect(isResumablePlaybackPosition({ positionSeconds: 2700, durationSeconds: 2700 })).toBe(false);
+  expect(isResumablePlaybackPosition({ positionSeconds: 2710, durationSeconds: 2700 })).toBe(false);
+  // A short video entirely inside the tail window is never resumed.
+  expect(isResumablePlaybackPosition({ positionSeconds: 5, durationSeconds: 8 })).toBe(false);
+});
+
+test("toPlaybackPositionsByItemId derives list progress from opened rows only", () => {
+  const statuses: readonly UserContentStatus[] = [
+    {
+      id: "status-1",
+      userId: "user-1",
+      contentItemId: "content-1",
+      status: "opened",
+      metadataJson: JSON.stringify({ playback: { positionSeconds: 754, durationSeconds: 2700, updatedAt: "2026-08-30T00:00:00.000Z" } }),
+    },
+    {
+      id: "status-2",
+      userId: "user-1",
+      contentItemId: "content-2",
+      status: "opened",
+      metadataJson: JSON.stringify({ playback: { positionSeconds: 30, durationSeconds: null, updatedAt: "2026-08-30T00:00:00.000Z" } }),
+    },
+    // A played row carries no list progress even with a stale playback payload.
+    {
+      id: "status-3",
+      userId: "user-1",
+      contentItemId: "content-3",
+      status: "played",
+      metadataJson: JSON.stringify({ playback: { positionSeconds: 100, durationSeconds: 200, updatedAt: "2026-08-30T00:00:00.000Z" } }),
+    },
+    // Opened without playback metadata (opened before any playback) adds nothing.
+    {
+      id: "status-4",
+      userId: "user-1",
+      contentItemId: "content-4",
+      status: "opened",
+      metadataJson: null,
+    },
+    // Malformed playback metadata is skipped, never thrown.
+    {
+      id: "status-5",
+      userId: "user-1",
+      contentItemId: "content-5",
+      status: "opened",
+      metadataJson: "not json",
+    },
+  ];
+
+  const positions = toPlaybackPositionsByItemId(statuses);
+  expect(positions.size).toBe(2);
+  expect(positions.get("content-1")).toEqual({ positionSeconds: 754, durationSeconds: 2700 });
+  expect(positions.get("content-2")).toEqual({ positionSeconds: 30, durationSeconds: null });
+  expect(positions.has("content-3")).toBe(false);
+  expect(positions.has("content-4")).toBe(false);
+  expect(positions.has("content-5")).toBe(false);
+  expect(toPlaybackPositionsByItemId([]).size).toBe(0);
+});
+
 test("shouldFlushPlaybackPosition implements the pure save throttle", () => {
   const base = { lastSavedSeconds: 100, nextSeconds: 102, lastSavedAtMs: 1_000, nowMs: 5_000, force: false };
 
@@ -1238,6 +1314,33 @@ test("playback flushes are tagged by content id and never mis-attribute across s
   // position under the new item's id).
   expect(viewerSource).toContain("const sessionContentItemId = props.contentItemId;");
   expect((viewerSource.match(/props\.contentItemId !== sessionContentItemId/g) ?? [])).toHaveLength(2);
+});
+
+test("content list rows surface resume progress in the duration slot (F1c)", async () => {
+  const source = await readAppShellSource();
+
+  // The column derives the per-item position map from the opened statuses and
+  // threads an accessor into every row.
+  expect(source).toContain("const playbackPositionByItemId = createMemo(() => toPlaybackPositionsByItemId(props.contentStatuses()));");
+  expect(source).toContain("playbackPosition={() => playbackPositionByItemId().get(contentItem.id) ?? null}");
+  expect(source).toContain("readonly playbackPosition: () => PlaybackPosition | null;");
+  // The row swaps the duration slot for the progress badge when a position
+  // exists, keeps the duration-only rendering as the fallback, and renders the
+  // pair with a resume label.
+  expect(source).toContain("when={playbackPosition()}");
+  expect(source).toContain("data-content-playback-progress");
+  expect(source).toContain("aria-label={formatPlaybackResumeLabel(position())}");
+  expect(source).toContain("{formatPlaybackPosition(position())}");
+});
+
+test("near-finished saved positions are not resumed on either surface", async () => {
+  const viewerSource = await Bun.file(new URL("./app-shell-viewer.tsx", import.meta.url)).text();
+
+  // The viewer-level gate feeds BOTH surfaces: a position within 10s of a
+  // known saved duration resolves to null, so the YouTube embed gets no start
+  // param and the native video never seeks (its own live-duration guard stays
+  // in place for saved durations that are unknown or stale).
+  expect(viewerSource).toContain("return position !== null && isResumablePlaybackPosition(position) ? position : null;");
 });
 
 test("postMessage and message listeners stay confined to the YouTube bridge module", async () => {

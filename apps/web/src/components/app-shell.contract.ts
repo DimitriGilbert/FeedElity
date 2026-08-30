@@ -731,12 +731,50 @@ export function toPlaybackPosition(metadataJson: string | null): PlaybackPositio
 }
 
 /**
+ * True when a saved resume position is worth restoring. Reopening a finished
+ * (or nearly finished) video must start fresh instead of jumping to the tail:
+ * when the saved duration is known and 10s or less remain, resume is
+ * suppressed — the same 10s tail rule the native surface applies against the
+ * live duration at seek time (`positionSeconds < duration - 10`). Positions
+ * with an unknown duration stay resumable; the surfaces' live-duration guards
+ * still apply when an actual player is involved.
+ */
+export function isResumablePlaybackPosition(position: PlaybackPosition): boolean {
+  return position.durationSeconds === null || position.durationSeconds - position.positionSeconds > 10;
+}
+
+/**
+ * Derives the list-progress lookup from the user's content statuses: only
+ * `opened` rows can carry a playback payload (decision D1), and rows whose
+ * metadataJson does not parse into a position are skipped. `played` rows are
+ * excluded even if a stale playback-shaped payload exists — a finished video
+ * has no resume progress to show.
+ */
+export function toPlaybackPositionsByItemId(statuses: readonly UserContentStatus[]): Map<string, PlaybackPosition> {
+  const positionByItemId = new Map<string, PlaybackPosition>();
+  for (const status of statuses) {
+    if (status.status !== "opened") {
+      continue;
+    }
+
+    const position = toPlaybackPosition(status.metadataJson);
+    if (position !== null) {
+      positionByItemId.set(status.contentItemId, position);
+    }
+  }
+
+  return positionByItemId;
+}
+
+/**
  * Rewrites a YouTube embed URL for the IFrame API bridge: only https URLs on
  * the allowlisted YouTube hosts are accepted; `enablejsapi=1` and
  * `origin=<appOrigin>` are set (overwriting any previous values) while all
  * other existing params are preserved. `start=<floor(startSeconds)>` is added
  * only when `startSeconds` is provided and >= 10 (short leftovers are not
- * worth a seek). Returns null for any other host or unsafe URL.
+ * worth a seek). Callers suppress near-finished positions through
+ * `isResumablePlaybackPosition` before passing a start. Returns null for any
+ * other host or unsafe URL.
  */
 export function toEmbedUrlWithApi(embedUrl: string, appOrigin: string, startSeconds?: number): string | null {
   if (startSeconds !== undefined && (!Number.isFinite(startSeconds) || startSeconds < 0)) {
@@ -775,6 +813,18 @@ export function formatPlaybackPosition(position: PlaybackPosition): string {
   }
 
   return `${current} / ${formatContentDuration(position.durationSeconds)}`;
+}
+
+/**
+ * Accessible label for the list progress badge, e.g. "Resume at 12:34 of
+ * 45:00". Without a known duration only the position is announced.
+ */
+export function formatPlaybackResumeLabel(position: PlaybackPosition): string {
+  if (position.durationSeconds === null) {
+    return `Resume at ${formatContentDuration(position.positionSeconds)}`;
+  }
+
+  return `Resume at ${formatContentDuration(position.positionSeconds)} of ${formatContentDuration(position.durationSeconds)}`;
 }
 
 export interface PlaybackPositionFlushInput {

@@ -14,10 +14,13 @@ import Target from "lucide-solid/icons/target";
 import X from "lucide-solid/icons/x";
 
 import {
+  formatPlaybackPosition,
+  formatPlaybackResumeLabel,
   formatSourceLabel,
   toCreatorSourceTypes,
   type BrowsableCreator,
   type ContentStatusFlags,
+  type PlaybackPosition,
   type ReaderDensity,
 } from "./app-shell.contract";
 import { SourceIconBadge, SourceTypeIcon } from "./source-indicator";
@@ -324,6 +327,7 @@ export interface ContentListItemRowProps {
   readonly isAuthenticated: () => boolean;
   readonly isFavorite: () => boolean;
   readonly status: () => ContentStatusFlags;
+  readonly playbackPosition: () => PlaybackPosition | null;
   readonly selected: () => boolean;
   readonly favoritesView: () => boolean;
   readonly readerDensity: () => ReaderDensity;
@@ -355,6 +359,7 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
   const isAuthenticated = createMemo(() => props.isAuthenticated());
   const isFavorite = createMemo(() => props.isFavorite());
   const status = createMemo(() => props.status());
+  const playbackPosition = createMemo(() => props.playbackPosition());
   const selected = createMemo(() => props.selected());
   const favoritesView = createMemo(() => props.favoritesView());
   const readerDensity = createMemo(() => props.readerDensity());
@@ -456,8 +461,23 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
           </span>
           <span class="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
             <span class="truncate">{props.formatPublishedAt(props.contentItem.publishedAt)}</span>
-            <Show when={props.contentItem.durationSeconds !== null}>
-              <span class="shrink-0 tabular-nums">{props.formatDuration(props.contentItem.durationSeconds)}</span>
+            <Show
+              when={playbackPosition()}
+              fallback={
+                <Show when={props.contentItem.durationSeconds !== null}>
+                  <span class="shrink-0 tabular-nums">{props.formatDuration(props.contentItem.durationSeconds)}</span>
+                </Show>
+              }
+            >
+              {(position) => (
+                <span
+                  class="shrink-0 tabular-nums"
+                  data-content-playback-progress
+                  aria-label={formatPlaybackResumeLabel(position())}
+                >
+                  {formatPlaybackPosition(position())}
+                </span>
+              )}
             </Show>
             <Show when={selected()}>
               <Target size={12} class="text-selected-foreground" data-content-status="selected" aria-label="Selected" />

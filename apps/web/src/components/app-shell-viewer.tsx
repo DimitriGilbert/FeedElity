@@ -22,6 +22,7 @@ import {
   formatContentPublishedAt,
   formatSourceLabel,
   isYouTubeEmbedUrl,
+  isResumablePlaybackPosition,
   shouldFlushPlaybackPosition,
   toContentStatusFlags,
   toEmbedUrlWithApi,
@@ -382,7 +383,10 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
 
   // Resume position for the selected item, read from the opened row's
   // metadataJson. The active playback surfaces read this once per session so
-  // later position patches never rewrite a live player's source.
+  // later position patches never rewrite a live player's source. Near-finished
+  // positions are suppressed here (single gate for BOTH surfaces): the YouTube
+  // start param path only knows `positionSeconds >= 10`, so without this check
+  // a saved position 5s before the end would resume at the tail.
   const selectedResumePosition = createMemo(() => {
     const contentItemId = selectedContentItemId();
     if (contentItemId === null) {
@@ -392,7 +396,12 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
     const openedStatus = props.contentStatuses().find(
       (status) => status.contentItemId === contentItemId && status.status === "opened",
     );
-    return openedStatus === undefined ? null : toPlaybackPosition(openedStatus.metadataJson);
+    if (openedStatus === undefined) {
+      return null;
+    }
+
+    const position = toPlaybackPosition(openedStatus.metadataJson);
+    return position !== null && isResumablePlaybackPosition(position) ? position : null;
   });
 
   return (

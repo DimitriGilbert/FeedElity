@@ -48,6 +48,7 @@ import {
   showsCatalogFilters,
   toContentListInput,
   toContentStatusFlags,
+  toPlaybackPositionsByItemId,
   type AppendedPageState,
   type BrowsableCreator,
   type ContentListInput,
@@ -463,6 +464,10 @@ export function ContentListColumn(props: ContentListColumnProps) {
       : visibleItems;
   });
   const contentCount = createMemo(() => displayedContentItems().length);
+  // List progress for opened rows: contentItemId -> the playback position
+  // parsed from the opened row's metadataJson. Played rows and unparseable
+  // metadata contribute nothing (toPlaybackPositionsByItemId).
+  const playbackPositionByItemId = createMemo(() => toPlaybackPositionsByItemId(props.contentStatuses()));
 
   const visibleContentCollectionLabel = createMemo(() => {
     if (viewMode() === "favorites") {
@@ -774,6 +779,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
                         isAuthenticated={props.isAuthenticated}
                         isFavorite={() => favoriteContentItemIds().has(contentItem.id)}
                         status={() => toContentStatusFlags(props.contentStatuses(), contentItem.id)}
+                        playbackPosition={() => playbackPositionByItemId().get(contentItem.id) ?? null}
                         selected={() => props.selectedContentItemId() === contentItem.id}
                         favoritesView={() => viewMode() === "favorites"}
                         readerDensity={props.readerDensity}
