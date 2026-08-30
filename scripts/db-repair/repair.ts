@@ -202,21 +202,23 @@ async function main(): Promise<void> {
       );
     }
 
-    // Schema change to the cross-source model.
+    // Schema change to the cross-source model. The name_key column and the key
+    // recompute must run for every schema shape (legacy columns present or
+    // not), so a DB with neither still converges before the unique index is
+    // created.
     if (hasLegacyColumns) {
       db.exec("DROP INDEX IF EXISTS creator_source_identity_uidx");
       db.exec("ALTER TABLE creator DROP COLUMN source_type");
       db.exec("ALTER TABLE creator DROP COLUMN source_external_id");
-      if (!hasNameKey) {
-        db.exec("ALTER TABLE creator ADD COLUMN name_key text");
-      }
     }
-    if (hasLegacyColumns || hasNameKey) {
-      // Recompute NULL rows and rows damaged by the old divergent SQL backfill,
-      // so stored keys match the TS derivation ingestion computes.
-      const recomputedNameKeys = backfillNameKeys(db);
-      console.log(`  name_key recomputed for ${recomputedNameKeys} creator row(s)`);
+    if (!hasNameKey) {
+      db.exec("ALTER TABLE creator ADD COLUMN name_key text");
     }
+    // Recompute NULL rows and rows damaged by the old divergent SQL backfill,
+    // so stored keys match the TS derivation ingestion computes. The skip-equal
+    // check inside backfillNameKeys keeps this idempotent on converged DBs.
+    const recomputedNameKeys = backfillNameKeys(db);
+    console.log(`  name_key recomputed for ${recomputedNameKeys} creator row(s)`);
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS creator_name_key_uidx ON creator (name_key)");
     db.exec("CREATE INDEX IF NOT EXISTS creator_display_name_idx ON creator (display_name)");
 
