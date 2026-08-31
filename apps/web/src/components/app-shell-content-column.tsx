@@ -1007,8 +1007,8 @@ export function ContentListColumn(props: ContentListColumnProps) {
                         transform: `translateY(${virtualItem.start}px)`,
                       }}
                     >
-                      <Show when={displayedContentItems()[virtualItem.index]}>
-                        {(contentItem) => renderContentItemRow(contentItem())}
+                      <Show when={displayedContentItems()[virtualItem.index]} keyed>
+                        {(contentItem) => renderContentItemRow(contentItem)}
                       </Show>
                     </li>
                   )}

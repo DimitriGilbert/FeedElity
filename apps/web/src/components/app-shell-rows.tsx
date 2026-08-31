@@ -368,9 +368,11 @@ export interface ContentListItemRowProps {
   readonly status: () => ContentStatusFlags;
   readonly playbackPosition: () => PlaybackPosition | null;
   readonly selected: () => boolean;
-  // Keyboard-active row (j/k): renders the SAME highlight classes as
-  // selected() but never claims selection semantics — data-active marks it,
-  // aria-current stays reserved for the actually-selected row.
+  // Keyboard-active row (j/k): renders a distinct, weaker highlight
+  // (bg-accent) so an index shift after a list change can never make a
+  // non-selected row claim selection visuals — data-active marks it,
+  // aria-current and the bg-selected highlight stay reserved for the
+  // actually-selected row.
   readonly active: () => boolean;
   readonly favoritesView: () => boolean;
   readonly readerDensity: () => ReaderDensity;
@@ -468,7 +470,7 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
 
   return (
     <div
-      class={`group relative border-b border-border ${readerDensityPaddingClass(readerDensity())} transition hover:bg-accent hover:text-accent-foreground ${selected() || active() ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : status().played ? "bg-muted" : status().opened ? "bg-card" : "bg-background"}`}
+      class={`group relative border-b border-border ${readerDensityPaddingClass(readerDensity())} transition hover:bg-accent hover:text-accent-foreground ${selected() ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : active() ? "bg-accent text-accent-foreground" : status().played ? "bg-muted" : status().opened ? "bg-card" : "bg-background"}`}
       data-selected={selected() ? "true" : "false"}
       data-active={active() ? "true" : "false"}
       data-opened={status().opened ? "true" : "false"}

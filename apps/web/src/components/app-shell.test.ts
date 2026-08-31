@@ -2004,6 +2004,13 @@ test("content list virtualizes on lg only with stable keys and variable row heig
   expect(source).toContain('style={{ position: "relative", height: `${contentVirtualizer.getTotalSize()}px` }}');
   expect(source).toContain('position: "absolute"');
   expect(source).toContain("transform: `translateY(${virtualItem.start}px)`");
+  // The virtual row's <Show> is KEYED on the displayed item: the virtual
+  // store reconciles by "index" in place, so when hide-played removes the
+  // marked item and the list shifts, a non-keyed Show would keep stale
+  // pre-shift rows mounted (the marked video never disappears).
+  expect(source).toContain("<Show when={displayedContentItems()[virtualItem.index]} keyed>");
+  expect(source).toContain("{(contentItem) => renderContentItemRow(contentItem)}");
+  expect(source).not.toContain("renderContentItemRow(contentItem())");
   // A density switch invalidates cached row sizes so the new estimates apply
   // and measureElement re-locks the real heights.
   expect(source).toContain("createEffect(on(() => props.readerDensity(), () => contentVirtualizer.measure(), { defer: true }));");
@@ -2088,8 +2095,11 @@ test("content rows expose keyboard-active state without claiming selection seman
   const source = await readAppShellSource();
 
   expect(source).toContain("readonly active: () => boolean;");
-  // Active maps to the SAME visual classes as selected...
-  expect(source).toContain("selected() || active() ? \"bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground\"");
+  // bg-selected stays STRICTLY for selected(); active-only rows get a
+  // distinct weaker bg-accent highlight so an index shift after a list
+  // change can never dress the next row in the selection highlight.
+  expect(source).toContain("selected() ? \"bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground\" : active() ? \"bg-accent text-accent-foreground\"");
+  expect(source).not.toContain("selected() || active() ? \"bg-selected");
   // ...but is marked data-active; aria-current stays reserved for selection.
   expect(source).toContain("data-active={active() ? \"true\" : \"false\"}");
   expect(source).toContain("data-selected={selected() ? \"true\" : \"false\"}");
