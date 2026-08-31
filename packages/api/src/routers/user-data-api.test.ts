@@ -309,7 +309,7 @@ const schemaStatements = [
   )`,
   "CREATE UNIQUE INDEX creator_name_key_uidx ON creator (name_key)",
   `CREATE TABLE content_item (
-    id TEXT PRIMARY KEY,
+    id TEXT PRIMARY KEY NOT NULL,
     creator_id TEXT NOT NULL REFERENCES creator(id) ON DELETE CASCADE,
     source_type TEXT NOT NULL,
     source_external_id TEXT NOT NULL,

@@ -139,7 +139,13 @@ export function FeedHealthDialog(props: FeedHealthDialogProps) {
         id="feed-health-dashboard"
         aria-label="Feed health"
         class="m-auto w-[min(40rem,92vw)] rounded-lg border border-border bg-popover p-0 text-popover-foreground opacity-0 backdrop:bg-background/80 open:opacity-100"
-        onClose={() => props.onClose()}
+        onClose={() => {
+          // A dismissal (Escape, close button, or the parent closing it) must
+          // not leave a staged confirm intent behind. The confirm path consumes
+          // the intent itself, so clearing here only ever resets a stale stage.
+          setPendingUnsubscribe(null);
+          props.onClose();
+        }}
       >
         <div class="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
           <h2 class="flex items-center gap-2 text-sm font-semibold text-foreground">

@@ -43,6 +43,8 @@ describe("createDbConnection pragmas", () => {
     const databaseUrl = await createDatabaseUrl("feedelity-db-connection-concurrent-writer-");
     const first = await createDbConnection(databaseUrl);
 
+    let writer: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
+
     try {
       await first.client.execute("CREATE TABLE probe (id integer PRIMARY KEY, value text NOT NULL)");
       await first.client.execute("BEGIN IMMEDIATE");
@@ -59,7 +61,7 @@ try {
   client.close();
 }
 `;
-      const writer = Bun.spawn(["bun", "-e", childScript], {
+      writer = Bun.spawn(["bun", "-e", childScript], {
         cwd: join(import.meta.dir, ".."),
         env: {
           ...process.env,
@@ -121,6 +123,14 @@ try {
 
       expect(written.rows.map((row) => row.value)).toEqual(["first", "second"]);
     } finally {
+      // The success path already awaited writer.exited above (kill on an
+      // exited process is a no-op). Any earlier throw must reap the child so
+      // it cannot linger against the probe database; it is killed before the
+      // parent connection closes so a lock-waiting child cannot commit into
+      // the rolled-back transaction afterwards.
+      if (writer !== undefined) {
+        writer.kill();
+      }
       first.client.close();
     }
   }, 10000);
