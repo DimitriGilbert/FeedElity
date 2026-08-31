@@ -67,6 +67,10 @@ export interface SelectedContentViewerProps {
   readonly onSelectContent: (contentItem: CatalogContentListItem) => Promise<void>;
   readonly onPlaylistItemAdded: () => void;
   readonly onFavoriteChanged: () => void;
+  // Bumped by app-shell on every favorite toggle anywhere in the shell; the
+  // viewer refetches its favoriteItems overlay in place on each bump so the
+  // heart reconciles with content-column f-toggles (no re-key, no suspension).
+  readonly favoritesReloadKey: () => number;
   readonly onMarkContentOpened: (contentItemId: string) => Promise<void>;
   readonly onMarkContentPlayed: (contentItemId: string) => Promise<void>;
   readonly onAutoMarkContentPlayed: (contentItemId: string) => Promise<void>;
@@ -159,6 +163,11 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
   // viewer's <Suspense> and tears down the playing video. The viewer refetches
   // in place after a toggle (refetchFavoriteItems) instead of re-keying.
   const favoriteItemsValue = createMemo(() => favoriteItems.latest);
+  // A favorite toggle outside the viewer (content-column f shortcut, row
+  // action) bumps favoritesReloadKey in app-shell.tsx; refetch here in place —
+  // the .latest read above keeps the viewer mounted, so the heart reconciles
+  // without suspending or tearing down the playing video.
+  createEffect(on(() => props.favoritesReloadKey(), () => { void refetchFavoriteItems(); }, { defer: true }));
   const selectedContentIsFavorite = createMemo(() => {
     const contentItemId = selectedContentItemId();
     return contentItemId !== null && (favoriteItemsValue() ?? emptyCatalogContentItems).some((contentItem) => contentItem.id === contentItemId);
@@ -515,7 +524,12 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
               </div>
             </div>
           </Match>
-          <Match when={contentDetailValue()}>
+          {/* The success render is gated on no error: without the error check a
+              FAILED refetch for a newly selected video would keep the previous
+              video's `.latest` detail fully rendered (and playing) under the
+              new selection. With the gate, the failed refetch falls through to
+              the error fallback below instead of the stale video. */}
+          <Match when={contentDetail.error === undefined && contentDetailValue()}>
             {(detail) => (
               <div class="min-w-0">
                 <PlaybackSurface
@@ -714,6 +728,16 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
               </div>
             )}
           </Match>
+          {/* Failed refetch with a stale `.latest` value: the first-load error
+              Match above requires no value yet, so without this final fallback
+              the switch would render nothing (a silent blank viewer). The
+              stale video must never keep playing under the new selection. */}
+          <Match when={contentDetail.error !== undefined}>
+            <div class="border border-border bg-card p-4">
+              <p class="text-sm font-semibold text-destructive">Video unavailable</p>
+              <p class="mt-2 text-sm leading-6 text-muted-foreground">{formatError(contentDetail.error)}</p>
+            </div>
+          </Match>
           </Switch>
         </Show>
       </div>
@@ -837,6 +861,13 @@ function TrackedEmbedPlayer(props: TrackedEmbedPlayerProps) {
   // creation so a cleanup flush that fires after the selection moved on can
   // be skipped (the viewer's id-tagged flush already saved that tail).
   const sessionContentItemId = props.contentItemId;
+  // Live-report session guard: between selecting a new video and its detail
+  // resolving, the still-mounted previous player's reports flow into callbacks
+  // the viewer tags with the CURRENT selection id. Every LIVE report path is
+  // skipped once the prop drifts from the session id, so the old player can
+  // never write anything (position, near-end, ended) under the new item.
+  // Cleanup flushes keep their own separate guard below.
+  const isLiveSession = () => props.contentItemId === sessionContentItemId;
   // The embed src is frozen at creation: resumePosition is read exactly once
   // so later position patches (from our own saves) can never rewrite the
   // iframe src and reload the player mid-playback. Resume itself rides the
@@ -844,6 +875,10 @@ function TrackedEmbedPlayer(props: TrackedEmbedPlayerProps) {
   const embedSrc = toEmbedUrlWithApi(props.source.url, window.location.origin, props.resumePosition()?.positionSeconds) ?? props.source.url;
 
   const reportThrottledPosition = (positionSeconds: number, durationSeconds: number | null): void => {
+    if (!isLiveSession()) {
+      return;
+    }
+
     lastKnownPositionSeconds = positionSeconds;
     lastKnownDurationSeconds = durationSeconds;
     if (!shouldFlushPlaybackPosition({ lastSavedSeconds, nextSeconds: positionSeconds, lastSavedAtMs, nowMs: Date.now(), force: false })) {
@@ -863,6 +898,13 @@ function TrackedEmbedPlayer(props: TrackedEmbedPlayerProps) {
     tracker = createYouTubePlaybackTracker({
       iframe: iframeEl,
       onPosition: (position) => {
+        // Stale-session live reports are dropped entirely: this player's
+        // session no longer matches the selection, so neither the near-end
+        // auto-mark nor the position report may land on the new item.
+        if (!isLiveSession()) {
+          return;
+        }
+
         // D2 near-end detection, mirroring the native surface: within 30s of
         // the end or past 90% when the duration is known; fired exactly once
         // per playback session (keyed remounts re-arm the guard above).
@@ -887,7 +929,13 @@ function TrackedEmbedPlayer(props: TrackedEmbedPlayerProps) {
 
         reportThrottledPosition(position.positionSeconds, position.durationSeconds);
       },
-      onEnded: props.onExplicitEnded,
+      onEnded: () => {
+        if (!isLiveSession()) {
+          return;
+        }
+
+        props.onExplicitEnded();
+      },
     });
   });
 
@@ -939,6 +987,10 @@ function NativeVideoPlayer(props: NativeVideoPlayerProps) {
   // creation so a cleanup flush that fires after the selection moved on can
   // be skipped (the viewer's id-tagged flush already saved that tail).
   const sessionContentItemId = props.contentItemId;
+  // Live-report session guard (see TrackedEmbedPlayer): once the selection
+  // moves on while this player is still mounted, every live report is dropped
+  // so nothing from the old video lands under the new selection's id.
+  const isLiveSession = () => props.contentItemId === sessionContentItemId;
 
   const toNativeDuration = (video: HTMLVideoElement): number | null => {
     const duration = video.duration;
@@ -987,6 +1039,10 @@ function NativeVideoPlayer(props: NativeVideoPlayerProps) {
         }
       }}
       onTimeUpdate={(event) => {
+        if (!isLiveSession()) {
+          return;
+        }
+
         const video = event.currentTarget;
         const position = video.currentTime;
         if (!Number.isFinite(position) || position < 0) {
@@ -1008,6 +1064,10 @@ function NativeVideoPlayer(props: NativeVideoPlayerProps) {
         }
       }}
       onPause={(event) => {
+        if (!isLiveSession()) {
+          return;
+        }
+
         const video = event.currentTarget;
         const position = video.currentTime;
         if (!Number.isFinite(position)) {
@@ -1021,7 +1081,7 @@ function NativeVideoPlayer(props: NativeVideoPlayerProps) {
         props.onPositionUpdate(position, duration);
       }}
       onEnded={() => {
-        if (explicitEndedReported) {
+        if (!isLiveSession() || explicitEndedReported) {
           return;
         }
 

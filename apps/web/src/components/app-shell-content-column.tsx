@@ -538,9 +538,24 @@ export function ContentListColumn(props: ContentListColumnProps) {
   const [requestedActiveIndex, setRequestedActiveIndex] = createSignal(0);
   const activeIndex = createMemo(() => clampActiveIndex(requestedActiveIndex(), displayedContentItems().length));
   const activeContentItemId = createMemo(() => displayedContentItems()[activeIndex()]?.id ?? null);
-  // j/k restart from the top whenever the list identity (mode, filters, reload
-  // tick) changes, per the F3 spec.
-  createEffect(on(contentItemsResourceKey, () => setRequestedActiveIndex(0), { defer: true }));
+  // j/k restart from the selected item's row whenever the list identity (mode,
+  // filters, reload tick) changes, per the F3 spec — index-based resets would
+  // silently move the cursor onto a different video after local filter shifts.
+  createEffect(on(contentItemsResourceKey, () => {
+    const selectedId = props.selectedContentItemId();
+    const selectedIndex = selectedId === null ? -1 : displayedContentItems().findIndex((item) => item.id === selectedId);
+    setRequestedActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
+  }, { defer: true }));
+  // The cursor follows the user's selections by identity: mouse-selecting a
+  // row (or a mirror in the viewer) moves the active index onto that video, so
+  // Enter re-opens the highlighted row instead of whatever index it used to
+  // point at. Identity-based, so local shifts (hide-played toggle, live-reload
+  // insertions) cannot desync it; ids absent from the displayed list leave the
+  // cursor untouched.
+  createEffect(on(() => props.selectedContentItemId(), (id) => {
+    const i = displayedContentItems().findIndex((item) => item.id === id);
+    if (i >= 0) setRequestedActiveIndex(i);
+  }, { defer: true }));
   // Escape clears both column searches through the shared app-shell counter.
   createEffect(on(() => props.searchClearKey(), () => setSearch(""), { defer: true }));
   // List progress for opened rows: contentItemId -> the playback position

@@ -1457,6 +1457,51 @@ test("playback flushes are tagged by content id and never mis-attribute across s
   // position under the new item's id).
   expect(viewerSource).toContain("const sessionContentItemId = props.contentItemId;");
   expect((viewerSource.match(/props\.contentItemId !== sessionContentItemId/g) ?? [])).toHaveLength(2);
+  // LIVE reports are session-guarded too: while the previous player is still
+  // mounted during the new selection's refetch window, its throttled reports,
+  // pause flushes, ended reports, and near-end auto-marks are all dropped so
+  // nothing from the old video is ever written under the new item's id. Both
+  // tracked surfaces expose the same guard helper.
+  expect((viewerSource.match(/const isLiveSession = \(\) => props\.contentItemId === sessionContentItemId;/g) ?? [])).toHaveLength(2);
+  // TrackedEmbedPlayer: throttle path, bridge position path (near-end + ended
+  // position), and the explicit ended callback all check the guard.
+  expect((viewerSource.match(/if \(!isLiveSession\(\)\) \{\n      return;\n    \}/g) ?? [])).toHaveLength(1);
+  expect((viewerSource.match(/if \(!isLiveSession\(\)\) \{\n          return;\n        \}/g) ?? [])).toHaveLength(4);
+  // NativeVideoPlayer: timeupdate, pause, and ended all check the guard.
+  expect(viewerSource).toContain("onTimeUpdate={(event) => {\n        if (!isLiveSession()) {\n          return;\n        }");
+  expect(viewerSource).toContain("onPause={(event) => {\n        if (!isLiveSession()) {\n          return;\n        }");
+  expect(viewerSource).toContain("onEnded={() => {\n        if (!isLiveSession() || explicitEndedReported) {");
+});
+
+test("viewer detail gates success on no error and reconciles favorites from shell toggles", async () => {
+  const viewerSource = await Bun.file(new URL("./app-shell-viewer.tsx", import.meta.url)).text();
+  const shellSource = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  // A1: the success render is gated on no detail error, so a FAILED refetch
+  // for a newly selected video can never keep the previous video's `.latest`
+  // detail (and its playing player) rendered under the new selection. The
+  // first-load error Match (error with no value yet) stays untouched ahead of
+  // it, and the loading skeleton still precedes the success Match.
+  expect(viewerSource).toContain("<Match when={contentDetail.error !== undefined && contentDetailValue() === undefined}>");
+  expect(viewerSource).toContain("<Match when={contentDetail.loading && contentDetailValue() === undefined}>");
+  expect(viewerSource).toContain("<Match when={contentDetail.error === undefined && contentDetailValue()}>");
+  // A failed refetch WITH a stale `.latest` value falls through the gated
+  // success Match to the final error fallback — never a silent blank viewer.
+  const successMatchIndex = viewerSource.indexOf("<Match when={contentDetail.error === undefined && contentDetailValue()}>");
+  const fallbackMatchIndex = viewerSource.indexOf("<Match when={contentDetail.error !== undefined}>");
+  const switchEndIndex = viewerSource.indexOf("</Switch>", successMatchIndex);
+  expect(successMatchIndex).toBeGreaterThan(-1);
+  expect(fallbackMatchIndex).toBeGreaterThan(successMatchIndex);
+  expect(switchEndIndex).toBeGreaterThan(fallbackMatchIndex);
+
+  // A4: shell-level favorite toggles (content-column f shortcut, row actions)
+  // reach the viewer through the favoritesReloadKey prop and refetch the
+  // viewer's favoriteItems overlay in place, so the heart reconciles without
+  // re-keying the resource (the source must stay free of the reload key).
+  expect(shellSource).toContain("favoritesReloadKey={favoritesReloadKey}");
+  expect(viewerSource).toContain("readonly favoritesReloadKey: () => number;");
+  expect(viewerSource).toContain("createEffect(on(() => props.favoritesReloadKey(), () => { void refetchFavoriteItems(); }, { defer: true }));");
+  expect(viewerSource).not.toContain("props.favoritesReloadKey().toString()");
 });
 
 test("content list rows surface resume progress in the duration slot (F1c)", async () => {
@@ -2065,7 +2110,15 @@ test("content column owns the keyboard-active row with clamped moves and both sc
   expect(source).toContain("const [requestedActiveIndex, setRequestedActiveIndex] = createSignal(0);");
   expect(source).toContain("const activeIndex = createMemo(() => clampActiveIndex(requestedActiveIndex(), displayedContentItems().length));");
   expect(source).toContain("const activeContentItemId = createMemo(() => displayedContentItems()[activeIndex()]?.id ?? null);");
-  expect(source).toContain("createEffect(on(contentItemsResourceKey, () => setRequestedActiveIndex(0), { defer: true }));");
+  // The resource-key reset is identity-based: it lands on the selected item's
+  // row when it is still visible (a hide-played toggle or live-reload shift
+  // must not move the highlight onto a different video), else back to 0.
+  expect(source).toContain("const selectedIndex = selectedId === null ? -1 : displayedContentItems().findIndex((item) => item.id === selectedId);");
+  expect(source).toContain("setRequestedActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);");
+  // Mouse selections move the cursor by identity: the active row follows the
+  // selected content id, so Enter re-opens the highlighted row after any
+  // index-shifting filter change.
+  expect(source).toContain("createEffect(on(() => props.selectedContentItemId(), (id) => {\n    const i = displayedContentItems().findIndex((item) => item.id === id);\n    if (i >= 0) setRequestedActiveIndex(i);\n  }, { defer: true }));");
   // Commands execute against the active row: moves clamp the WRITTEN index (so
   // repeated boundary moves cannot walk the raw signal out of range and leave
   // the opposite-direction command unresponsive) then scroll, Enter opens
@@ -2492,8 +2545,12 @@ test("content rows expose concise icon source indicators and avoid fake thumbnai
   expect(source).toContain("Playback source");
   expect(source).not.toContain("Listed from");
   expect(source).not.toContain("listed from");
-  expect(source).not.toContain(" exists");
-  expect(source).not.toContain("exists ");
+  // Ban verbose "exists" copy in rendered UI text. The only allowed
+  // occurrence is the structured playlist/collection removal error message
+  // ("This ... no longer exists."); every other "exists" phrasing is banned.
+  const existsCopyMatches = source.match(/\bexists\b/g) ?? [];
+  const allowedExistsCopies = source.match(/no longer exists\./g) ?? [];
+  expect(existsCopyMatches).toHaveLength(allowedExistsCopies.length);
   expect(source).not.toContain("blablabla");
   expect(source).not.toContain("playback source switching is in the viewer");
   expect(source).not.toContain("fake thumbnail");
@@ -3210,7 +3267,13 @@ test("destructive unsubscribe actions require the confirm dialog before any clie
   expect(confirmSource).toContain("data-confirm-dialog-cancel");
   expect(confirmSource).toContain("data-confirm-dialog-confirm");
   expect(confirmSource).toContain("onClick={() => props.onCancel()}");
-  expect(confirmSource).toContain("onClick={() => props.onConfirm()}");
+  // The confirm button arms the confirmed guard before firing the destructive
+  // callback so the native close event does not double-fire onCancel.
+  expect(confirmSource).toContain("onClick={() => {\n            setConfirmed(true);\n            props.onConfirm();\n          }}");
+  // Close path skips onCancel when the close was caused by a confirm...
+  expect(confirmSource).toContain("if (confirmed()) {\n          return;\n        }\n        props.onCancel();");
+  // ...and the guard resets at the start of every new open session.
+  expect(confirmSource).toContain("if (props.open) {\n      setConfirmed(false);\n    }");
   expect(confirmSource).toContain("bg-destructive");
 
   // Row + bulk buttons only STAGE the confirm intent.

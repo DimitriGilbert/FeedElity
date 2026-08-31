@@ -17,11 +17,23 @@ const confirmDialogButtonClass =
  * state: `open` drives the native dialog, `onConfirm` fires the destructive
  * action (the caller then flips `open` back to false), and `onCancel` fires on
  * cancel via button or the native close path (Escape, backdrop dismissal is
- * not enabled). Confirm styling is always destructive — this component only
- * exists to gate irreversible overlay writes.
+ * not enabled). Because closing the dialog from the confirm path also emits
+ * the native close event, the close handler skips `onCancel` when the close
+ * was caused by a confirm in the same open session; the flag resets the next
+ * time `open` becomes true. Confirm styling is always destructive — this
+ * component only exists to gate irreversible overlay writes.
  */
 export function ConfirmDialog(props: ConfirmDialogProps) {
   const [dialogRef, setDialogRef] = createSignal<HTMLDialogElement | null>(null);
+  const [confirmed, setConfirmed] = createSignal(false);
+
+  // Reset the confirm guard whenever a new open session begins so a confirm
+  // in one session cannot suppress `onCancel` in the next one.
+  createEffect(() => {
+    if (props.open) {
+      setConfirmed(false);
+    }
+  });
 
   // Drive the native dialog open/closed state idempotently. showModal()/close()
   // throw InvalidStateError if called in the wrong state, so guard each call.
@@ -45,7 +57,14 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
       data-confirm-dialog
       aria-label={props.title}
       class="m-auto w-[min(24rem,92vw)] rounded-lg border border-border bg-popover p-0 text-popover-foreground opacity-0 backdrop:bg-background/80 open:opacity-100"
-      onClose={() => props.onCancel()}
+      onClose={() => {
+        // A confirm closes the dialog via the parent flipping `open`, which
+        // emits this native close event; skip cancel handling in that case.
+        if (confirmed()) {
+          return;
+        }
+        props.onCancel();
+      }}
     >
       <div class="px-4 py-3">
         <h2 class="text-sm font-semibold text-foreground" data-confirm-dialog-title>
@@ -68,7 +87,10 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
           type="button"
           class={`${confirmDialogButtonClass} bg-destructive text-destructive-foreground hover:bg-destructive/90`}
           data-confirm-dialog-confirm
-          onClick={() => props.onConfirm()}
+          onClick={() => {
+            setConfirmed(true);
+            props.onConfirm();
+          }}
         >
           {props.confirmLabel}
         </button>

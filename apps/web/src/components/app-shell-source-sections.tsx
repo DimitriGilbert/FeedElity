@@ -311,13 +311,19 @@ export function SettingsColumnSection(props: SettingsColumnSectionProps) {
   const [importUserDataError, setImportUserDataError] = createSignal<string | null>(null);
   const [importUserDataResult, setImportUserDataResult] = createSignal<UserDataImportOutcome | null>(null);
   let metadataPollTimer: ReturnType<typeof setTimeout> | null = null;
+  let metadataPollDisposed = false;
   const clearMetadataPollTimer = () => {
     if (metadataPollTimer !== null) {
       clearTimeout(metadataPollTimer);
       metadataPollTimer = null;
     }
   };
-  onCleanup(clearMetadataPollTimer);
+  onCleanup(() => {
+    // An in-flight poll fetch that resolves after unmount must not re-arm the
+    // timer chain; the timer alone is not enough to stop it.
+    metadataPollDisposed = true;
+    clearMetadataPollTimer();
+  });
 
   const scheduleMetadataPoll = () => {
     clearMetadataPollTimer();
@@ -327,6 +333,9 @@ export function SettingsColumnSection(props: SettingsColumnSectionProps) {
   };
 
   const pollCreatorMetadataStatus = async () => {
+    if (metadataPollDisposed) {
+      return;
+    }
     try {
       const status = await client.creatorMetadata.status();
       const run = status.run;
@@ -709,6 +718,17 @@ export function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
   };
 
   const updatePlaylist = async (playlist: Playlist) => {
+    // Resolve the entity from the live list at submit time: the captured
+    // object may be stale (refetch between render and click) and its position
+    // would clobber a concurrent reorder. If the playlist was deleted in the
+    // meantime, surface an error instead of acting on the stale snapshot.
+    const currentPlaylist = playlistsValue()?.find((candidate) => candidate.id === playlist.id) ?? null;
+    if (currentPlaylist === null) {
+      setPlaylistError("This playlist no longer exists.");
+      editPlaylist(null);
+      return;
+    }
+
     const name = playlistName().trim();
     if (name.length === 0) {
       setPlaylistError("Name the playlist before saving.");
@@ -718,7 +738,7 @@ export function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
     setPlaylistBusy(true);
     setPlaylistError(null);
     try {
-      await client.overlays.updatePlaylist({ playlistId: playlist.id, name, description: playlistDescription().trim().length === 0 ? null : playlistDescription().trim(), sortMode: playlistSortMode(), position: playlist.position });
+      await client.overlays.updatePlaylist({ playlistId: currentPlaylist.id, name, description: playlistDescription().trim().length === 0 ? null : playlistDescription().trim(), sortMode: playlistSortMode(), position: currentPlaylist.position });
       await refetchPlaylists();
     } catch (error) {
       setPlaylistError(formatError(error));
@@ -941,6 +961,17 @@ export function CollectionColumnSection(props: CollectionColumnSectionProps) {
   };
 
   const updateCollection = async (collection: CreatorCollection) => {
+    // Resolve the entity from the live list at submit time: the captured
+    // object may be stale (refetch between render and click) and its position
+    // would clobber a concurrent reorder. If the collection was deleted in
+    // the meantime, surface an error instead of acting on the stale snapshot.
+    const currentCollection = collectionsValue()?.find((candidate) => candidate.id === collection.id) ?? null;
+    if (currentCollection === null) {
+      setCollectionError("This collection no longer exists.");
+      editCollection(null);
+      return;
+    }
+
     const name = collectionName().trim();
     if (name.length === 0) {
       setCollectionError("Name the collection before saving.");
@@ -951,10 +982,10 @@ export function CollectionColumnSection(props: CollectionColumnSectionProps) {
     setCollectionError(null);
     try {
       await client.overlays.updateCollection({
-        collectionId: collection.id,
+        collectionId: currentCollection.id,
         name,
         description: collectionDescription().trim().length === 0 ? null : collectionDescription().trim(),
-        position: collection.position,
+        position: currentCollection.position,
       });
       await refetchCollections();
       props.onCollectionsChanged();
