@@ -53,6 +53,7 @@ import {
   creatorListSortValues,
   creatorSearchInputId,
   creatorSourceFilterId,
+  creatorSourceFilterLocalStorageKey,
   defaultLeftFraction,
   defaultMiddleFraction,
   emptyAppendedPageState,
@@ -61,6 +62,7 @@ import {
   formatSourceLabel,
   joinFeedResultsWithFeeds,
   leftPaneTabLabels,
+  leftPaneTabLocalStorageKey,
   minLeftFraction,
   minMiddleFraction,
   minRightFraction,
@@ -69,6 +71,8 @@ import {
   pageHasMoreForKey,
   pageItemsForKey,
   paneWidthsLocalStorageKey,
+  persistLocalValue,
+  readPersistedLocalValue,
   shellGridClass,
   shellRootClass,
   sortFeedHealthEntries,
@@ -78,10 +82,13 @@ import {
   sourceCreatorListRegionClass,
   sourceFeedListRegionClass,
   sourceHeaderRegionClass,
+  sourceTypeFilterValues,
   toDesktopColumnTemplate,
   toFeedListInput,
   toCreatorListInput,
   toCreatorListSortFromSettings,
+  toPersistedLeftPaneTab,
+  toPersistedSourceTypeFilter,
   toReaderDensityFromSettings,
   type AppendedPageState,
   type BrowsableCreator,
@@ -173,8 +180,6 @@ export {
   type ShellSelectionState,
   type ViewerMode,
 } from "./app-shell.contract";
-
-const sourceFilterOptions: readonly SourceType[] = ["youtube", "odysee", "peertube"];
 
 type SubscriptionAction = "subscribe" | "unsubscribe";
 
@@ -356,7 +361,11 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   // keystroke. The input itself stays controlled by the immediate signal. This
   // reacts only to typed input — it is not a background refresh.
   const debouncedSearch = createDebouncedValue(search, 300);
-  const [sourceType, setSourceType] = createSignal<SourceType | null>(null);
+  // The creator source filter is device-persisted (F7, decision D9) and
+  // applies to anonymous browsing too, so the seed needs no auth gate.
+  const [sourceType, setSourceType] = createSignal<SourceType | null>(
+    toPersistedSourceTypeFilter(readPersistedLocalValue(creatorSourceFilterLocalStorageKey)),
+  );
   const [appendedCatalogCreatorPage, setAppendedCatalogCreatorPage] = createSignal<AppendedPageState<BrowsableCreator>>(emptyAppendedPageState());
   const [catalogCreatorOffset, setCatalogCreatorOffset] = createSignal<PaginationOffsetState>({ key: "", nextOffset: 0 });
   const [creatorPageBusy, setCreatorPageBusy] = createSignal(false);
@@ -865,10 +874,11 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   });
 
   // Shared source-filter mutation for the popover options: every selection
-  // resets the library paging limit exactly like the previous select's
-  // onChange did.
+  // persists the filter (the empty string encodes "All") and resets the
+  // library paging limit exactly like the previous select's onChange did.
   const applyCreatorSourceType = (nextSourceType: SourceType | null) => {
     setSourceType(nextSourceType);
+    persistLocalValue(creatorSourceFilterLocalStorageKey, nextSourceType ?? "");
     setLibraryCreatorLimit(creatorListLimit);
   };
 
@@ -1075,7 +1085,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
               >
                 <LayoutGrid size={14} aria-hidden="true" /> All
               </button>
-              <For each={sourceFilterOptions}>
+              <For each={sourceTypeFilterValues}>
                 {(source) => {
                   const isActive = createMemo(() => sourceType() === source);
                   return (
@@ -1352,7 +1362,36 @@ export default function AppShell(props: AppShellProps) {
   // active-row state.
   const [contentShortcutCommand, setContentShortcutCommand] = createSignal<ContentShortcutCommand | null>(null);
   const [statusSelectionError, setStatusSelectionError] = createSignal<string | null>(null);
-  const [activeTab, setActiveTab] = createSignal<LeftPaneTab>("library");
+  // The active tab is device-persisted (F7, decision D9). While the session
+  // check is still pending the auth gate is unknown, so the seed evaluates the
+  // persisted value against the current (unauthenticated) gate; the effect
+  // below re-applies it once a session resolves.
+  const [activeTab, setActiveTab] = createSignal<LeftPaneTab>(
+    toPersistedLeftPaneTab(readPersistedLocalValue(leftPaneTabLocalStorageKey), isAuthenticated()),
+  );
+
+  // Single mutation for every tab button: renders the tab and persists it.
+  const changeActiveTab = (tab: LeftPaneTab) => {
+    setActiveTab(tab);
+    persistLocalValue(leftPaneTabLocalStorageKey, tab);
+  };
+
+  // Once the session resolves, align the active tab with the resolved auth
+  // state: a signed-in user gets their persisted tab back (the seed may have
+  // coerced an auth-only tab to the default while the check was pending), and
+  // an anonymous visitor never keeps one (its button renders only signed-in).
+  createEffect(() => {
+    if (session().isPending) {
+      return;
+    }
+
+    if (isAuthenticated()) {
+      setActiveTab(toPersistedLeftPaneTab(readPersistedLocalValue(leftPaneTabLocalStorageKey), true));
+      return;
+    }
+
+    setActiveTab((current) => toPersistedLeftPaneTab(current, false));
+  });
   const [middlePanePanel, setMiddlePanePanel] = createSignal<MiddlePanePanel | null>(null);
   const [viewerMode, setViewerMode] = createSignal<ViewerMode>("content");
   const settingsResourceInput = createMemo(() => {
@@ -1693,7 +1732,7 @@ export default function AppShell(props: AppShellProps) {
           isAuthenticated={isAuthenticated}
           mode={mode()}
           activeTab={activeTab}
-          setActiveTab={setActiveTab}
+          setActiveTab={changeActiveTab}
           readerDensity={readerDensity}
           creatorSort={creatorSort}
           creatorSortPending={creatorListFetchPending}

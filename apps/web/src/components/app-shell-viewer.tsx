@@ -4,6 +4,7 @@ import ArrowLeft from "lucide-solid/icons/arrow-left";
 import CircleCheck from "lucide-solid/icons/circle-check";
 import CirclePlay from "lucide-solid/icons/circle-play";
 import Clapperboard from "lucide-solid/icons/clapperboard";
+import Copy from "lucide-solid/icons/copy";
 import ExternalLink from "lucide-solid/icons/external-link";
 import Eye from "lucide-solid/icons/eye";
 import EyeOff from "lucide-solid/icons/eye-off";
@@ -27,6 +28,7 @@ import {
   toContentStatusFlags,
   toEmbedUrlWithApi,
   toPlaybackPosition,
+  toCopyableStreamLink,
   toPlayableSources,
   toYoutubeNoCookieFromSettings,
   viewerColumnClass,
@@ -43,6 +45,10 @@ const emptyCatalogContentItems: readonly CatalogContentListItem[] = [];
 const emptyCatalogContentSources: readonly CatalogContentSource[] = [];
 
 const emptyPlaylists: readonly Playlist[] = [];
+
+// How long the "Copy stream URL" button shows its "Copied" flash before
+// reverting to the normal label.
+const copyFeedbackResetMs = 2_000;
 
 export interface SelectedContentViewerProps {
   readonly isAuthenticated: () => boolean;
@@ -183,6 +189,59 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
   const hasYouTubeSource = createMemo(() =>
     playableSources().some((source) => source.sourceType === "youtube"),
   );
+  // F5: "Copy stream URL" copies the selected source's native media URL (or the
+  // canonical page link for embed-only items) so it can be handed to mpv or
+  // yt-dlp. The "Copied" flash self-clears after two seconds; the timer is
+  // cleared on disposal and before each re-arm, so it can neither leak past
+  // unmount nor clear a newer flash early.
+  const copyStreamLink = createMemo(() => toCopyableStreamLink(selectedPlayableSource()));
+  const [streamUrlCopied, setStreamUrlCopied] = createSignal(false);
+  const [copyStreamError, setCopyStreamError] = createSignal<string | null>(null);
+  const copyControlTitle = createMemo(() => {
+    if (streamUrlCopied()) {
+      return "Copied";
+    }
+
+    const source = selectedPlayableSource();
+    if (source === null) {
+      return "";
+    }
+
+    return source.kind === "native" ? "Stream URL for mpv/yt-dlp" : "Page link for mpv/yt-dlp";
+  });
+  let copyFeedbackTimerId: ReturnType<typeof setTimeout> | undefined;
+  const clearCopyFeedbackTimer = () => {
+    if (copyFeedbackTimerId !== undefined) {
+      clearTimeout(copyFeedbackTimerId);
+      copyFeedbackTimerId = undefined;
+    }
+  };
+  onCleanup(clearCopyFeedbackTimer);
+
+  const copyStreamUrl = async () => {
+    const link = copyStreamLink();
+    if (link === null) {
+      return;
+    }
+
+    setCopyStreamError(null);
+    try {
+      // navigator.clipboard is absent in insecure contexts; the access throws
+      // inside the try and is surfaced as a visible error below.
+      await navigator.clipboard.writeText(link.url);
+    } catch (error) {
+      setStreamUrlCopied(false);
+      setCopyStreamError(`Copy failed: ${formatError(error)}`);
+      return;
+    }
+
+    setStreamUrlCopied(true);
+    clearCopyFeedbackTimer();
+    copyFeedbackTimerId = setTimeout(() => {
+      copyFeedbackTimerId = undefined;
+      setStreamUrlCopied(false);
+    }, copyFeedbackResetMs);
+  };
   const effectiveTargetPlaylistId = createMemo(() => {
     const loadedPlaylists = playlistsValue() ?? emptyPlaylists;
     const explicitTargetId = targetPlaylistId();
@@ -608,6 +667,26 @@ export function SelectedContentViewer(props: SelectedContentViewerProps) {
                       <span class="text-xs">{useNoCookieEmbed() ? "Privacy" : "Standard"}</span>
                     </button>
                   </div>
+                </Show>
+                <Show when={copyStreamLink()}>
+                  {(link) => (
+                    <div class="mt-2 flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        class="inline-flex items-center gap-1 border border-border bg-background px-2 py-1 text-xs font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                        data-copy-stream-url
+                        aria-label={copyControlTitle()}
+                        title={copyControlTitle()}
+                        onClick={copyStreamUrl}
+                      >
+                        <Copy size={12} />
+                        <span>{streamUrlCopied() ? "Copied" : link().label}</span>
+                      </button>
+                      <Show when={copyStreamError()}>
+                        {(message) => <p class="text-xs text-destructive">{message()}</p>}
+                      </Show>
+                    </div>
+                  )}
                 </Show>
                 <Show when={detail().mirrors.length > 0}>
                   <div class="mt-2 flex flex-wrap items-center gap-1.5" data-viewer-mirror-switcher>

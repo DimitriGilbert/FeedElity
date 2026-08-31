@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { CatalogContentSource, CatalogCreator, CatalogCreatorSummary, CatalogFeed, FeedHealthEntry, RefreshFeedResult, RefreshRun, RefreshRunReport, UserContentStatus, UserSetting } from "@FeedElity/api";
-import type { LeftPaneTab, MiddlePanePanel, ViewerMode } from "./app-shell.contract";
+import type { LeftPaneTab, MiddlePanePanel, PlayableSource, ViewerMode } from "./app-shell.contract";
 
 import {
   addSourceHelpId,
@@ -15,17 +15,20 @@ import {
   contentScrollRegionClass,
   contentSearchInputId,
   contentSourceFilterId,
+  contentSourceFilterLocalStorageKey,
   contentViewModeAllId,
   contentViewModeFavoritesId,
   contentViewModeHistoryId,
   contentViewModePlayedId,
   contentViewModeSubscribedId,
+  contentViewModeLocalStorageKey,
   creatorListLimit,
   creatorListSortInputId,
   creatorListSortSettingKey,
   creatorListSortValues,
   creatorSearchInputId,
   creatorSourceFilterId,
+  creatorSourceFilterLocalStorageKey,
   defaultLeftFraction,
   defaultMiddleFraction,
   desktopShellGridClass,
@@ -45,10 +48,13 @@ import {
   hasInternalAppHeader,
   joinFeedResultsWithFeeds,
   leftPaneTabLabels,
+  leftPaneTabLocalStorageKey,
   minLeftFraction,
   minMiddleFraction,
   minRightFraction,
   paneWidthsLocalStorageKey,
+  persistLocalValue,
+  readPersistedLocalValue,
   clampLeftFraction,
   clampMiddleFraction,
   playlistDescriptionInputId,
@@ -68,6 +74,7 @@ import {
   settingValueInputId,
   shellGridClass,
   shellColumns,
+  shellModeLocalStorageKey,
   shellPaneIds,
   shellRootClass,
   showsCatalogFilters,
@@ -79,7 +86,9 @@ import {
   sourceCreatorListRegionClass,
   sourceFeedListRegionClass,
   sourceHeaderRegionClass,
+  sourceTypeFilterValues,
   toContentListInput,
+  toCopyableStreamLink,
   toDesktopColumnTemplate,
   toEmbedUrlWithApi,
   toFeedListInput,
@@ -88,6 +97,11 @@ import {
   toPlayableSources,
   toCreatorListSortFromSettings,
   toCreatorSourceTypes,
+  toContentViewModeDefault,
+  toPersistedContentViewMode,
+  toPersistedLeftPaneTab,
+  toPersistedShellMode,
+  toPersistedSourceTypeFilter,
   toReaderDensityFromSettings,
   toSafePlaybackUrl,
   toShellContentSelectionState,
@@ -136,6 +150,35 @@ async function readAppShellSource() {
   );
 
   return sources.join("\n");
+}
+
+/**
+ * A complete Storage implementation backed by a Map so the guarded
+ * `readPersistedLocalValue`/`persistLocalValue` pair can be exercised through
+ * real localStorage semantics (bun:test has no Web Storage global).
+ */
+function toStorageStub(store: Map<string, string>): Storage {
+  return {
+    get length() {
+      return store.size;
+    },
+    clear: () => {
+      store.clear();
+    },
+    key: (index: number) => {
+      return [...store.keys()][index] ?? null;
+    },
+    getItem: (key: string) => {
+      const value = store.get(key);
+      return value === undefined ? null : value;
+    },
+    setItem: (key: string, value: string) => {
+      store.set(key, String(value));
+    },
+    removeItem: (key: string) => {
+      store.delete(key);
+    },
+  };
 }
 
 test("shell exposes the required three-pane RSS reader contract", () => {
@@ -372,7 +415,7 @@ test("creator pane is wired to anonymous catalog creators and feeds", async () =
 test("creator source-type filter scopes the creator list without changing playback source switching", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("const [sourceType, setSourceType] = createSignal<SourceType | null>(null)");
+  expect(source).toContain("toPersistedSourceTypeFilter(readPersistedLocalValue(creatorSourceFilterLocalStorageKey))");
   // Catalog search is debounced: the list input reads the 300 ms debounced
   // mirror of the search signal, not the raw keystroke value.
   expect(source).toContain("() => toCreatorListInput(debouncedSearch(), sourceType(), props.creatorSort())");
@@ -496,7 +539,7 @@ test("content pane is wired to anonymous catalog content items", async () => {
   expect(source).toContain("<Show when={showsCatalogFilters(viewMode()) || (props.isAuthenticated() && (viewMode() === \"favorites\" || viewMode() === \"history-opened\" || viewMode() === \"played\"))}>");
   expect(source).toContain("aria-label={visibleFiltersLabel()}");
   expect(source).toContain("onInput={(event) => setSearch(event.currentTarget.value)}");
-  expect(source).toContain("onChange={(event) => setSourceType(toSourceFilterValue(event.currentTarget.value))}");
+  expect(source).toContain("onChange={(event) => changeSourceType(toSourceFilterValue(event.currentTarget.value))}");
   expect(source).toContain("selected={() => props.selectedContentItemId() === contentItem.id}");
   expect(source).toContain("data-selected-content-item-id={selectedContentItemId() ?? \"\"}");
 });
@@ -517,7 +560,7 @@ test("content filters are Solid state backed and avoid class-name filtering", as
   ];
 
   expect(source).toContain("const [search, setSearch] = createSignal(\"\")");
-  expect(source).toContain("const [sourceType, setSourceType] = createSignal<SourceType | null>(null)");
+  expect(source).toContain("toPersistedSourceTypeFilter(readPersistedLocalValue(contentSourceFilterLocalStorageKey))");
   expect(source).toContain("props.selectedCollectionId(),");
 
   for (const snippet of forbiddenDomFilteringSnippets) {
@@ -1008,6 +1051,41 @@ test("odysee embed sources are playable while odysee sources without any URL sta
   expect(toPlayableSources(odyseeUnplayable)).toEqual([]);
 });
 
+test("toCopyableStreamLink picks the native media URL or the canonical page link", () => {
+  expect(toCopyableStreamLink(null)).toBeNull();
+
+  const nativeSource: PlayableSource = {
+    id: "native-1",
+    sourceType: "peertube",
+    label: "PeerTube media",
+    kind: "native",
+    url: "https://media.example.test/video-1.mp4",
+    canonicalUrl: "https://peertube.example.test/w/video-1",
+    priority: 1,
+  };
+  expect(toCopyableStreamLink(nativeSource)).toEqual({
+    label: "Copy stream URL",
+    url: "https://media.example.test/video-1.mp4",
+  });
+
+  const embedSource: PlayableSource = {
+    id: "embed-1",
+    sourceType: "odysee",
+    label: "Odysee embed",
+    kind: "embed",
+    url: "https://odysee.example.test/$/embed/video-1",
+    canonicalUrl: "https://odysee.example.test/video-1",
+    priority: 1,
+  };
+  expect(toCopyableStreamLink(embedSource)).toEqual({
+    label: "Copy page link",
+    url: "https://odysee.example.test/video-1",
+  });
+
+  // An embed-only source without any canonical URL has nothing safe to copy.
+  expect(toCopyableStreamLink({ ...embedSource, canonicalUrl: "" })).toBeNull();
+});
+
 test("toPlaybackPosition parses the opened-row playback metadata narrowly", () => {
   expect(toPlaybackPosition(null)).toBeNull();
   expect(toPlaybackPosition("not json")).toBeNull();
@@ -1389,6 +1467,30 @@ test("near-finished saved positions are not resumed on either surface", async ()
   // param and the native video never seeks (its own live-duration guard stays
   // in place for saved durations that are unknown or stale).
   expect(viewerSource).toContain("return position !== null && isResumablePlaybackPosition(position) ? position : null;");
+});
+
+test("viewer copy affordance copies the selected stream URL with feedback and visible failure (F5)", async () => {
+  const viewerSource = await Bun.file(new URL("./app-shell-viewer.tsx", import.meta.url)).text();
+
+  // The affordance derives from the same selected playable source the player
+  // uses: native copies the media URL, embed-only copies the canonical page
+  // link (labels come from toCopyableStreamLink, unit-tested above).
+  expect(viewerSource).toContain("const copyStreamLink = createMemo(() => toCopyableStreamLink(selectedPlayableSource()));");
+  expect(viewerSource).toContain("data-copy-stream-url");
+  expect(viewerSource).toContain("aria-label={copyControlTitle()}");
+  expect(viewerSource).toContain("title={copyControlTitle()}");
+  expect(viewerSource).toContain("Stream URL for mpv/yt-dlp");
+  expect(viewerSource).toContain("Page link for mpv/yt-dlp");
+  expect(viewerSource).toContain("onClick={copyStreamUrl}");
+  expect(viewerSource).toContain("{streamUrlCopied() ? \"Copied\" : link().label}");
+  expect(viewerSource).toContain("await navigator.clipboard.writeText(link.url);");
+  // Clipboard failure is surfaced as visible text, never swallowed.
+  expect(viewerSource).toContain("setCopyStreamError(`Copy failed: ${formatError(error)}`);");
+  expect(viewerSource).toContain("<Show when={copyStreamError()}>");
+  // The Copied flash resets after two seconds and the timer never leaks.
+  expect(viewerSource).toContain("copyFeedbackTimerId = setTimeout(() => {");
+  expect(viewerSource).toContain("clearTimeout(copyFeedbackTimerId);");
+  expect(viewerSource).toContain("onCleanup(clearCopyFeedbackTimer);");
 });
 
 test("postMessage and message listeners stay confined to the YouTube bridge module", async () => {
@@ -1825,12 +1927,14 @@ test("favorites view is an authenticated content-pane filter using protected pro
   expect(contentViewModeFavoritesId).toBe("content-view-favorites");
   expect(contentViewModeHistoryId).toBe("content-view-history");
   expect(contentViewModePlayedId).toBe("content-view-played");
-  expect(source).toContain("const [viewMode, setViewMode] = createSignal<ContentViewMode>(props.mode === \"library\" ? \"subscribed\" : \"catalog\")");
+  expect(source).toContain("toPersistedContentViewMode(readPersistedLocalValue(contentViewModeLocalStorageKey), props.isAuthenticated(), props.mode)");
+  // The anonymous reset effect stays the enforcer for the auth gate.
+  expect(source).toContain('setViewMode(props.mode === "library" ? "subscribed" : "catalog")');
   expect(source).toContain("<Show when={props.isAuthenticated()}>\n            <div class=\"mt-2 grid grid-cols-4 gap-2\" aria-label=\"Content view\">");  expect(source).toContain("return client.overlays.favoriteContentItems()");
   expect(source).toContain("return client.catalog.contentItems(input)");
-  expect(source).toContain("setViewMode(\"favorites\")");
-  expect(source).toContain("setViewMode(\"history-opened\")");
-  expect(source).toContain("setViewMode(\"played\")");
+  expect(source).toContain('changeViewMode("favorites")');
+  expect(source).toContain('changeViewMode("history-opened")');
+  expect(source).toContain('changeViewMode("played")');
   expect(source).not.toContain('data-shell-column="favorites"');
 });
 
@@ -2046,6 +2150,90 @@ test("hide played defaults to on when connected unless an explicit preference ex
 
 test("hide played preference is persisted via localStorage helpers", () => {
   expect(hidePlayedLocalStorageKey).toBe("feedelity.hide-played");
+});
+
+test("persisted UI state keys use stable localStorage names (F7)", () => {
+  expect(shellModeLocalStorageKey).toBe("feedelity.shell.mode");
+  expect(leftPaneTabLocalStorageKey).toBe("feedelity.shell.left-tab");
+  expect(creatorSourceFilterLocalStorageKey).toBe("feedelity.creators.source-filter");
+  expect(contentViewModeLocalStorageKey).toBe("feedelity.content.view-mode");
+  expect(contentSourceFilterLocalStorageKey).toBe("feedelity.content.source-filter");
+});
+
+test("persistLocalValue and readPersistedLocalValue round-trip through localStorage", () => {
+  const store = new Map<string, string>();
+  const originalStorage = globalThis.localStorage;
+  globalThis.localStorage = toStorageStub(store);
+  try {
+    expect(readPersistedLocalValue(shellModeLocalStorageKey)).toBeNull();
+
+    persistLocalValue(shellModeLocalStorageKey, "library");
+    expect(readPersistedLocalValue(shellModeLocalStorageKey)).toBe("library");
+    expect(store.get(shellModeLocalStorageKey)).toBe("library");
+  } finally {
+    globalThis.localStorage = originalStorage;
+  }
+});
+
+test("persisted shell mode narrows to catalog for missing or invalid values", () => {
+  expect(toPersistedShellMode(null)).toBe("catalog");
+  expect(toPersistedShellMode("")).toBe("catalog");
+  expect(toPersistedShellMode("bogus")).toBe("catalog");
+  expect(toPersistedShellMode("catalog")).toBe("catalog");
+  expect(toPersistedShellMode("library")).toBe("library");
+});
+
+test("persisted left-pane tab coerces auth-only tabs for anonymous users", () => {
+  expect(toPersistedLeftPaneTab(null, false)).toBe("library");
+  expect(toPersistedLeftPaneTab(null, true)).toBe("library");
+  expect(toPersistedLeftPaneTab("bogus", true)).toBe("library");
+  expect(toPersistedLeftPaneTab("library", false)).toBe("library");
+  // Feeds works for anonymous browsing, so it applies as-is either way.
+  expect(toPersistedLeftPaneTab("feeds", false)).toBe("feeds");
+  expect(toPersistedLeftPaneTab("feeds", true)).toBe("feeds");
+  // Playlists and collections render only for signed-in users (the app-shell
+  // tab bar gates them behind isAuthenticated), so an anonymous application of
+  // the persisted tab falls back to the default.
+  expect(toPersistedLeftPaneTab("playlists", false)).toBe("library");
+  expect(toPersistedLeftPaneTab("collections", false)).toBe("library");
+  expect(toPersistedLeftPaneTab("playlists", true)).toBe("playlists");
+  expect(toPersistedLeftPaneTab("collections", true)).toBe("collections");
+});
+
+test("persisted source-type filter narrows to null (All) for missing or invalid values", () => {
+  expect(toPersistedSourceTypeFilter(null)).toBeNull();
+  expect(toPersistedSourceTypeFilter("")).toBeNull();
+  expect(toPersistedSourceTypeFilter("all")).toBeNull();
+  expect(toPersistedSourceTypeFilter("bogus")).toBeNull();
+  expect(sourceTypeFilterValues).toEqual(["youtube", "odysee", "peertube"]);
+  for (const sourceType of sourceTypeFilterValues) {
+    expect(toPersistedSourceTypeFilter(sourceType)).toBe(sourceType);
+  }
+});
+
+test("persisted content view mode coerces auth-only modes to the shell-mode default", () => {
+  expect(toContentViewModeDefault("library")).toBe("subscribed");
+  expect(toContentViewModeDefault("catalog")).toBe("catalog");
+
+  // Missing or invalid values fall back to the mode default.
+  expect(toPersistedContentViewMode(null, true, "library")).toBe("subscribed");
+  expect(toPersistedContentViewMode(null, true, "catalog")).toBe("catalog");
+  expect(toPersistedContentViewMode("bogus", true, "library")).toBe("subscribed");
+
+  // Auth-only modes (their buttons render only for signed-in users) fall back
+  // to the mode default when applied anonymously...
+  expect(toPersistedContentViewMode("favorites", false, "library")).toBe("subscribed");
+  expect(toPersistedContentViewMode("history-opened", false, "library")).toBe("subscribed");
+  expect(toPersistedContentViewMode("played", false, "catalog")).toBe("catalog");
+
+  // ...and apply as-is for signed-in users.
+  expect(toPersistedContentViewMode("favorites", true, "library")).toBe("favorites");
+  expect(toPersistedContentViewMode("history-opened", true, "catalog")).toBe("history-opened");
+  expect(toPersistedContentViewMode("played", true, "library")).toBe("played");
+
+  // Non-gated modes apply regardless of the auth state.
+  expect(toPersistedContentViewMode("catalog", false, "catalog")).toBe("catalog");
+  expect(toPersistedContentViewMode("subscribed", false, "library")).toBe("subscribed");
 });
 
 test("favorite toggles are real authenticated actions in list rows and viewer", async () => {
@@ -2620,6 +2808,84 @@ test("settings viewer takeover has back button and data-settings-viewer attribut
 
 test("pane widths are persisted to localStorage with stable key", () => {
   expect(paneWidthsLocalStorageKey).toBe("feedelity.pane-widths");
+});
+
+test("shell layout persists the last mode and reopens it once on mount without trapping the catalog (F7)", async () => {
+  const shellRouteSource = await Bun.file(new URL("../routes/_shell.tsx", import.meta.url)).text();
+  const indexRouteSource = await Bun.file(new URL("../routes/_shell.index.tsx", import.meta.url)).text();
+  const dashboardRouteSource = await Bun.file(new URL("../routes/_shell.dashboard.tsx", import.meta.url)).text();
+
+  // The layout records the pathname-derived mode on every change.
+  expect(shellRouteSource).toContain("createEffect(() => {");
+  expect(shellRouteSource).toContain("persistLocalValue(shellModeLocalStorageKey, mode());");
+  // "/" is the catalog and must always be reachable (header Catalog link,
+  // logo, `g c` shortcut): the index route carries no redirect of its own.
+  expect(indexRouteSource).toContain('createFileRoute("/_shell/")');
+  expect(indexRouteSource).not.toContain("beforeLoad");
+  // The one-time "reopen the last section" redirect lives in the shell layout,
+  // which stays mounted across child navigations, and runs at most once per
+  // app mount: gated on a resolved session AND a persisted library mode AND
+  // not already being on /dashboard, with replace so Back leaves the
+  // pre-redirect history entry instead of re-entering the redirect.
+  expect(shellRouteSource).toContain("let didInitialSectionRedirect = false;");
+  expect(shellRouteSource).toContain("const session = await authClient.getSession();");
+  expect(shellRouteSource).toContain('toPersistedShellMode(readPersistedLocalValue(shellModeLocalStorageKey)) === "library"');
+  expect(shellRouteSource).toContain('location().pathname !== "/dashboard"');
+  expect(shellRouteSource).toContain('navigate({ to: "/dashboard", replace: true });');
+  // The dashboard guard is unchanged: anonymous users go to login.
+  expect(dashboardRouteSource).toContain('to: "/login",');
+});
+
+test("left-pane tab and creator source filter persist through single mutations (F7)", async () => {
+  const source = await readAppShellSource();
+
+  // Tab: the seed evaluates the persisted value against the current auth gate,
+  // every tab button routes through the persisting changeActiveTab helper, and
+  // a session-resolve effect realigns the tab with the resolved auth state.
+  expect(source).toContain("toPersistedLeftPaneTab(readPersistedLocalValue(leftPaneTabLocalStorageKey), isAuthenticated())");
+  expect(source).toContain("setActiveTab={changeActiveTab}");
+  expect(source).not.toContain("setActiveTab={setActiveTab}");
+  expect(source).toContain("setActiveTab(toPersistedLeftPaneTab(readPersistedLocalValue(leftPaneTabLocalStorageKey), true));");
+  expect(source).toContain("setActiveTab((current) => toPersistedLeftPaneTab(current, false));");
+  // Creator filter: persisted seed and persisted shared mutation (the empty
+  // string encodes "All").
+  expect(source).toContain("toPersistedSourceTypeFilter(readPersistedLocalValue(creatorSourceFilterLocalStorageKey))");
+  const applyFilterStart = source.indexOf("const applyCreatorSourceType = (nextSourceType: SourceType | null) => {");
+  expect(applyFilterStart).toBeGreaterThanOrEqual(0);
+  expect(source.slice(applyFilterStart, applyFilterStart + 300)).toContain('persistLocalValue(creatorSourceFilterLocalStorageKey, nextSourceType ?? "");');
+});
+
+test("content view mode and source filter persist through single mutations (F7)", async () => {
+  const source = await readAppShellSource();
+
+  // Persisted seeds with the auth gate applied by the parser.
+  expect(source).toContain("toPersistedSourceTypeFilter(readPersistedLocalValue(contentSourceFilterLocalStorageKey))");
+  expect(source).toContain("toPersistedContentViewMode(readPersistedLocalValue(contentViewModeLocalStorageKey), props.isAuthenticated(), props.mode)");
+  // Persist-on-change helpers used by the view-mode buttons and the filter select.
+  expect(source).toContain("persistLocalValue(contentViewModeLocalStorageKey, nextViewMode);");
+  expect(source).toContain('persistLocalValue(contentSourceFilterLocalStorageKey, nextSourceType ?? "");');
+  expect(source).toContain("onChange={(event) => changeSourceType(toSourceFilterValue(event.currentTarget.value))}");
+  // The restore effect re-applies the persisted view mode once the session
+  // resolves as authenticated; the anonymous reset stays the enforcer.
+  expect(source).toContain("createEffect(on(props.isAuthenticated, (isAuthenticated) => {");
+  expect(source).toContain('setViewMode(props.mode === "library" ? "subscribed" : "catalog")');
+});
+
+test("persisted UI state stays limited to the five F7 keys and search text stays ephemeral", async () => {
+  const combined = await readChangedUiSource();
+  const persistedKeyMatches = combined.match(/"feedelity\.[a-z.-]+"/g) ?? [];
+
+  expect([...new Set(persistedKeyMatches)].sort()).toEqual(
+    [
+      "feedelity.content.source-filter",
+      "feedelity.content.view-mode",
+      "feedelity.creators.source-filter",
+      "feedelity.hide-played",
+      "feedelity.pane-widths",
+      "feedelity.shell.left-tab",
+      "feedelity.shell.mode",
+    ].map((key) => `"${key}"`).sort(),
+  );
 });
 
 test("viewer source switcher uses button group with SourceTypeIcon instead of select", async () => {

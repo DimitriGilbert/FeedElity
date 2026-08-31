@@ -242,6 +242,148 @@ export function persistHidePlayed(value: boolean): void {
   }
 }
 
+export const shellModeLocalStorageKey = "feedelity.shell.mode";
+
+export const leftPaneTabLocalStorageKey = "feedelity.shell.left-tab";
+
+export const creatorSourceFilterLocalStorageKey = "feedelity.creators.source-filter";
+
+export const contentViewModeLocalStorageKey = "feedelity.content.view-mode";
+
+export const contentSourceFilterLocalStorageKey = "feedelity.content.source-filter";
+
+/**
+ * Guarded localStorage read shared by the persisted-UI-state keys (F7).
+ * Returns `null` when no value is stored or when localStorage is unavailable
+ * (private mode, sandboxed iframe, non-browser runtime), so callers can treat
+ * "never chosen" and "cannot read" identically.
+ */
+export function readPersistedLocalValue(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Guarded localStorage write shared by the persisted-UI-state keys (F7).
+ * Failures are ignored: the UI state stays functional in-memory when
+ * localStorage is unavailable, exactly like `persistHidePlayed`.
+ */
+export function persistLocalValue(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // localStorage may be unavailable; in-memory state is unaffected
+  }
+}
+
+const shellModes: readonly ShellMode[] = ["catalog", "library"];
+
+/**
+ * Narrows a persisted shell mode. Anything missing or unrecognized (including
+ * values written by other app versions) falls back to "catalog", the mode "/"
+ * renders anyway without a redirect.
+ */
+export function toPersistedShellMode(value: string | null): ShellMode {
+  if (value === null) {
+    return "catalog";
+  }
+
+  return shellModes.find((mode) => mode === value) ?? "catalog";
+}
+
+const leftPaneTabs: readonly LeftPaneTab[] = ["library", "feeds", "playlists", "collections"];
+
+// Tabs whose buttons render only for signed-in users (app-shell.tsx tab bar),
+// matching the section-level `props.isAuthenticated()` gates.
+const authenticatedLeftPaneTabs: readonly LeftPaneTab[] = ["playlists", "collections"];
+
+/**
+ * Narrows a persisted left-pane tab. Unrecognized values fall back to
+ * "library" (the tab bar default); auth-only tabs fall back to "library" when
+ * the persisted choice is applied anonymously.
+ */
+export function toPersistedLeftPaneTab(value: string | null, isAuthenticated: boolean): LeftPaneTab {
+  if (value === null) {
+    return "library";
+  }
+
+  const tab = leftPaneTabs.find((candidate) => candidate === value);
+  if (tab === undefined) {
+    return "library";
+  }
+
+  if (!isAuthenticated && authenticatedLeftPaneTabs.includes(tab)) {
+    return "library";
+  }
+
+  return tab;
+}
+
+/**
+ * Source types offered by the creator and content source filters. Single list
+ * shared by both filter UIs and the persisted-filter parser below.
+ */
+export const sourceTypeFilterValues: readonly SourceType[] = ["youtube", "odysee", "peertube"];
+
+/**
+ * Narrows a persisted source-type filter. Anything missing or unrecognized
+ * (the empty string written for "All" included) means no filter.
+ */
+export function toPersistedSourceTypeFilter(value: string | null): SourceType | null {
+  if (value === null) {
+    return null;
+  }
+
+  return sourceTypeFilterValues.find((sourceType) => sourceType === value) ?? null;
+}
+
+const contentViewModes: readonly ContentViewMode[] = [
+  "catalog",
+  "subscribed",
+  "favorites",
+  "history-opened",
+  "played",
+];
+
+// Modes whose buttons render only for signed-in users (content-column view
+// switcher), matching the anonymous reset effect that enforces the default.
+const authenticatedContentViewModes: readonly ContentViewMode[] = ["favorites", "history-opened", "played"];
+
+/**
+ * The view mode a shell mode starts in: "subscribed" for the library,
+ * "catalog" for the catalog — the same default the content-column seed and
+ * anonymous reset effect apply.
+ */
+export function toContentViewModeDefault(mode: ShellMode): ContentViewMode {
+  return mode === "library" ? "subscribed" : "catalog";
+}
+
+/**
+ * Narrows a persisted content view mode for a shell mode. Unrecognized values
+ * fall back to the mode default; auth-only modes (favorites/history/played)
+ * fall back to the mode default when applied anonymously.
+ */
+export function toPersistedContentViewMode(value: string | null, isAuthenticated: boolean, mode: ShellMode): ContentViewMode {
+  const fallback = toContentViewModeDefault(mode);
+  if (value === null) {
+    return fallback;
+  }
+
+  const viewMode = contentViewModes.find((candidate) => candidate === value);
+  if (viewMode === undefined) {
+    return fallback;
+  }
+
+  if (!isAuthenticated && authenticatedContentViewModes.includes(viewMode)) {
+    return fallback;
+  }
+
+  return viewMode;
+}
+
 export function clampLeftFraction(left: number, middle: number): number {
   return Math.max(minLeftFraction, Math.min(left, 1 - middle - minRightFraction));
 }
@@ -1019,4 +1161,32 @@ export function toPlayableSources(sources: readonly CatalogContentSource[]): rea
     })
     .filter((source): source is PlayableSource => source !== null)
     .sort((left, right) => left.priority - right.priority);
+}
+
+/**
+ * The link the viewer's "copy stream URL" affordance places on the clipboard
+ * for the currently selected playable source. Native sources copy the direct
+ * media URL (playable by mpv/yt-dlp as-is); embed-only sources copy the
+ * canonical page URL, which yt-dlp (and mpv through it) resolves to a stream.
+ * The button text names which kind of link is copied.
+ */
+export interface CopyableStreamLink {
+  readonly label: string;
+  readonly url: string;
+}
+
+export function toCopyableStreamLink(source: PlayableSource | null): CopyableStreamLink | null {
+  if (source === null) {
+    return null;
+  }
+
+  if (source.kind === "native") {
+    return { label: "Copy stream URL", url: source.url };
+  }
+
+  if (source.canonicalUrl.length === 0) {
+    return null;
+  }
+
+  return { label: "Copy page link", url: source.canonicalUrl };
 }

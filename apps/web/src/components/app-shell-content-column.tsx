@@ -32,11 +32,13 @@ import {
   contentScrollRegionClass,
   contentSearchInputId,
   contentSourceFilterId,
+  contentSourceFilterLocalStorageKey,
   contentViewModeAllId,
   contentViewModeFavoritesId,
   contentViewModeHistoryId,
   contentViewModePlayedId,
   contentViewModeSubscribedId,
+  contentViewModeLocalStorageKey,
   createDesktopMediaQuerySignal,
   emptyAppendedPageState,
   estimateContentItemRowHeight,
@@ -48,10 +50,15 @@ import {
   pageHasMoreForKey,
   pageItemsForKey,
   persistHidePlayed,
+  persistLocalValue,
   readPersistedHidePlayed,
+  readPersistedLocalValue,
   showsCatalogFilters,
+  sourceTypeFilterValues,
   toContentListInput,
   toContentStatusFlags,
+  toPersistedContentViewMode,
+  toPersistedSourceTypeFilter,
   toPlaybackPositionsByItemId,
   type AppendedPageState,
   type BrowsableCreator,
@@ -66,8 +73,6 @@ type ContentItemsResourceMode = "catalog" | "subscribed" | "favorites" | "histor
 
 const allContentSourceFilterValue = "all";
 
-const sourceFilterOptions: readonly SourceType[] = ["youtube", "odysee", "peertube"];
-
 const emptyCatalogContentItems: readonly CatalogContentListItem[] = [];
 
 const emptyPlaylists: readonly Playlist[] = [];
@@ -75,7 +80,7 @@ const emptyPlaylists: readonly Playlist[] = [];
 const emptyCollectionMembers: readonly CollectionMemberWithCreator[] = [];
 
 function toSourceFilterValue(value: string): SourceType | null {
-  return sourceFilterOptions.find((sourceType) => sourceType === value) ?? null;
+  return sourceTypeFilterValues.find((sourceType) => sourceType === value) ?? null;
 }
 
 function toContentItemsResourceKey(mode: ContentItemsResourceMode, input: ContentListInput, reloadKey: number): string {
@@ -300,8 +305,19 @@ export interface ContentListColumnProps {
 
 export function ContentListColumn(props: ContentListColumnProps) {
   const [search, setSearch] = createSignal("");
-  const [sourceType, setSourceType] = createSignal<SourceType | null>(null);
-  const [viewMode, setViewMode] = createSignal<ContentViewMode>(props.mode === "library" ? "subscribed" : "catalog");
+  // The content source filter is device-persisted (F7, decision D9) and works
+  // for anonymous browsing too, so the seed needs no auth gate.
+  const [sourceType, setSourceType] = createSignal<SourceType | null>(
+    toPersistedSourceTypeFilter(readPersistedLocalValue(contentSourceFilterLocalStorageKey)),
+  );
+  // The persisted view mode is auth-gated at parse time (favorites/history/
+  // played coerce to the mode default when applied anonymously). While the
+  // session check is pending the anonymous reset effect below still enforces
+  // the mode default; the restore effect re-applies the persisted auth-only
+  // mode once a signed-in user's session resolves.
+  const [viewMode, setViewMode] = createSignal<ContentViewMode>(
+    toPersistedContentViewMode(readPersistedLocalValue(contentViewModeLocalStorageKey), props.isAuthenticated(), props.mode),
+  );
   const [hidePlayed, setHidePlayed] = createSignal<boolean>(readPersistedHidePlayed() ?? false);
   const [appendedContentPage, setAppendedContentPage] = createSignal<AppendedPageState<CatalogContentListItem>>(emptyAppendedPageState());
   const [contentOffset, setContentOffset] = createSignal<PaginationOffsetState>({ key: "", nextOffset: 0 });
@@ -324,6 +340,29 @@ export function ContentListColumn(props: ContentListColumnProps) {
       setViewMode(props.mode === "library" ? "subscribed" : "catalog");
     }
   });
+
+  // The reset effect above runs while the session check is still pending (the
+  // auth state is unknown, hence "not authenticated"), which would keep a
+  // persisted auth-only view mode (favorites/history/played) lost for signed-in
+  // users; re-apply the persisted choice once the session resolves.
+  createEffect(on(props.isAuthenticated, (isAuthenticated) => {
+    if (isAuthenticated) {
+      setViewMode(toPersistedContentViewMode(readPersistedLocalValue(contentViewModeLocalStorageKey), true, props.mode));
+    }
+  }, { defer: true }));
+
+  // Single mutation for every view-mode button: renders the mode and persists it.
+  const changeViewMode = (nextViewMode: ContentViewMode) => {
+    setViewMode(nextViewMode);
+    persistLocalValue(contentViewModeLocalStorageKey, nextViewMode);
+  };
+
+  // The select's only mutation: renders the filter and persists it (the empty
+  // string encodes "All").
+  const changeSourceType = (nextSourceType: SourceType | null) => {
+    setSourceType(nextSourceType);
+    persistLocalValue(contentSourceFilterLocalStorageKey, nextSourceType ?? "");
+  };
 
   // Default "hide played" to on when the user connects, but only until they make
   // an explicit choice — once a preference is persisted it always wins.
@@ -814,7 +853,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
                 aria-pressed={viewMode() === (props.mode === "library" ? "subscribed" : "catalog")}
                 aria-label="All"
                 title="All"
-                onClick={() => setViewMode(props.mode === "library" ? "subscribed" : "catalog")}
+                onClick={() => changeViewMode(props.mode === "library" ? "subscribed" : "catalog")}
               >
                 <LayoutGrid size={14} />
                 <span>All</span>
@@ -826,7 +865,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
                 aria-pressed={viewMode() === "favorites"}
                 aria-label="Favorites"
                 title="Favorites"
-                onClick={() => setViewMode("favorites")}
+                onClick={() => changeViewMode("favorites")}
               >
                 <Heart size={14} />
                 <span>Favs</span>
@@ -838,7 +877,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
                 aria-pressed={viewMode() === "history-opened"}
                 aria-label="History/Open"
                 title="History/Open"
-                onClick={() => setViewMode("history-opened")}
+                onClick={() => changeViewMode("history-opened")}
               >
                 <Clock size={14} />
                 <span>History</span>
@@ -850,7 +889,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
                 aria-pressed={viewMode() === "played"}
                 aria-label="Played"
                 title="Played"
-                onClick={() => setViewMode("played")}
+                onClick={() => changeViewMode("played")}
               >
                 <CheckCircle size={14} />
                 <span>Played</span>
@@ -866,10 +905,10 @@ export function ContentListColumn(props: ContentListColumnProps) {
                 id={contentSourceFilterId}
                 class="rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
                 value={sourceType() ?? allContentSourceFilterValue}
-                onChange={(event) => setSourceType(toSourceFilterValue(event.currentTarget.value))}
+                onChange={(event) => changeSourceType(toSourceFilterValue(event.currentTarget.value))}
               >
                 <option value={allContentSourceFilterValue}>All</option>
-                <For each={sourceFilterOptions}>
+                <For each={sourceTypeFilterValues}>
                   {(source) => <option value={source}>{formatSourceLabel(source)}</option>}
                 </For>
               </select>
