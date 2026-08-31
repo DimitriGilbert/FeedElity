@@ -1,4 +1,4 @@
-import { lt } from "drizzle-orm";
+import { and, lt, sql } from "drizzle-orm";
 
 import * as schema from "@FeedElity/db/schema";
 
@@ -99,7 +99,7 @@ const providerRefusalPauseMs = 15 * 60 * 1000;
 const refreshFeedResultRetentionMs = 30 * 24 * 60 * 60 * 1000;
 
 export interface PruneRefreshFeedResultsInput {
-  /** Rows whose started_at is older than `now - olderThanMs` are deleted. */
+  /** Rows whose started_at is older than `now - olderThanMs` are deleted, except each feed's newest row. */
   readonly olderThanMs: number;
   /** Clock for the cutoff computation; callers pass their run timestamp. */
   readonly now: Date;
@@ -111,12 +111,16 @@ export interface PruneRefreshFeedResultsResult {
 
 /**
  * Delete refresh feed results that aged out of the retention window with a
- * single DELETE on started_at (epoch-ms timestamp column). `olderThanMs` must
- * be a finite, non-negative number of milliseconds — a negative value would
- * delete fresh results and a non-finite value would build an invalid cutoff —
- * so invalid input throws before any rows are touched. DB errors propagate
- * to the caller, which decides how to degrade (see
- * pruneAfterTerminalRefreshState).
+ * single DELETE on started_at (epoch-ms timestamp column), except the newest
+ * row of each feed, which is kept regardless of age: a long-dead feed whose
+ * every attempt is over-age must retain its last attempt so the feed-health
+ * dashboard keeps surfacing the stale-failure state instead of degrading to
+ * "never attempted". The kept-row guard orders by started_at desc with the id
+ * tie-break, mirroring listFeedHealth's latest window. `olderThanMs` must be a
+ * finite, non-negative number of milliseconds — a negative value would delete
+ * fresh results and a non-finite value would build an invalid cutoff — so
+ * invalid input throws before any rows are touched. DB errors propagate to the
+ * caller, which decides how to degrade (see pruneAfterTerminalRefreshState).
  */
 export async function pruneRefreshFeedResultsForRetention(
   db: RepositoryDb,
@@ -131,7 +135,17 @@ export async function pruneRefreshFeedResultsForRetention(
   const cutoff = new Date(input.now.getTime() - input.olderThanMs);
   const deleted = await db
     .delete(schema.refreshFeedResult)
-    .where(lt(schema.refreshFeedResult.startedAt, cutoff))
+    .where(
+      and(
+        lt(schema.refreshFeedResult.startedAt, cutoff),
+        sql`${schema.refreshFeedResult.id} not in (
+          select newest.id from ${schema.refreshFeedResult} as newest
+          where newest.feed_id = ${schema.refreshFeedResult.feedId}
+          order by newest.started_at desc, newest.id desc
+          limit 1
+        )`,
+      ),
+    )
     .returning({ id: schema.refreshFeedResult.id });
   return { deletedCount: deleted.length };
 }

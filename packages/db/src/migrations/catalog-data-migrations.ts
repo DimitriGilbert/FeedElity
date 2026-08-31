@@ -75,12 +75,27 @@ const REFRESH_FEED_RESULT_RETENTION_SECONDS = REFRESH_FEED_RESULT_RETENTION_DAYS
 // started_at (like every catalog timestamp column) stores epoch MILLISECONDS:
 // schema defaults are `cast(unixepoch('subsecond') * 1000 as integer)` and the
 // 0002 backfill copies the ms published_at verbatim. unixepoch() is seconds,
-// hence the *1000. Parameterized so the window stays one bound value.
-const REFRESH_FEED_RESULT_RETENTION_DELETE_SQL =
-  "DELETE FROM refresh_feed_result WHERE started_at < (cast(unixepoch() - ? as integer) * 1000)";
+// hence the *1000. Parameterized so the window stays one bound value. The
+// NOT IN guard keeps each feed's newest row regardless of age: a long-dead
+// feed whose every attempt is over-age must retain its last attempt for the
+// feed-health dashboard (latest-window ordering mirrors listFeedHealth).
+const REFRESH_FEED_RESULT_RETENTION_DELETE_SQL = `DELETE FROM refresh_feed_result
+WHERE started_at < (cast(unixepoch() - ? as integer) * 1000)
+  AND id NOT IN (
+    SELECT newest.id FROM refresh_feed_result AS newest
+    WHERE newest.feed_id = refresh_feed_result.feed_id
+    ORDER BY newest.started_at DESC, newest.id DESC
+    LIMIT 1
+  )`;
 
-const REFRESH_FEED_RESULT_RETENTION_COUNT_SQL =
-  "SELECT count(*) AS n FROM refresh_feed_result WHERE started_at < (cast(unixepoch() - ? as integer) * 1000)";
+const REFRESH_FEED_RESULT_RETENTION_COUNT_SQL = `SELECT count(*) AS n FROM refresh_feed_result
+WHERE started_at < (cast(unixepoch() - ? as integer) * 1000)
+  AND id NOT IN (
+    SELECT newest.id FROM refresh_feed_result AS newest
+    WHERE newest.feed_id = refresh_feed_result.feed_id
+    ORDER BY newest.started_at DESC, newest.id DESC
+    LIMIT 1
+  )`;
 
 export interface CatalogCounts {
   readonly creators: number;
@@ -257,7 +272,7 @@ const contentItemListOrderIndexStep: CatalogMigrationStep = {
 const refreshFeedResultRetentionStep: CatalogMigrationStep = {
   id: "refresh_feed_result_retention",
   description:
-    "Delete refresh_feed_result rows whose started_at is older than 30 days so per-feed refresh histories stay bounded (D8).",
+    "Delete refresh_feed_result rows whose started_at is older than 30 days while keeping each feed's newest row, so per-feed refresh histories stay bounded (D8) without erasing long-dead feeds' last attempt.",
   run: runRefreshFeedResultRetention,
 };
 
@@ -414,10 +429,13 @@ function runContentItemListOrderIndex(db: Database, apply: boolean): readonly st
 }
 
 /**
- * One-time 30-day prune of refresh_feed_result (D8). Idempotent twice over:
- * the migration id records the step, and the started_at predicate is naturally
- * re-runnable. Databases so old that the refresh tables do not exist yet have
- * nothing to prune — that state is reported instead of failing the step.
+ * One-time 30-day prune of refresh_feed_result (D8) that keeps each feed's
+ * newest row regardless of age. Idempotent twice over: the migration id
+ * records the step, and the predicate is re-runnable — a re-run deletes
+ * nothing because the kept newest rows are excluded by the NOT IN guard and
+ * every other row is either pruned already or inside the window. Databases so
+ * old that the refresh tables do not exist yet have nothing to prune — that
+ * state is reported instead of failing the step.
  */
 function runRefreshFeedResultRetention(db: Database, apply: boolean): readonly string[] {
   if (!tableExists(db, "refresh_feed_result")) {

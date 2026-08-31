@@ -456,6 +456,76 @@ describe("manual refresh orchestration", () => {
     expect(await listRefreshFeedResultsForRun(testDatabase.db, { refreshRunId: result.run.id, limit: 10 })).toHaveLength(2);
   });
 
+  test("retention prune keeps each feed's newest row even when every attempt is over-age", async () => {
+    const feeds = await seedFeeds(testDatabase.db);
+    // Both attempts predate the cutoff (2026-04-16T12:00): the feed is
+    // long-dead, but its newest row must survive so the feed-health dashboard
+    // keeps surfacing the stale-failure state instead of "never attempted".
+    const oldestResultId = await seedRefreshFeedResultAt(testDatabase.db, {
+      feedId: feeds.dueFeedId,
+      status: "failed",
+      startedAt: new Date("2026-03-01T00:00:00.000Z"),
+    });
+    const newestResultId = await seedRefreshFeedResultAt(testDatabase.db, {
+      feedId: feeds.dueFeedId,
+      status: "failed",
+      startedAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    // A feed with a recent row behaves as before: its over-age row is deleted.
+    const feedWithRecentOverAgeId = await seedRefreshFeedResultAt(testDatabase.db, {
+      feedId: feeds.creatorTwoFeedId,
+      status: "succeeded",
+      startedAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const feedWithRecentRecentId = await seedRefreshFeedResultAt(testDatabase.db, {
+      feedId: feeds.creatorTwoFeedId,
+      status: "succeeded",
+      startedAt: new Date("2026-05-01T00:00:00.000Z"),
+    });
+
+    const result = await pruneRefreshFeedResultsForRetention(testDatabase.db, {
+      olderThanMs: 30 * 24 * 60 * 60 * 1000,
+      now: fixedNow(),
+    });
+
+    expect(result.deletedCount).toBe(2);
+    expect(await findRefreshFeedResultById(oldestResultId)).toBeUndefined();
+    expect(await findRefreshFeedResultById(newestResultId)).toMatchObject({
+      feedId: feeds.dueFeedId,
+      status: "failed",
+    });
+    expect(await findRefreshFeedResultById(feedWithRecentOverAgeId)).toBeUndefined();
+    expect(await findRefreshFeedResultById(feedWithRecentRecentId)).toMatchObject({ feedId: feeds.creatorTwoFeedId });
+  });
+
+  test("a terminal refresh run prunes around a long-dead feed's newest row", async () => {
+    const feeds = await seedFeeds(testDatabase.db);
+    const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
+    // The not-due feed is skipped by the run, so it receives no fresh result:
+    // both attempts predate the cutoff (2026-04-16T12:00) at prune time and
+    // its newest row must survive so the feed-health dashboard keeps surfacing
+    // the stale-failure state instead of "never attempted".
+    const oldestResultId = await seedRefreshFeedResultAt(testDatabase.db, {
+      feedId: feeds.notDueFeedId,
+      status: "failed",
+      startedAt: new Date("2026-03-01T00:00:00.000Z"),
+    });
+    const newestOverAgeResultId = await seedRefreshFeedResultAt(testDatabase.db, {
+      feedId: feeds.notDueFeedId,
+      status: "failed",
+      startedAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+
+    const result = await refreshAll(refreshDependencies(registry), { force: false });
+
+    expect(result.run.status).toBe("succeeded");
+    expect(await findRefreshFeedResultById(oldestResultId)).toBeUndefined();
+    expect(await findRefreshFeedResultById(newestOverAgeResultId)).toMatchObject({
+      feedId: feeds.notDueFeedId,
+      status: "failed",
+    });
+  });
+
   test("retention prune rejects a non-finite or negative olderThanMs before deleting anything", async () => {
     const feeds = await seedFeeds(testDatabase.db);
     const seededResultId = await seedRefreshFeedResultAt(testDatabase.db, {

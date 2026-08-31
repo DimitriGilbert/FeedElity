@@ -770,6 +770,51 @@ describe("refresh_feed_result_retention step", () => {
     expect(thirdRun.steps.at(3)?.applied).toBe(true);
     expect(thirdRun.steps.at(3)?.details).toEqual(["deleted 0 refresh_feed_result row(s) older than 30 days"]);
   });
+
+  test("keeps the newest row of a feed whose every attempt is over-age", async () => {
+    const nowMs = Date.now();
+    const path = await createLegacyDatabaseFile("feedelity-db-retention-dead-");
+    const seedDb = createModernSchemaDatabase(path);
+    seedDeadFeedRows(seedDb, nowMs);
+    seedDb.close();
+
+    // Dry run: both rows are over-age, but the newest-row guard leaves one
+    // deletable row.
+    const dryRun = await runCatalogDataMigrations({ databaseUrl: path, apply: false });
+    const dryStep = dryRun.steps.at(3);
+    expect(dryStep?.id).toBe("refresh_feed_result_retention");
+    expect(dryStep?.applied).toBe(false);
+    expect(dryStep?.details.join("\n")).toContain("would delete 1 refresh_feed_result row(s) older than 30 days");
+
+    const apply = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
+    expect(apply.steps.at(3)?.applied).toBe(true);
+    expect(apply.steps.at(3)?.details).toEqual(["deleted 1 refresh_feed_result row(s) older than 30 days"]);
+
+    const db = openCatalogDatabase(path, { readOnly: true });
+    try {
+      // The older attempt is pruned; the newest (also over-age) row survives so
+      // the feed-health dashboard keeps surfacing the feed's stale-failure
+      // state instead of degrading to "never attempted".
+      expect(queryNumber(db, "SELECT count(*) AS n FROM refresh_feed_result WHERE id = 'rfr-dead-old'")).toBe(0);
+      expect(queryNumber(db, "SELECT count(*) AS n FROM refresh_feed_result WHERE id = 'rfr-dead-newest'")).toBe(1);
+    } finally {
+      db.close();
+    }
+
+    // Predicate-level idempotency with the newest-row exception: clearing the
+    // migration id re-runs the step, which still deletes 0 — the surviving
+    // newest row matches the over-age predicate alone but is excluded by the
+    // newest-row guard.
+    const wipe = openCatalogDatabase(path, { readOnly: false });
+    try {
+      wipe.query("DELETE FROM __feedelity_migrations WHERE id = 'refresh_feed_result_retention'").run();
+    } finally {
+      wipe.close();
+    }
+    const thirdRun = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
+    expect(thirdRun.steps.at(3)?.applied).toBe(true);
+    expect(thirdRun.steps.at(3)?.details).toEqual(["deleted 0 refresh_feed_result row(s) older than 30 days"]);
+  });
 });
 
 /**
@@ -851,21 +896,45 @@ function seedRetentionRows(db: Database, nowMs: number): void {
     "UC-retention",
     "https://retention.example.test/feed",
   );
-  insertRetentionResult(db, "rfr-old", "rr-old", "failed", nowMs - 40 * 86400 * 1000, 0);
-  insertRetentionResult(db, "rfr-boundary", "rr-boundary", "succeeded", nowMs - 29 * 86400 * 1000, 2);
-  insertRetentionResult(db, "rfr-recent", "rr-recent", "succeeded", nowMs - 1 * 86400 * 1000, 3);
+  insertRetentionResult(db, "rfr-old", "rr-old", "feed-retention", "failed", nowMs - 40 * 86400 * 1000, 0);
+  insertRetentionResult(db, "rfr-boundary", "rr-boundary", "feed-retention", "succeeded", nowMs - 29 * 86400 * 1000, 2);
+  insertRetentionResult(db, "rfr-recent", "rr-recent", "feed-retention", "succeeded", nowMs - 1 * 86400 * 1000, 3);
+}
+
+/**
+ * A long-dead feed whose BOTH attempts are over-age (45d and 40d): the prune
+ * must delete only the older row and keep the newest regardless of age.
+ */
+function seedDeadFeedRows(db: Database, nowMs: number): void {
+  db.query("INSERT INTO creator (id, name_key, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(
+    "creator-retention",
+    creatorNameKey("Retention Creator"),
+    "Retention Creator",
+    1,
+    1,
+  );
+  db.query("INSERT INTO feed (id, creator_id, source_type, source_external_id, url) VALUES (?, ?, ?, ?, ?)").run(
+    "feed-dead",
+    "creator-retention",
+    "odysee",
+    "UC-dead",
+    "https://retention.example.test/dead",
+  );
+  insertRetentionResult(db, "rfr-dead-old", "rr-dead-old", "feed-dead", "failed", nowMs - 45 * 86400 * 1000, 0);
+  insertRetentionResult(db, "rfr-dead-newest", "rr-dead-newest", "feed-dead", "failed", nowMs - 40 * 86400 * 1000, 0);
 }
 
 function insertRetentionResult(
   db: Database,
   id: string,
   runId: string,
+  feedId: string,
   status: string,
   startedAtMs: number,
   itemsCreatedCount: number,
 ): void {
   db.query("INSERT INTO refresh_run (id, requested_creator_id) VALUES (?, NULL)").run(runId);
   db.query(
-    "INSERT INTO refresh_feed_result (id, refresh_run_id, feed_id, status, items_created_count, started_at, completed_at) VALUES (?, ?, 'feed-retention', ?, ?, ?, ?)",
-  ).run(id, runId, status, itemsCreatedCount, startedAtMs, startedAtMs + 5_000);
+    "INSERT INTO refresh_feed_result (id, refresh_run_id, feed_id, status, items_created_count, started_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run(id, runId, feedId, status, itemsCreatedCount, startedAtMs, startedAtMs + 5_000);
 }
