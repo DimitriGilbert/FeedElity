@@ -727,6 +727,42 @@ test("refresh heartbeat refetches the content list only when new items are inges
   expect(source).toContain("setCatalogReloadKey((key) => key + 1);");
 });
 
+test("refresh completion bumps the subscriptions channel once so unread counts refetch", async () => {
+  const source = await readAppShellSource();
+
+  // Run-completion branch of the poll effect: a finished run reloads the
+  // content list AND bumps the shared subscriptions channel exactly once, so
+  // the unreadCounts resource (keyed on subscriptionsReloadKey in AppShell)
+  // refetches after manual/force refresh ingests new items.
+  const completionStart = source.indexOf('if (run.status !== "running") {');
+  const completionEnd = source.indexOf("const createdItems = run.itemsCreatedCount;");
+  expect(completionStart).toBeGreaterThan(-1);
+  expect(completionEnd).toBeGreaterThan(completionStart);
+  const completionBranch = source.slice(completionStart, completionEnd);
+  expect(completionBranch).toContain("props.onContentListLiveReload();");
+  expect(completionBranch).toContain("props.onSubscriptionsChanged();");
+
+  // The mid-poll items-created path stays content-only: no per-poll
+  // subscription refetches while the run is still going.
+  const midPollStart = completionEnd;
+  const midPollEnd = source.indexOf("refreshPollTimer = setTimeout(() => {", midPollStart);
+  expect(midPollEnd).toBeGreaterThan(midPollStart);
+  const midPollBranch = source.slice(midPollStart, midPollEnd);
+  expect(midPollBranch).toContain("props.onContentListLiveReload();");
+  expect(midPollBranch).not.toContain("props.onSubscriptionsChanged();");
+
+  // Scoped single-creator refresh success path: the same bump sits next to the
+  // surgical feed-list reload key so its run also refreshes unread badges.
+  const scopedStart = source.indexOf("const result = await client.refresh.runCreator({ creatorId, force: true });");
+  const scopedEnd = source.indexOf("} catch (error) {", scopedStart);
+  expect(scopedStart).toBeGreaterThan(-1);
+  expect(scopedEnd).toBeGreaterThan(scopedStart);
+  const scopedSuccess = source.slice(scopedStart, scopedEnd);
+  expect(scopedSuccess).toContain("props.onContentListLiveReload();");
+  expect(scopedSuccess).toContain("props.onSubscriptionsChanged();");
+  expect(scopedSuccess).toContain("setFeedListReloadKey((key) => key + 1);");
+});
+
 test("refresh run summary labels all supported refresh scopes", () => {
   const baseRun: RefreshRun = {
     id: "refresh-run-1",
@@ -2513,4 +2549,92 @@ test("creator rows render an initials fallback avatar when no icon exists", asyn
   expect(source).toContain("function creatorInitials(displayName: string): string");
   expect(source).toContain("data-creator-avatar-fallback");
   expect(source).toContain("flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-muted");
+});
+
+test("unread counts load behind an authenticated reload-keyed resource and map by creator", async () => {
+  const source = await readAppShellSource();
+  const unreadStart = source.indexOf("const unreadCountsResourceInput = createMemo(() => {");
+  const unreadEnd = source.indexOf("const selectedCreatorId = createMemo(() => selectedCreator()?.id ?? null);");
+  const unreadWiring = source.slice(unreadStart, unreadEnd);
+
+  expect(source).toContain("client.overlays.unreadCounts()");
+  // Same gating as the other overlay resources: anonymous users never fetch.
+  expect(unreadWiring).toContain("if (!isAuthenticated()) {\n      return null;\n    }");
+  // Keyed by subscriptionsReloadKey so subscribe/unsubscribe/refresh and both
+  // mark-as-read actions (which bump it) refetch the counts.
+  expect(unreadWiring).toContain("return subscriptionsReloadKey().toString();");
+  expect(unreadWiring).toContain("createResource(unreadCountsResourceInput, () => client.overlays.unreadCounts())");
+  // No plain resource reads on render paths: the shell only exposes a
+  // .latest-backed memo and a creatorId-keyed map.
+  expect(unreadWiring).toContain("const unreadCountsValue = createMemo(() => unreadCounts.latest);");
+  expect(unreadWiring).toContain("unreadCountsByCreatorId.set(summary.creatorId, summary);");
+  expect(unreadWiring).toContain("unreadCountsValue() ?? emptyCreatorUnreadSummaries");
+  expect(source).toContain("const emptyCreatorUnreadSummaries: readonly CreatorUnreadSummary[] = [];");
+  expect(source).toContain("unreadByCreatorId={unreadByCreatorId}");
+});
+
+test("creator rows show a compact unread badge only with a positive library count", async () => {
+  const source = await readAppShellSource();
+
+  expect(source).toContain("readonly unreadCount?: () => number | null;");
+  expect(source).toContain("const unreadCount = createMemo(() => props.unreadCount?.() ?? null);");
+  // Hidden when 0 or null: the badge render is gated on the positive-count memo.
+  expect(source).toContain("const showUnreadBadge = createMemo(() => {");
+  expect(source).toContain("return count !== null && count > 0;");
+  expect(source).toContain("<Show when={showUnreadBadge()}>");
+  expect(source).toContain("data-creator-unread-count");
+  expect(source).toContain("rounded-full border border-border bg-muted px-1.5 py-0.5 text-[0.62rem] font-semibold tabular-nums text-muted-foreground");
+  // The badge sits after the display name and before the source icons row.
+  const badgeIndex = source.indexOf("data-creator-unread-count");
+  const nameIndex = source.indexOf('{props.creator.displayName}');
+  const iconsIndex = source.indexOf('data-creator-source-badges');
+  expect(badgeIndex).toBeGreaterThan(nameIndex);
+  expect(badgeIndex).toBeLessThan(iconsIndex);
+  // The column passes a live accessor only in library mode for authenticated
+  // users; catalog and anonymous rows always read a null count.
+  expect(source).toContain('const libraryUnreadEnabled = createMemo(() => props.mode === "library" && props.isAuthenticated());');
+  expect(source).toContain("unreadCount={() => (libraryUnreadEnabled() ? unreadCountForCreator(creator.id) : null)}");
+});
+
+test("mark-as-read affordances call protected overlay procedures and reload counts", async () => {
+  const source = await readAppShellSource();
+  const markCreatorStart = source.indexOf("const markCreatorRead = async (creatorId: string) => {");
+  const markAllEnd = source.indexOf("const refreshProgressText = createMemo(() => {");
+  const markActions = source.slice(markCreatorStart, markAllEnd);
+
+  expect(markActions).toContain("await client.overlays.markCreatorContentOpened({ creatorId });");
+  expect(markActions).toContain("await client.overlays.markAllContentOpened();");
+  // Both actions refetch counts through the shared reload-key bump (the same
+  // onSubscriptionsChanged channel the subscription actions use).
+  expect(markActions).toContain("props.onSubscriptionsChanged();");
+  expect(markActions).toContain("setMarkReadError(formatError(error));");
+  expect(markActions).toContain("if (!props.isAuthenticated() || markReadBusyCreatorId() !== null || markAllReadBusy()) {");
+  expect(markActions).toContain("if (!props.isAuthenticated() || markAllReadBusy() || markReadBusyCreatorId() !== null) {");
+  // Per-creator hover action: rendered only for unread rows, disabled in flight.
+  expect(source).toContain('<Show when={showUnreadBadge() && props.onMarkCreatorRead !== undefined}>');
+  expect(source).toContain("data-mark-creator-read={props.creator.id}");
+  expect(source).toContain('aria-label={`Mark ${props.creator.displayName} as read`}');
+  expect(source).toContain("disabled={props.markReadBusy}");
+  expect(source).toContain("markReadBusy={markReadBusyCreatorId() === creator.id || markAllReadBusy()}");
+  // Global control: authenticated + library + any-unread gated, disabled in flight.
+  expect(source).toContain('<Show when={props.mode === "library" && hasAnyUnread()}>');
+  expect(source).toContain("data-mark-all-read");
+  expect(source).toContain('aria-label="Mark all sources as read"');
+  expect(source).toContain("disabled={markAllReadBusy()}");
+  // Errors surface through the column's destructive text pattern, not swallowed.
+  expect(source).toContain('data-mark-read-error');
+});
+
+test("anonymous users and catalog mode render no unread badge or mark-all control", async () => {
+  const source = await readAppShellSource();
+
+  // Anonymous: the unread resource never fetches, so the row accessor reads a
+  // null count and neither the badge nor the hover mark button can mount.
+  expect(source).toContain("if (!isAuthenticated()) {\n      return null;\n    }\n\n    return subscriptionsReloadKey().toString();");
+  // Catalog mode never receives a non-null unread accessor even when signed in.
+  expect(source).toContain("unreadCount={() => (libraryUnreadEnabled() ? unreadCountForCreator(creator.id) : null)}");
+  expect(source).toContain('props.mode === "library" && props.isAuthenticated()');
+  // The global control additionally requires at least one positive count.
+  expect(source).toContain('props.mode === "library" && hasAnyUnread()');
+  expect(source).toContain('<Show when={showUnreadBadge() && props.onMarkCreatorRead !== undefined}>');
 });

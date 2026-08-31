@@ -2,6 +2,7 @@ import type {
   CatalogContentListItem,
   CatalogCreatorSummary,
   CatalogFeed,
+  CreatorUnreadSummary,
   RefreshFeedResultWithFeed,
   RefreshRun,
   SourceType,
@@ -16,6 +17,7 @@ import ClockArrowDown from "lucide-solid/icons/clock-arrow-down";
 import LayoutGrid from "lucide-solid/icons/layout-grid";
 import TriangleAlert from "lucide-solid/icons/triangle-alert";
 import ChevronDown from "lucide-solid/icons/chevron-down";
+import CircleCheck from "lucide-solid/icons/circle-check";
 import Plus from "lucide-solid/icons/plus";
 import RefreshCw from "lucide-solid/icons/refresh-cw";
 import Settings from "lucide-solid/icons/settings";
@@ -183,6 +185,8 @@ const emptyUserContentStatuses: readonly UserContentStatus[] = [];
 
 const emptyUserSettings: readonly UserSetting[] = [];
 
+const emptyCreatorUnreadSummaries: readonly CreatorUnreadSummary[] = [];
+
 function toCreatorListResourceKey(input: CreatorListInput, reloadKey: number): string {
   return [
     reloadKey.toString(),
@@ -269,6 +273,9 @@ interface CreatorSourceColumnProps {
   readonly selectedCollectionId: () => string | null;
   readonly catalogReloadKey: () => number;
   readonly subscriptionsReloadKey: () => number;
+  // Per-creator unread summaries keyed by creatorId, loaded in AppShell behind
+  // the authenticated unreadCounts resource. Only consumed in library mode.
+  readonly unreadByCreatorId: () => ReadonlyMap<string, CreatorUnreadSummary>;
   readonly playlistItemsReloadKey: () => number;
   readonly collectionsReloadKey: () => number;
   readonly onCollectionsChanged: () => void;
@@ -359,6 +366,9 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [scopedRefreshBusy, setScopedRefreshBusy] = createSignal<string | null>(null);
   const [refreshError, setRefreshError] = createSignal<string | null>(null);
   const [creatorSortError, setCreatorSortError] = createSignal<string | null>(null);
+  const [markReadBusyCreatorId, setMarkReadBusyCreatorId] = createSignal<string | null>(null);
+  const [markAllReadBusy, setMarkAllReadBusy] = createSignal(false);
+  const [markReadError, setMarkReadError] = createSignal<string | null>(null);
   const [activeRefreshRunId, setActiveRefreshRunId] = createSignal<string | null>(null);
   const [refreshPollKey, setRefreshPollKey] = createSignal(0);
   // High-water mark of CREATED items seen during the current run. The content
@@ -437,6 +447,20 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   });
   const activeRefreshStatusValue = createMemo(() => activeRefreshStatus.latest);
   const subscriptionCreatorIds = createMemo(() => new Set((subscriptionsValue() ?? emptySubscriptions).map((subscription) => subscription.creator.id)));
+  // Unread badges are a library-mode affordance for signed-in users: catalog
+  // rows and anonymous users always read a null count and render nothing.
+  const libraryUnreadEnabled = createMemo(() => props.mode === "library" && props.isAuthenticated());
+  const hasAnyUnread = createMemo(() => {
+    for (const summary of props.unreadByCreatorId().values()) {
+      if (summary.unreadCount > 0) {
+        return true;
+      }
+    }
+
+    return false;
+  });
+  const unreadCountForCreator = (creatorId: string): number | null =>
+    props.unreadByCreatorId().get(creatorId)?.unreadCount ?? null;
   const listedCreators = createMemo<readonly BrowsableCreator[]>(() => {
     if (props.mode === "library") {
       const trimmedSearch = debouncedSearch().trim().toLowerCase();
@@ -622,6 +646,45 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     }
   };
 
+  // Per-creator mark-as-read (Phase 7.2). Marks every unopened/unplayed item of
+  // the creator opened, then bumps subscriptionsReloadKey so the unread counts
+  // resource (keyed on it in AppShell) refetches and the badges drop to zero.
+  const markCreatorRead = async (creatorId: string) => {
+    if (!props.isAuthenticated() || markReadBusyCreatorId() !== null || markAllReadBusy()) {
+      return;
+    }
+
+    setMarkReadBusyCreatorId(creatorId);
+    setMarkReadError(null);
+    try {
+      await client.overlays.markCreatorContentOpened({ creatorId });
+      props.onSubscriptionsChanged();
+    } catch (error) {
+      setMarkReadError(formatError(error));
+    } finally {
+      setMarkReadBusyCreatorId(null);
+    }
+  };
+
+  // Global mark-all-as-read. Additive and idempotent server-side, so no confirm
+  // dialog; the button only renders when at least one creator is unread.
+  const markAllRead = async () => {
+    if (!props.isAuthenticated() || markAllReadBusy() || markReadBusyCreatorId() !== null) {
+      return;
+    }
+
+    setMarkAllReadBusy(true);
+    setMarkReadError(null);
+    try {
+      await client.overlays.markAllContentOpened();
+      props.onSubscriptionsChanged();
+    } catch (error) {
+      setMarkReadError(formatError(error));
+    } finally {
+      setMarkAllReadBusy(false);
+    }
+  };
+
   let refreshPollTimer: ReturnType<typeof setTimeout> | null = null;
   onCleanup(() => {
     if (refreshPollTimer !== null) {
@@ -656,6 +719,12 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
       setRefreshBusy(null);
       setActiveRefreshRunId(null);
       props.onContentListLiveReload();
+      // The run may have ingested new items: bump the shared subscriptions
+      // channel once so the AppShell unreadCounts resource (keyed on
+      // subscriptionsReloadKey) refetches and badges stay current. The
+      // mid-poll path below deliberately does not bump it — no per-poll
+      // refetches.
+      props.onSubscriptionsChanged();
       return;
     }
 
@@ -721,6 +790,9 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
       // metadata refreshes. Never bump catalogReloadKey here — that would tear
       // down the creator list, content list, and video viewer.
       setFeedListReloadKey((key) => key + 1);
+      // Same subscriptions-channel bump as the polled run completion: this
+      // force refresh may have ingested new items, so unread badges refetch.
+      props.onSubscriptionsChanged();
     } catch (error) {
       setRefreshError(formatError(error));
     } finally {
@@ -860,6 +932,21 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
                   {refreshProgressText()}
                 </span>
               </Show>
+            <Show when={props.mode === "library" && hasAnyUnread()}>
+              <button
+                type="button"
+                class="shrink-0 rounded-md border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                aria-label="Mark all sources as read"
+                title="Mark all sources as read"
+                data-mark-all-read
+                disabled={markAllReadBusy()}
+                onClick={async () => {
+                  await markAllRead();
+                }}
+              >
+                <CircleCheck size={14} aria-hidden="true" />
+              </button>
+            </Show>
             <button
               type="button"
               class="shrink-0 rounded-md border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
@@ -969,6 +1056,9 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
         <Show when={creatorSortError()}>
           {(message) => <p class="mt-1 text-xs text-destructive" data-creator-sort-error>{message()}</p>}
         </Show>
+        <Show when={markReadError()}>
+          {(message) => <p class="mt-1 text-xs text-destructive" data-mark-read-error>{message()}</p>}
+        </Show>
       </div>
       <div class={sourceCatalogRegionClass} data-source-catalog-region>
         <Show when={props.activeTab() === "library"}>
@@ -1015,6 +1105,9 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
                           showSubscriptionControl={props.mode === "catalog"}
                           refreshBusy={scopedRefreshBusy() === creator.id || (scopedRefreshBusy() === null && refreshBusy() !== null)}
                           readerDensity={props.readerDensity()}
+                          unreadCount={() => (libraryUnreadEnabled() ? unreadCountForCreator(creator.id) : null)}
+                          markReadBusy={markReadBusyCreatorId() === creator.id || markAllReadBusy()}
+                          onMarkCreatorRead={markCreatorRead}
                           onSelectCreator={props.onSelectCreator}
                           onForceRefreshCreator={runCreatorRefresh}
                           subscriptionControl={
@@ -1241,6 +1334,28 @@ export default function AppShell(props: AppShellProps) {
   const [contentStatuses, { mutate: mutateContentStatuses }] = createResource(contentStatusesResourceInput, () =>
     client.overlays.contentStatuses(),
   );
+  // Per-creator unread summaries (Phase 7.2). Same gating pattern as the other
+  // overlay resources: no fetch while anonymous, one fetch on initial mount
+  // once authenticated, and a refetch whenever subscriptionsReloadKey bumps
+  // (subscribe/unsubscribe/refresh/mark-as-read all bump it), so badge counts
+  // recompute without a dedicated reload channel.
+  const unreadCountsResourceInput = createMemo(() => {
+    if (!isAuthenticated()) {
+      return null;
+    }
+
+    return subscriptionsReloadKey().toString();
+  });
+  const [unreadCounts] = createResource(unreadCountsResourceInput, () => client.overlays.unreadCounts());
+  const unreadCountsValue = createMemo(() => unreadCounts.latest);
+  const unreadByCreatorId = createMemo(() => {
+    const unreadCountsByCreatorId = new Map<string, CreatorUnreadSummary>();
+    for (const summary of unreadCountsValue() ?? emptyCreatorUnreadSummaries) {
+      unreadCountsByCreatorId.set(summary.creatorId, summary);
+    }
+
+    return unreadCountsByCreatorId;
+  });
   const selectedCreatorId = createMemo(() => selectedCreator()?.id ?? null);
   const selectedContentItemId = createMemo(() => selectedContent()?.id ?? null);
 
@@ -1522,6 +1637,7 @@ export default function AppShell(props: AppShellProps) {
           selectedCollectionId={selectedCollectionId}
           catalogReloadKey={catalogReloadKey}
           subscriptionsReloadKey={subscriptionsReloadKey}
+          unreadByCreatorId={unreadByCreatorId}
           playlistItemsReloadKey={playlistItemsReloadKey}
           collectionsReloadKey={collectionsReloadKey}
           onCollectionsChanged={() => setCollectionsReloadKey((key) => key + 1)}

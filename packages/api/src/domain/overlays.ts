@@ -31,6 +31,21 @@ export interface UserContentStatusWithContent extends UserContentStatus {
 }
 
 /**
+ * Per-creator unread overlay summary for one authenticated user (decision D4).
+ * An item counts as unread when its effective publish time
+ * (`coalesce(published_at, created_at)`) is newer than the creator's unread
+ * threshold — the explicit `unread.threshold.<creatorId>` user setting when
+ * present, otherwise the subscription's `created_at` — and the user has no
+ * `opened`/`played` content_status row for it. `lastContentPublishedAt` is the
+ * creator's denormalized latest-publish marker for badge freshness.
+ */
+export interface CreatorUnreadSummary {
+  readonly creatorId: string;
+  readonly unreadCount: number;
+  readonly lastContentPublishedAt: Date | null;
+}
+
+/**
  * Playback resume position for a content item, stored under the `playback` key
  * inside `content_status.metadata_json` on the item's `opened` row (no separate
  * column — see qol-features-plan.md decision D1). `updatedAt` is a UTC ISO 8601

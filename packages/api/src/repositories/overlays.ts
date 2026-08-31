@@ -8,6 +8,7 @@ import type {
   CollectionMember,
   CollectionMemberWithCreator,
   CreatorCollection,
+  CreatorUnreadSummary,
   MigrationMapping,
   MigrationRun,
   MigrationRunStatus,
@@ -118,6 +119,35 @@ export interface SaveUserSettingInput {
   readonly userId: string;
   readonly key: string;
   readonly valueJson: string;
+}
+
+export interface MarkCreatorContentOpenedInput {
+  readonly userId: string;
+  readonly creatorId: string;
+  readonly markedBeforeMs: number;
+}
+
+export interface MarkContentOpenedResult {
+  readonly markedCount: number;
+}
+
+/**
+ * Upper bound of `opened` rows written per creator per mark call (qol plan
+ * decision D4): the newest 1000 matching items are inserted, and the threshold
+ * write below covers any remaining tail without fabricating more overlay rows.
+ */
+const MARK_CREATOR_CONTENT_OPENED_BATCH_LIMIT = 1000;
+
+/**
+ * Prefix of the per-creator unread threshold user_setting keys. The stored
+ * `value_json` is `JSON.stringify(<epoch ms number>)`, and the key inherits the
+ * creator id (lowercase UUID), so full keys like
+ * `unread.threshold.3f2c…-…` satisfy the router's `^[a-z][a-z0-9._-]*$` shape.
+ */
+const unreadThresholdKeyPrefix = "unread.threshold.";
+
+function unreadThresholdSettingKey(creatorId: string): string {
+  return `${unreadThresholdKeyPrefix}${creatorId}`;
 }
 
 export interface CreateMigrationRunInput {
@@ -336,6 +366,196 @@ export async function unsubscribeFromCreatorForUser(
     .where(and(eq(schema.subscription.userId, userId), eq(schema.subscription.creatorId, creatorId)));
 
   return true;
+}
+
+/**
+ * SQL expression for the per-creator unread threshold epoch-ms value stored in
+ * the `unread.threshold.<creatorId>` user_setting row. Tolerant by design
+ * (qol plan decision D4): absent rows, malformed JSON, and valid JSON that is
+ * not a number all degrade to NULL so the caller falls back to
+ * `subscription.created_at` via the surrounding `coalesce`.
+ */
+function unreadThresholdValueJson() {
+  return sql`(
+    case
+      when json_valid(${schema.userSetting.valueJson}) then
+        case
+          when json_type(${schema.userSetting.valueJson}) in ('integer', 'real')
+            then cast(json_extract(${schema.userSetting.valueJson}, '$') as integer)
+          else null
+        end
+      else null
+    end
+  )`;
+}
+
+/**
+ * Unread summaries per subscribed creator for one user, in ONE grouped query.
+ * An item counts when its effective publish time
+ * `coalesce(published_at, created_at)` is newer than the creator's threshold
+ * (explicit user setting, else the subscription's created_at) and the user has
+ * no opened/played content_status row for it. Grouped per creator so
+ * `max(creator.last_content_published_at)` resolves to the creator's
+ * denormalized latest-publish marker used for badge freshness.
+ * Ordering is deterministic: unreadCount desc, then creator displayName asc,
+ * then creator id asc as the tie-breaker for colliding display names.
+ */
+export async function listCreatorUnreadForUser(
+  db: RepositoryDb,
+  userId: string,
+): Promise<readonly CreatorUnreadSummary[]> {
+  const rows = await db
+    .select({
+      creatorId: schema.creator.id,
+      unreadCount: sql<number>`count(*)`,
+      lastContentPublishedAt: sql<number | null>`max(${schema.creator.lastContentPublishedAt})`,
+    })
+    .from(schema.subscription)
+    .innerJoin(schema.creator, eq(schema.creator.id, schema.subscription.creatorId))
+    .innerJoin(schema.contentItem, eq(schema.contentItem.creatorId, schema.subscription.creatorId))
+    .leftJoin(
+      schema.userSetting,
+      and(
+        eq(schema.userSetting.userId, schema.subscription.userId),
+        eq(schema.userSetting.key, sql`${unreadThresholdKeyPrefix} || ${schema.subscription.creatorId}`),
+      ),
+    )
+    .where(
+      and(
+        eq(schema.subscription.userId, userId),
+        sql`coalesce(${schema.contentItem.publishedAt}, ${schema.contentItem.createdAt}) > coalesce(${unreadThresholdValueJson()}, ${schema.subscription.createdAt})`,
+        sql`not exists (
+          select 1
+          from ${schema.contentStatus}
+          where ${schema.contentStatus.userId} = ${userId}
+            and ${schema.contentStatus.contentItemId} = ${schema.contentItem.id}
+            and ${schema.contentStatus.status} in ('opened', 'played')
+        )`,
+      ),
+    )
+    .groupBy(schema.creator.id, schema.creator.displayName)
+    .orderBy(sql`count(*) desc`, asc(schema.creator.displayName), asc(schema.creator.id));
+
+  return rows.map((row) => ({
+    creatorId: row.creatorId,
+    unreadCount: row.unreadCount,
+    lastContentPublishedAt: row.lastContentPublishedAt === null ? null : new Date(row.lastContentPublishedAt),
+  }));
+}
+
+/**
+ * Bounded idempotent "mark creator read": inserts up to 1000 `opened`
+ * content_status rows — never `played` (decision D4) — for the subscribed
+ * creator's items matching the unread predicate whose effective publish time
+ * is at or before `markedBeforeMs`, newest first, then advances the creator's
+ * unread threshold user setting to `markedBeforeMs` so any items beyond the
+ * batch limit are also treated as read. Unknown or unsubscribed creators
+ * return `{ markedCount: 0 }`; callers that need a hard 404 check first
+ * (see the overlays router).
+ */
+export async function markCreatorContentOpenedForUser(
+  db: RepositoryDb,
+  input: MarkCreatorContentOpenedInput,
+): Promise<MarkContentOpenedResult> {
+  if (!Number.isInteger(input.markedBeforeMs) || input.markedBeforeMs < 0) {
+    throw new Error(`Mark-before timestamp must be an integer epoch ms >= 0, received ${input.markedBeforeMs}.`);
+  }
+
+  const subscription = await db.query.subscription.findFirst({
+    where: and(eq(schema.subscription.userId, input.userId), eq(schema.subscription.creatorId, input.creatorId)),
+  });
+  if (subscription === undefined) {
+    return { markedCount: 0 };
+  }
+
+  const inserted = await db
+    .insert(schema.contentStatus)
+    .select((selectQuery) =>
+      selectQuery
+        .select({
+          // 32-char lowercase hex id; unique per row and opaque like the UUID
+          // ids used elsewhere — SQLite has no native uuid() to inline here.
+          id: sql`(lower(hex(randomblob(16))))`,
+          userId: sql`${input.userId}`,
+          contentItemId: schema.contentItem.id,
+          status: sql`'opened'`,
+          metadataJson: sql`null`,
+          createdAt: sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+          updatedAt: sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+        })
+        .from(schema.contentItem)
+        .innerJoin(
+          schema.subscription,
+          and(eq(schema.subscription.userId, input.userId), eq(schema.subscription.creatorId, input.creatorId)),
+        )
+        .leftJoin(
+          schema.userSetting,
+          and(
+            eq(schema.userSetting.userId, input.userId),
+            eq(schema.userSetting.key, sql`${unreadThresholdKeyPrefix} || ${schema.subscription.creatorId}`),
+          ),
+        )
+        .where(
+          and(
+            eq(schema.contentItem.creatorId, input.creatorId),
+            sql`coalesce(${schema.contentItem.publishedAt}, ${schema.contentItem.createdAt}) > coalesce(${unreadThresholdValueJson()}, ${schema.subscription.createdAt})`,
+            sql`coalesce(${schema.contentItem.publishedAt}, ${schema.contentItem.createdAt}) <= ${input.markedBeforeMs}`,
+            sql`not exists (
+              select 1
+              from ${schema.contentStatus}
+              where ${schema.contentStatus.userId} = ${input.userId}
+                and ${schema.contentStatus.contentItemId} = ${schema.contentItem.id}
+                and ${schema.contentStatus.status} in ('opened', 'played')
+            )`,
+          ),
+        )
+        .orderBy(
+          desc(sql`coalesce(${schema.contentItem.publishedAt}, ${schema.contentItem.createdAt})`),
+          desc(schema.contentItem.id),
+        )
+        .limit(MARK_CREATOR_CONTENT_OPENED_BATCH_LIMIT)
+        // Rendered as SQL so the insert builder takes its raw-SQL overload;
+        // the select's column order matches the content_status definition.
+        .getSQL(),
+    )
+    .onConflictDoNothing({
+      target: [schema.contentStatus.userId, schema.contentStatus.contentItemId, schema.contentStatus.status],
+    })
+    .returning({ contentItemId: schema.contentStatus.contentItemId });
+
+  await saveUserSetting(db, {
+    userId: input.userId,
+    key: unreadThresholdSettingKey(input.creatorId),
+    valueJson: JSON.stringify(input.markedBeforeMs),
+  });
+
+  return { markedCount: inserted.length };
+}
+
+/**
+ * "Mark everything read" across all of the user's subscriptions: loops the
+ * subscribed creator ids through the per-creator bounded logic with one shared
+ * `markedBeforeMs` and aggregates the inserted-row counts. Idempotent — a
+ * second run inserts nothing because every creator's threshold now equals
+ * `markedBeforeMs`.
+ */
+export async function markAllCreatorsContentOpenedForUser(
+  db: RepositoryDb,
+  input: { readonly userId: string; readonly markedBeforeMs: number },
+): Promise<MarkContentOpenedResult> {
+  const subscriptions = await listSubscriptionsForUser(db, input.userId);
+
+  let markedCount = 0;
+  for (const subscription of subscriptions) {
+    const result = await markCreatorContentOpenedForUser(db, {
+      userId: input.userId,
+      creatorId: subscription.creatorId,
+      markedBeforeMs: input.markedBeforeMs,
+    });
+    markedCount += result.markedCount;
+  }
+
+  return { markedCount };
 }
 
 export async function findOrCreateContentStatus(

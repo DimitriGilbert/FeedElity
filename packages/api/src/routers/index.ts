@@ -39,6 +39,7 @@ import {
   getSubscriptionWithCreatorForUser,
   listCollectionMembersWithCreatorsForUserCollection,
   listCollectionsForUser,
+  listCreatorUnreadForUser,
   listSubscribedContentItemsForUser,
   listContentStatusWithContentForUser,
   listContentStatusesForUser,
@@ -46,6 +47,8 @@ import {
   listPlaylistsForUser,
   listSubscriptionsWithCreatorsForUser,
   listUserSettingsForUser,
+  markAllCreatorsContentOpenedForUser,
+  markCreatorContentOpenedForUser,
   removeCollectionMemberForUser,
   removePlaylistItemForUser,
   reorderPlaylistItemsForUser,
@@ -549,6 +552,31 @@ export const appRouter = {
         creator,
         unsubscribed,
       };
+    }),
+    unreadCounts: protectedProcedure.handler(({ context }) => {
+      return listCreatorUnreadForUser(context.db, context.session.user.id);
+    }),
+    markCreatorContentOpened: protectedProcedure.input(subscriptionCreatorInput).handler(async ({ input, context }) => {
+      if ((await getCatalogCreatorSummaryById(context.db, input.creatorId)) === null) {
+        throw new ORPCError("NOT_FOUND");
+      }
+      if (
+        (await getSubscriptionWithCreatorForUser(context.db, context.session.user.id, input.creatorId)) === null
+      ) {
+        throw new ORPCError("NOT_FOUND");
+      }
+
+      return markCreatorContentOpenedForUser(context.db, {
+        userId: context.session.user.id,
+        creatorId: input.creatorId,
+        markedBeforeMs: Date.now(),
+      });
+    }),
+    markAllContentOpened: protectedProcedure.handler(({ context }) => {
+      return markAllCreatorsContentOpenedForUser(context.db, {
+        userId: context.session.user.id,
+        markedBeforeMs: Date.now(),
+      });
     }),
     contentStatuses: protectedProcedure.handler(({ context }) => {
       return listContentStatusesForUser(context.db, context.session.user.id);

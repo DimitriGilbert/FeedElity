@@ -7,6 +7,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import * as schema from "@FeedElity/db/schema";
 
 import {
+  advanceCreatorLastContentPublishedAt,
   createRefreshRun,
   findOrCreateContentItem,
   findOrCreateContentSource,
@@ -32,6 +33,7 @@ import {
   findOrCreateSubscription,
   listContentStatusesForUser,
   listContentStatusWithContentForUser,
+  listCreatorUnreadForUser,
   listMigrationMappingsForRun,
   listMigrationRuns,
   listPlaylistItemsForUserPlaylist,
@@ -40,11 +42,14 @@ import {
   listSubscribedContentItemsForUser,
   listSubscriptionsForUser,
   listUserSettingsForUser,
+  markAllCreatorsContentOpenedForUser,
+  markCreatorContentOpenedForUser,
   recordMigrationMapping,
   reorderPlaylistItemsForUser,
   saveUserSetting,
   upsertPlaybackPositionForUser,
 } from "./overlays";
+import type { CreatorUnreadSummary } from "../domain/overlays";
 
 interface TestDatabase {
   readonly client: Client;
@@ -1093,6 +1098,388 @@ describe("catalog and overlay repositories", () => {
     const statuses = await listContentStatusesForUser(testDatabase.db, "user-a");
     expect(statuses).toHaveLength(0);
   });
+
+  test("unread counts default the threshold to the subscription created_at and carry creator freshness", async () => {
+    await insertUser(testDatabase.db, "user-a", "unread-default-a@example.test");
+    await insertUser(testDatabase.db, "user-b", "unread-default-b@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Unread Default Creator",
+    });
+    await advanceCreatorLastContentPublishedAt(testDatabase.db, {
+      creatorId: creator.id,
+      publishedAt: new Date("2026-01-05T00:00:00.000Z"),
+    });
+    await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "unread-default-old",
+      title: "Unread default old video",
+      publishedAt: new Date("2026-01-02T00:00:00.000Z"),
+    });
+    await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "unread-default-new",
+      title: "Unread default new video",
+      publishedAt: new Date("2026-01-05T00:00:00.000Z"),
+    });
+    await insertSubscriptionFixture(testDatabase.db, {
+      id: "sub-unread-default-a",
+      userId: "user-a",
+      creatorId: creator.id,
+      createdAt: new Date("2026-01-03T00:00:00.000Z"),
+    });
+
+    const summaries = await listCreatorUnreadForUser(testDatabase.db, "user-a");
+    const userBSummaries = await listCreatorUnreadForUser(testDatabase.db, "user-b");
+
+    expect(summaries).toEqual([
+      {
+        creatorId: creator.id,
+        unreadCount: 1,
+        lastContentPublishedAt: new Date("2026-01-05T00:00:00.000Z"),
+      },
+    ]);
+    // A user without subscriptions has no unread summaries at all.
+    expect(userBSummaries).toEqual([]);
+  });
+
+  test("unread counts respect an explicit threshold setting over the subscription default", async () => {
+    await insertUser(testDatabase.db, "user-a", "unread-threshold-a@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Unread Threshold Creator",
+    });
+    await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "odysee",
+      sourceExternalId: "unread-threshold-mid",
+      title: "Unread threshold mid video",
+      publishedAt: new Date("2026-01-02T00:00:00.000Z"),
+    });
+    await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "odysee",
+      sourceExternalId: "unread-threshold-new",
+      title: "Unread threshold new video",
+      publishedAt: new Date("2026-01-05T00:00:00.000Z"),
+    });
+    await insertSubscriptionFixture(testDatabase.db, {
+      id: "sub-unread-threshold-a",
+      userId: "user-a",
+      creatorId: creator.id,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    await saveUserSetting(testDatabase.db, {
+      userId: "user-a",
+      key: `unread.threshold.${creator.id}`,
+      valueJson: JSON.stringify(Date.parse("2026-01-04T00:00:00.000Z")),
+    });
+
+    const summaries = await listCreatorUnreadForUser(testDatabase.db, "user-a");
+
+    // The 2026-01-02 item is newer than the subscription but older than the
+    // explicit threshold, so only the 2026-01-05 item stays unread.
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ creatorId: creator.id, unreadCount: 1 });
+  });
+
+  test("malformed or non-numeric threshold settings are tolerated and fall back to the subscription default", async () => {
+    await insertUser(testDatabase.db, "user-a", "unread-malformed-a@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Unread Malformed Creator",
+    });
+    await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "peertube",
+      sourceExternalId: "unread-malformed-old",
+      title: "Unread malformed old video",
+      publishedAt: new Date("2026-01-02T00:00:00.000Z"),
+    });
+    await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "peertube",
+      sourceExternalId: "unread-malformed-new",
+      title: "Unread malformed new video",
+      publishedAt: new Date("2026-01-05T00:00:00.000Z"),
+    });
+    await insertSubscriptionFixture(testDatabase.db, {
+      id: "sub-unread-malformed-a",
+      userId: "user-a",
+      creatorId: creator.id,
+      createdAt: new Date("2026-01-03T00:00:00.000Z"),
+    });
+
+    const thresholdKey = `unread.threshold.${creator.id}`;
+    for (const malformedValueJson of ["{definitely-not-json", JSON.stringify("oops"), JSON.stringify({ epochMs: 5 })]) {
+      await saveUserSetting(testDatabase.db, { userId: "user-a", key: thresholdKey, valueJson: malformedValueJson });
+
+      const summaries = await listCreatorUnreadForUser(testDatabase.db, "user-a");
+
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]).toMatchObject({ creatorId: creator.id, unreadCount: 1 });
+    }
+  });
+
+  test("opened and played rows are excluded from unread counts while favorite-only rows still count", async () => {
+    await insertUser(testDatabase.db, "user-a", "unread-excluded-a@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Unread Excluded Creator",
+    });
+    const statusKinds = ["opened", "played", "favorite", "none"] as const;
+    const itemsByKind = new Map<string, Awaited<ReturnType<typeof findOrCreateContentItem>>>();
+    for (const [index, statusKind] of statusKinds.entries()) {
+      itemsByKind.set(
+        statusKind,
+        await findOrCreateContentItem(testDatabase.db, {
+          creatorId: creator.id,
+          sourceType: "youtube",
+          sourceExternalId: `unread-excluded-${statusKind}`,
+          title: `Unread excluded ${statusKind} video`,
+          publishedAt: new Date(Date.parse("2026-01-05T00:00:00.000Z") + index * 1_000),
+        }),
+      );
+    }
+    await insertSubscriptionFixture(testDatabase.db, {
+      id: "sub-unread-excluded-a",
+      userId: "user-a",
+      creatorId: creator.id,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    for (const statusKind of ["opened", "played", "favorite"] as const) {
+      await findOrCreateContentStatus(testDatabase.db, {
+        userId: "user-a",
+        contentItemId: itemsByKind.get(statusKind)?.id ?? "",
+        status: statusKind,
+      });
+    }
+
+    const summaries = await listCreatorUnreadForUser(testDatabase.db, "user-a");
+
+    // opened and played are read; favorite alone does not mark an item read.
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ creatorId: creator.id, unreadCount: 2 });
+  });
+
+  test("marking creator content opened is idempotent, writes only opened rows, and advances the threshold", async () => {
+    await insertUser(testDatabase.db, "user-a", "unread-mark-a@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Unread Mark Creator",
+    });
+    for (let index = 0; index < 3; index += 1) {
+      await findOrCreateContentItem(testDatabase.db, {
+        creatorId: creator.id,
+        sourceType: "youtube",
+        sourceExternalId: `unread-mark-video-${index}`,
+        title: `Unread mark video ${index}`,
+        publishedAt: new Date(Date.parse("2026-01-05T00:00:00.000Z") + index * 1_000),
+      });
+    }
+    await insertSubscriptionFixture(testDatabase.db, {
+      id: "sub-unread-mark-a",
+      userId: "user-a",
+      creatorId: creator.id,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    const markedBeforeMs = Date.parse("2026-01-10T00:00:00.000Z");
+
+    const firstMark = await markCreatorContentOpenedForUser(testDatabase.db, {
+      userId: "user-a",
+      creatorId: creator.id,
+      markedBeforeMs,
+    });
+    const markedSummaries = await listCreatorUnreadForUser(testDatabase.db, "user-a");
+    const secondMark = await markCreatorContentOpenedForUser(testDatabase.db, {
+      userId: "user-a",
+      creatorId: creator.id,
+      markedBeforeMs,
+    });
+    const statuses = await listContentStatusesForUser(testDatabase.db, "user-a");
+    const settings = await listUserSettingsForUser(testDatabase.db, "user-a");
+    const unsubscribedMark = await markCreatorContentOpenedForUser(testDatabase.db, {
+      userId: "user-a",
+      creatorId: "not-subscribed-creator",
+      markedBeforeMs,
+    });
+
+    expect(firstMark).toEqual({ markedCount: 3 });
+    expect(markedSummaries).toEqual([]);
+    expect(secondMark).toEqual({ markedCount: 0 });
+    expect(statuses).toHaveLength(3);
+    expect(statuses.every((status) => status.status === "opened")).toBe(true);
+    expect(settings).toHaveLength(1);
+    expect(settings[0]).toMatchObject({
+      userId: "user-a",
+      key: `unread.threshold.${creator.id}`,
+      valueJson: JSON.stringify(markedBeforeMs),
+    });
+    expect(unsubscribedMark).toEqual({ markedCount: 0 });
+  });
+
+  test("marking creator content opened honors the 1000-item batch limit and the threshold covers the tail", async () => {
+    await insertUser(testDatabase.db, "user-a", "unread-cap-a@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Unread Cap Creator",
+    });
+    const capBaseMs = Date.parse("2026-02-01T00:00:00.000Z");
+    await testDatabase.db.insert(schema.contentItem).values(
+      Array.from({ length: 1001 }, (_, index) => ({
+        id: `cap-item-${String(index).padStart(4, "0")}`,
+        creatorId: creator.id,
+        sourceType: "youtube" as const,
+        sourceExternalId: `cap-video-${index}`,
+        title: `Cap video ${index}`,
+        publishedAt: new Date(capBaseMs + index * 1_000),
+      })),
+    );
+    await insertSubscriptionFixture(testDatabase.db, {
+      id: "sub-unread-cap-a",
+      userId: "user-a",
+      creatorId: creator.id,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    const beforeSummaries = await listCreatorUnreadForUser(testDatabase.db, "user-a");
+    const mark = await markCreatorContentOpenedForUser(testDatabase.db, {
+      userId: "user-a",
+      creatorId: creator.id,
+      markedBeforeMs: capBaseMs + 10_000_000,
+    });
+    const afterSummaries = await listCreatorUnreadForUser(testDatabase.db, "user-a");
+    const statuses = await listContentStatusesForUser(testDatabase.db, "user-a");
+
+    expect(beforeSummaries).toHaveLength(1);
+    expect(beforeSummaries[0]).toMatchObject({ creatorId: creator.id, unreadCount: 1001 });
+    expect(mark).toEqual({ markedCount: 1000 });
+    // The 1001st item never gets an opened row, but the threshold write marks
+    // everything at or before markedBeforeMs as read, so no residual badge.
+    expect(afterSummaries).toEqual([]);
+    expect(statuses).toHaveLength(1000);
+    expect(statuses.every((status) => status.status === "opened")).toBe(true);
+  });
+
+  test("marking all creators aggregates per-creator counts and stays scoped to the marking user", async () => {
+    await insertUser(testDatabase.db, "user-a", "unread-markall-a@example.test");
+    await insertUser(testDatabase.db, "user-b", "unread-markall-b@example.test");
+    const creatorX = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Unread MarkAll X",
+    });
+    const creatorY = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Unread MarkAll Y",
+    });
+    const xItemIds: string[] = [];
+    for (let index = 0; index < 2; index += 1) {
+      const item = await findOrCreateContentItem(testDatabase.db, {
+        creatorId: creatorX.id,
+        sourceType: "odysee",
+        sourceExternalId: `unread-markall-x-${index}`,
+        title: `Unread markall X ${index}`,
+        publishedAt: new Date(Date.parse("2026-01-05T00:00:00.000Z") + index * 1_000),
+      });
+      xItemIds.push(item.id);
+    }
+    await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creatorY.id,
+      sourceType: "odysee",
+      sourceExternalId: "unread-markall-y-0",
+      title: "Unread markall Y 0",
+      publishedAt: new Date("2026-01-06T00:00:00.000Z"),
+    });
+    await insertSubscriptionFixture(testDatabase.db, {
+      id: "sub-unread-markall-a-x",
+      userId: "user-a",
+      creatorId: creatorX.id,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    await insertSubscriptionFixture(testDatabase.db, {
+      id: "sub-unread-markall-a-y",
+      userId: "user-a",
+      creatorId: creatorY.id,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    await insertSubscriptionFixture(testDatabase.db, {
+      id: "sub-unread-markall-b-x",
+      userId: "user-b",
+      creatorId: creatorX.id,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    const markedBeforeMs = Date.parse("2026-01-10T00:00:00.000Z");
+
+    const userAMarkAll = await markAllCreatorsContentOpenedForUser(testDatabase.db, {
+      userId: "user-a",
+      markedBeforeMs,
+    });
+    const userASummaries = await listCreatorUnreadForUser(testDatabase.db, "user-a");
+    const userBSummaries = await listCreatorUnreadForUser(testDatabase.db, "user-b");
+    const userBStatuses = await listContentStatusesForUser(testDatabase.db, "user-b");
+    const userBMarkAll = await markAllCreatorsContentOpenedForUser(testDatabase.db, {
+      userId: "user-b",
+      markedBeforeMs,
+    });
+    const userBStatusesAfterOwnMarkAll = await listContentStatusesForUser(testDatabase.db, "user-b");
+
+    expect(userAMarkAll).toEqual({ markedCount: 3 });
+    expect(userASummaries).toEqual([]);
+    // User B subscribed to creator X only, and user A's mark-all must not
+    // touch B's overlay rows: B still sees both X items unread.
+    expect(requireUnreadSummary(userBSummaries, creatorX.id).unreadCount).toBe(2);
+    expect(userBSummaries.map((summary) => summary.creatorId)).not.toContain(creatorY.id);
+    expect(userBStatuses).toEqual([]);
+    expect(userBMarkAll).toEqual({ markedCount: 2 });
+    expect(userBStatusesAfterOwnMarkAll.map((status) => status.contentItemId).sort()).toEqual([...xItemIds].sort());
+    expect(
+      userBStatusesAfterOwnMarkAll.every((status) => status.userId === "user-b" && status.status === "opened"),
+    ).toBe(true);
+  });
+
+  test("unread summaries order deterministically by unread count then display name then id", async () => {
+    await insertUser(testDatabase.db, "user-a", "unread-order-a@example.test");
+    const busyCreator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Beta Creator",
+    });
+    const alphaCreatorOne = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Alpha Creator",
+    });
+    // findOrCreateCreator dedupes by display name, so the display-name tie is
+    // seeded with a direct fixture row instead.
+    const alphaCreatorTwo = { id: "creator-unread-order-alpha-two" };
+    await testDatabase.db.insert(schema.creator).values({
+      id: alphaCreatorTwo.id,
+      nameKey: "alphacreatoruntied",
+      displayName: "Alpha Creator",
+    });
+    const seedItems = [
+      { creator: busyCreator, count: 2, externalIdPrefix: "unread-order-busy" },
+      { creator: alphaCreatorOne, count: 1, externalIdPrefix: "unread-order-alpha-one" },
+      { creator: alphaCreatorTwo, count: 1, externalIdPrefix: "unread-order-alpha-two" },
+    ] as const;
+    for (const seed of seedItems) {
+      for (let index = 0; index < seed.count; index += 1) {
+        await findOrCreateContentItem(testDatabase.db, {
+          creatorId: seed.creator.id,
+          sourceType: "youtube",
+          sourceExternalId: `${seed.externalIdPrefix}-${index}`,
+          title: `${seed.externalIdPrefix} ${index}`,
+          publishedAt: new Date("2026-01-05T00:00:00.000Z"),
+        });
+      }
+      await insertSubscriptionFixture(testDatabase.db, {
+        id: `sub-unread-order-${seed.externalIdPrefix}`,
+        userId: "user-a",
+        creatorId: seed.creator.id,
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      });
+    }
+
+    const summaries = await listCreatorUnreadForUser(testDatabase.db, "user-a");
+
+    // count desc, then display name asc, then creator id asc breaks the
+    // display-name tie deterministically.
+    expect(summaries.map((summary) => summary.creatorId)).toEqual([
+      busyCreator.id,
+      ...[alphaCreatorOne.id, alphaCreatorTwo.id].sort(),
+    ]);
+    expect(summaries.map((summary) => summary.unreadCount)).toEqual([2, 1, 1]);
+  });
 });
 
 function requireMetadataJson(metadataJson: string | null | undefined): string {
@@ -1124,6 +1511,35 @@ async function insertUser(db: RepositoryDb, id: string, email: string): Promise<
     email,
     emailVerified: true,
   });
+}
+
+/**
+ * Subscription fixture with an explicit created_at: the default unread
+ * threshold is the subscription's created_at, so unread tests pin it to a
+ * fixed instant instead of the wall clock.
+ */
+async function insertSubscriptionFixture(
+  db: RepositoryDb,
+  input: { readonly id: string; readonly userId: string; readonly creatorId: string; readonly createdAt: Date },
+): Promise<void> {
+  await db.insert(schema.subscription).values({
+    id: input.id,
+    userId: input.userId,
+    creatorId: input.creatorId,
+    createdAt: input.createdAt,
+    updatedAt: input.createdAt,
+  });
+}
+
+function requireUnreadSummary(
+  summaries: readonly CreatorUnreadSummary[],
+  creatorId: string,
+): CreatorUnreadSummary {
+  const summary = summaries.find((candidate) => candidate.creatorId === creatorId);
+  if (summary === undefined) {
+    throw new Error(`Expected an unread summary for creator ${creatorId}.`);
+  }
+  return summary;
 }
 
 async function readContentItemRow(contentItemId: string) {
