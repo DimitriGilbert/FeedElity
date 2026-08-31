@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { CatalogContentSource, CatalogCreator, CatalogCreatorSummary, CatalogFeed, RefreshFeedResult, RefreshRun, RefreshRunReport, UserContentStatus, UserSetting } from "@FeedElity/api";
+import type { CatalogContentSource, CatalogCreator, CatalogCreatorSummary, CatalogFeed, FeedHealthEntry, RefreshFeedResult, RefreshRun, RefreshRunReport, UserContentStatus, UserSetting } from "@FeedElity/api";
 import type { LeftPaneTab, MiddlePanePanel, ViewerMode } from "./app-shell.contract";
 
 import {
@@ -31,6 +31,7 @@ import {
   desktopShellGridClass,
   feedListLimit,
   firstPageOffset,
+  formatFeedHealthLastSuccess,
   formatPlaybackPosition,
   formatPlaybackResumeLabel,
   formatRefreshReportSummary,
@@ -71,6 +72,7 @@ import {
   shellRootClass,
   showsCatalogFilters,
   shouldFlushPlaybackPosition,
+  sortFeedHealthEntries,
   sourceActionsRegionClass,
   sourceCatalogRegionClass,
   sourceColumnClass,
@@ -2637,4 +2639,188 @@ test("anonymous users and catalog mode render no unread badge or mark-all contro
   // The global control additionally requires at least one positive count.
   expect(source).toContain('props.mode === "library" && hasAnyUnread()');
   expect(source).toContain('<Show when={showUnreadBadge() && props.onMarkCreatorRead !== undefined}>');
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8.2: feed health dashboard, confirm dialog, bulk unsubscribe
+// ---------------------------------------------------------------------------
+
+function healthEntry(feedId: string, overrides: Partial<FeedHealthEntry> = {}): FeedHealthEntry {
+  return {
+    feedId,
+    feedTitle: `Feed ${feedId}`,
+    feedUrl: `https://example.test/${feedId}`,
+    sourceType: "youtube",
+    creatorId: `creator-${feedId}`,
+    creatorDisplayName: `Creator ${feedId}`,
+    nextRefreshAfter: null,
+    lastAttemptAt: null,
+    lastSuccessAt: null,
+    consecutiveFailureCount: 0,
+    lastErrorSummaryJson: null,
+    itemsCreatedTotal: 0,
+    ...overrides,
+  };
+}
+
+async function readFeedHealthDialogSource() {
+  return Bun.file(new URL("./feed-health-dialog.tsx", import.meta.url)).text();
+}
+
+async function readConfirmDialogSource() {
+  return Bun.file(new URL("./confirm-dialog.tsx", import.meta.url)).text();
+}
+
+test("feed health rows sort by failure streak then stalest last success (never first)", () => {
+  const entries = [
+    healthEntry("one-blip", { consecutiveFailureCount: 1, lastSuccessAt: new Date("2026-01-04T00:00:00.000Z") }),
+    healthEntry("healthy", { consecutiveFailureCount: 0, lastSuccessAt: new Date("2026-01-04T00:00:00.000Z") }),
+    healthEntry("fresh-success", { consecutiveFailureCount: 2, lastSuccessAt: new Date("2026-01-04T00:00:00.000Z") }),
+    healthEntry("never-succeeded", { consecutiveFailureCount: 2 }),
+    healthEntry("stale-success", { consecutiveFailureCount: 2, lastSuccessAt: new Date("2025-12-01T00:00:00.000Z") }),
+  ];
+
+  const sorted = sortFeedHealthEntries(entries);
+
+  expect(sorted.map((entry) => entry.feedId)).toEqual([
+    // 2 failures: never succeeded is the stalest, then oldest success first.
+    "never-succeeded",
+    "stale-success",
+    "fresh-success",
+    // Fewer failures rank later.
+    "one-blip",
+    "healthy",
+  ]);
+});
+
+test("sortFeedHealthEntries breaks ties deterministically and never mutates its input", () => {
+  const sameMoment = new Date("2026-01-04T00:00:00.000Z");
+  const entries = [
+    healthEntry("zeta", { consecutiveFailureCount: 3, lastSuccessAt: sameMoment }),
+    healthEntry("alpha", { consecutiveFailureCount: 3, lastSuccessAt: sameMoment }),
+  ];
+
+  const sorted = sortFeedHealthEntries(entries);
+
+  // Equal failure count and equal last success falls back to feed URL order.
+  expect(sorted.map((entry) => entry.feedId)).toEqual(["alpha", "zeta"]);
+  expect(sortFeedHealthEntries([])).toEqual([]);
+
+  const inputOrder = ["zeta", "alpha"];
+  expect(entries.map((entry) => entry.feedId)).toEqual(inputOrder);
+});
+
+test("formatFeedHealthLastSuccess reads never, today, and whole-day ages", () => {
+  const now = new Date("2026-08-30T12:00:00.000Z");
+
+  expect(formatFeedHealthLastSuccess(null, now)).toBe("never");
+  expect(formatFeedHealthLastSuccess(new Date("2026-08-30T06:00:00.000Z"), now)).toBe("today");
+  expect(formatFeedHealthLastSuccess(new Date("2026-08-28T12:00:00.000Z"), now)).toBe("2d ago");
+  expect(formatFeedHealthLastSuccess(new Date("2026-08-23T00:00:00.000Z"), now)).toBe("7d ago");
+});
+
+test("feed health dialog renders sorted rows from the fetched health payload", async () => {
+  const source = await readFeedHealthDialogSource();
+  const shellSource = await readAppShellSource();
+
+  // Data arrives via props from the parent resource and is sorted in-dialog.
+  expect(source).toContain("const sortedEntries = createMemo(() => sortFeedHealthEntries(props.entries));");
+  expect(source).toContain("<For each={sortedEntries()}>");
+  // Row contract: identity, creator, feed link, source chip, status pill.
+  expect(source).toContain('data-feed-health-row={entry.feedId}');
+  expect(source).toContain('data-feed-health-row-state={isFailing ? "failing" : "healthy"}');
+  expect(source).toContain('data-feed-health-row-creator');
+  expect(source).toContain('<SourceIconBadge sourceType={entry.sourceType} context="feed" />');
+  expect(source).toContain('data-feed-health-row-title');
+  expect(source).toContain('data-feed-health-row-url');
+  expect(source).toContain('target="_blank"');
+  // Health facts: last-success age, failure streak, parsed last error.
+  expect(source).toContain("formatFeedHealthLastSuccess(entry.lastSuccessAt, healthNow())");
+  expect(source).toContain('data-feed-health-row-last-success');
+  expect(source).toContain('data-feed-health-row-failure-count');
+  expect(source).toContain("<TriangleAlert");
+  expect(source).toContain("parseRefreshErrorSummaries(entry.lastErrorSummaryJson)");
+  expect(source).toContain('data-feed-health-row-error');
+  expect(source).toContain("{formatRefreshErrorCodeLabel(error.code)}.");
+  // Native dialog modeled on RefreshStatusDialog.
+  expect(source).toContain("<dialog");
+  expect(source).toContain('aria-label="Feed health"');
+
+  // The shell fetches health only while the dialog is open, authenticated.
+  expect(shellSource).toContain("const [feedHealth] = createResource(feedHealthResourceInput, () => client.overlays.feedHealth({}));");
+  expect(shellSource).toContain("if (!props.isAuthenticated() || !feedHealthOpen()) {");
+  expect(shellSource).toContain("entries={feedHealthEntries()}");
+  expect(shellSource).toContain("loading={feedHealth.loading}");
+  expect(shellSource).toContain("onClose={() => setFeedHealthOpen(false)}");
+});
+
+test("destructive unsubscribe actions require the confirm dialog before any client call", async () => {
+  const source = await readFeedHealthDialogSource();
+  const confirmSource = await readConfirmDialogSource();
+  const shellSource = await readAppShellSource();
+
+  // Confirm dialog contract: open/onConfirm/onCancel props, destructive confirm
+  // button, cancel button, data attributes.
+  expect(confirmSource).toContain("data-confirm-dialog");
+  expect(confirmSource).toContain('data-confirm-dialog-title');
+  expect(confirmSource).toContain('data-confirm-dialog-body');
+  expect(confirmSource).toContain("data-confirm-dialog-cancel");
+  expect(confirmSource).toContain("data-confirm-dialog-confirm");
+  expect(confirmSource).toContain("onClick={() => props.onCancel()}");
+  expect(confirmSource).toContain("onClick={() => props.onConfirm()}");
+  expect(confirmSource).toContain("bg-destructive");
+
+  // Row + bulk buttons only STAGE the confirm intent.
+  expect(source).toContain("onClick={() => stageCreatorUnsubscribe(entry)}");
+  expect(source).toContain("onClick={() => stageFailedCreatorsUnsubscribe()}");
+  const stageCreatorStart = source.indexOf("const stageCreatorUnsubscribe =");
+  const stageBulkStart = source.indexOf("const stageFailedCreatorsUnsubscribe =");
+  const confirmHandlerStart = source.indexOf("const confirmPendingUnsubscribe =");
+  expect(source.slice(stageCreatorStart, stageBulkStart)).not.toContain("props.onUnsubscribeCreators");
+  expect(source.slice(stageBulkStart, confirmHandlerStart)).not.toContain("props.onUnsubscribeCreators");
+
+  // The ONLY path to the destructive call consumes the pending intent first.
+  const forwardCallIndex = source.indexOf("props.onUnsubscribeCreators(pending.creatorIds);");
+  const pendingClearIndex = source.indexOf("setPendingUnsubscribe(null);", confirmHandlerStart);
+  expect(confirmHandlerStart).toBeGreaterThan(-1);
+  expect(pendingClearIndex).toBeGreaterThan(-1);
+  expect(forwardCallIndex).toBeGreaterThan(pendingClearIndex);
+
+  // Cancel fires nothing: it only clears the pending intent.
+  expect(source).toContain("onCancel={() => setPendingUnsubscribe(null)}");
+  expect(source).toContain("open={pendingUnsubscribe() !== null}");
+
+  // The shell performs the bulkUnsubscribe call exactly once, inside the
+  // handler the dialog can only reach post-confirm, and reloads overlays plus
+  // health rows on success.
+  expect(shellSource.split("client.overlays.bulkUnsubscribe")).toHaveLength(2);
+  const shellHandlerStart = shellSource.indexOf("const unsubscribeHealthCreators = async (creatorIds: readonly string[]) => {");
+  const shellHandlerEnd = shellSource.indexOf("const feedListInput = createMemo", shellHandlerStart);
+  const shellHandler = shellSource.slice(shellHandlerStart, shellHandlerEnd);
+  expect(shellHandler).toContain("await client.overlays.bulkUnsubscribe({ creatorIds: [...creatorIds] });");
+  expect(shellHandler).toContain("props.onSubscriptionsChanged();");
+  expect(shellHandler).toContain("setFeedHealthReloadKey((key) => key + 1);");
+  expect(shellHandler).toContain("setFeedHealthActionError(formatError(error));");
+  expect(shellSource).toContain("onUnsubscribeCreators={unsubscribeHealthCreators}");
+
+  // No native window.confirm escape hatch anywhere in the UI sources.
+  const uiSources = await readChangedUiSource();
+  expect(uiSources).not.toContain("window.confirm");
+});
+
+test("feed health trigger is authenticated-only beside the refresh status dialog mount", async () => {
+  const source = await readAppShellSource();
+
+  const regionStart = source.indexOf('class={sourceActionsRegionClass} data-source-actions-region');
+  const regionEnd = source.indexOf("</section>", regionStart);
+  expect(regionStart).toBeGreaterThan(-1);
+  const actionsRegion = source.slice(regionStart, regionEnd);
+
+  expect(actionsRegion).toContain("<RefreshStatusDialog");
+  expect(source.indexOf("<FeedHealthDialog")).toBeGreaterThan(source.indexOf("<RefreshStatusDialog"));
+  // Trigger: authenticated-only, opens the health dialog.
+  expect(actionsRegion).toContain("<Show when={props.isAuthenticated()}>");
+  expect(actionsRegion).toContain("data-feed-health-trigger");
+  expect(actionsRegion).toContain("onClick={() => setFeedHealthOpen(true)}");
+  expect(actionsRegion).toContain("<FeedHealthDialog");
 });

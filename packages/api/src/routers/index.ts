@@ -18,6 +18,7 @@ import {
   listCatalogContentItems,
   listCatalogCreators,
   listCatalogFeedsForBrowsing,
+  listFeedHealth,
   listRefreshFeedResultsWithFeedsForRun,
   listRefreshRuns,
 } from "../repositories/catalog";
@@ -217,6 +218,12 @@ const subscriptionCreatorInput = z.object({
   creatorId: z.string().min(1),
 });
 
+// Array bound mirrors batchAddSourcesInput: bulk overlay writes stay bounded
+// per call so one request cannot loop unbounded over the subscription table.
+const bulkUnsubscribeInput = z.object({
+  creatorIds: z.array(z.string().min(1)).min(1).max(100),
+});
+
 const settingKeyInput = z.string().trim().min(1).max(64).regex(/^[a-z][a-z0-9._-]*$/);
 
 const settingValueInput = z.string().max(4_096);
@@ -260,6 +267,12 @@ const refreshStatusInput = z
     runId: z.string().min(1).optional(),
     limit: z.number().int().min(1).max(20).default(5),
     feedResultsLimit: z.number().int().min(1).max(50).default(3),
+  })
+  .optional();
+
+const feedHealthInput = z
+  .object({
+    limit: z.number().int().min(1).max(500).default(200),
   })
   .optional();
 
@@ -553,8 +566,38 @@ export const appRouter = {
         unsubscribed,
       };
     }),
+    // Bulk variant of unsubscribeFromCreator for the feed-health dialog. Unlike
+    // the single-id procedure it does NOT 404 on unknown creators: a health row
+    // is catalog-global while subscriptions are user-owned, so an unsubscribed
+    // creator is a normal outcome reported via missingCreatorIds. Duplicate ids
+    // collapse to one write (idempotent bulk semantics).
+    bulkUnsubscribe: protectedProcedure.input(bulkUnsubscribeInput).handler(async ({ input, context }) => {
+      const creatorIds = [...new Set(input.creatorIds)];
+      let unsubscribedCount = 0;
+      const missingCreatorIds: string[] = [];
+
+      for (const creatorId of creatorIds) {
+        const unsubscribed = await unsubscribeFromCreatorForUser(context.db, context.session.user.id, creatorId);
+        if (unsubscribed) {
+          unsubscribedCount += 1;
+        } else {
+          missingCreatorIds.push(creatorId);
+        }
+      }
+
+      return {
+        unsubscribedCount,
+        missingCreatorIds,
+      };
+    }),
     unreadCounts: protectedProcedure.handler(({ context }) => {
       return listCreatorUnreadForUser(context.db, context.session.user.id);
+    }),
+    // D7: feed health is a protected overlay-scope view even though the data is
+    // catalog-global (no user-owned rows are included). Public refresh.status
+    // is deliberately untouched.
+    feedHealth: protectedProcedure.input(feedHealthInput).handler(({ input, context }) => {
+      return listFeedHealth(context.db, { limit: input?.limit });
     }),
     markCreatorContentOpened: protectedProcedure.input(subscriptionCreatorInput).handler(async ({ input, context }) => {
       if ((await getCatalogCreatorSummaryById(context.db, input.creatorId)) === null) {

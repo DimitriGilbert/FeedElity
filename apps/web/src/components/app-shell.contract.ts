@@ -4,6 +4,7 @@ import type {
   CatalogContentSource,
   CatalogCreator,
   CatalogFeed,
+  FeedHealthEntry,
   RefreshFeedErrorSummary,
   RefreshFeedResult,
   RefreshFeedResultWithFeed,
@@ -479,6 +480,58 @@ const refreshErrorCodeLabels: Readonly<Record<string, string>> = {
  */
 export function formatRefreshErrorCodeLabel(code: string): string {
   return refreshErrorCodeLabels[code] ?? code;
+}
+
+/**
+ * Order the feed-health rows for the health dialog: most consecutive failures
+ * first, then the stalest successful refresh first (feeds that have never
+ * succeeded sort before feeds that succeeded at some point). Ties fall through
+ * to feed URL then feed id so the ordering is deterministic across refetches.
+ * The repository returns rows sorted by feed URL; this client-side sort is the
+ * presentation contract (see feed-health-dialog).
+ */
+export function sortFeedHealthEntries(entries: readonly FeedHealthEntry[]): readonly FeedHealthEntry[] {
+  return [...entries].sort((left, right) => {
+    if (left.consecutiveFailureCount !== right.consecutiveFailureCount) {
+      return right.consecutiveFailureCount - left.consecutiveFailureCount;
+    }
+
+    if (left.lastSuccessAt === null || right.lastSuccessAt === null) {
+      if (left.lastSuccessAt !== right.lastSuccessAt) {
+        // Never-succeeded feeds are the stalest possible, so they come first.
+        return left.lastSuccessAt === null ? -1 : 1;
+      }
+    } else if (left.lastSuccessAt.getTime() !== right.lastSuccessAt.getTime()) {
+      return left.lastSuccessAt.getTime() - right.lastSuccessAt.getTime();
+    }
+
+    if (left.feedUrl !== right.feedUrl) {
+      return left.feedUrl < right.feedUrl ? -1 : 1;
+    }
+
+    return left.feedId < right.feedId ? -1 : left.feedId > right.feedId ? 1 : 0;
+  });
+}
+
+const feedHealthDayMs = 86_400_000;
+
+/**
+ * Human "last success" age for a feed-health row. Never-succeeded feeds read
+ * "never"; successes within the current day read "today"; older ones read
+ * whole-day counts ("3d ago"). `now` is injected so callers (and tests) stay
+ * deterministic.
+ */
+export function formatFeedHealthLastSuccess(lastSuccessAt: Date | null, now: Date): string {
+  if (lastSuccessAt === null) {
+    return "never";
+  }
+
+  const dayDifference = Math.floor((now.getTime() - lastSuccessAt.getTime()) / feedHealthDayMs);
+  if (dayDifference < 1) {
+    return "today";
+  }
+
+  return `${dayDifference}d ago`;
 }
 
 export function formatContentPublishedAt(publishedAt: Date | null): string {

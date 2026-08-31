@@ -228,3 +228,28 @@ export interface RefreshFeedResult {
 export interface RefreshFeedResultWithFeed extends RefreshFeedResult {
   readonly feed: CatalogFeed;
 }
+
+/**
+ * Catalog-global feed refresh health for the health dashboard. Carries ONLY
+ * catalog and refresh-run data — never user-owned overlay rows. Metrics are
+ * computed over a bounded window of the latest refresh feed results per feed.
+ *
+ * `lastErrorSummaryJson` is the RAW `error_summary_json` of the newest failed
+ * result (null when the newest attempt succeeded or no attempt exists). It is
+ * deliberately not parsed server-side; the web derives code/message via
+ * `parseRefreshErrorSummaries`.
+ */
+export interface FeedHealthEntry {
+  readonly feedId: string;
+  readonly feedTitle: string | null;
+  readonly feedUrl: string;
+  readonly sourceType: SourceType;
+  readonly creatorId: string;
+  readonly creatorDisplayName: string;
+  readonly nextRefreshAfter: Date | null;
+  readonly lastAttemptAt: Date | null;
+  readonly lastSuccessAt: Date | null;
+  readonly consecutiveFailureCount: number;
+  readonly lastErrorSummaryJson: string | null;
+  readonly itemsCreatedTotal: number;
+}

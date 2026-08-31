@@ -8,6 +8,7 @@ import * as schema from "@FeedElity/db/schema";
 
 import type { SourceType } from "../domain/catalog";
 import {
+  createRefreshRun,
   findFeedBySourceIdentity,
   findOrCreateCreator,
   findOrCreateFeed,
@@ -429,10 +430,129 @@ describe("manual refresh orchestration", () => {
     expect(completed.run).toMatchObject({ status: "partial", feedsSucceededCount: 1, feedsFailedCount: 2 });
     expect(completed.run.feedsSucceededCount).toBeGreaterThan(0);
   });
+
+  test("reaching a terminal state prunes only refresh feed results older than the retention window", async () => {
+    const feeds = await seedFeeds(testDatabase.db);
+    const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
+    // 30-day window from the fixed clock (2026-05-16T12:00): the 2026-04-01
+    // attempt is over-age, the 2026-04-20 one stays.
+    const overAgeResultId = await seedRefreshFeedResultAt(testDatabase.db, {
+      feedId: feeds.dueFeedId,
+      status: "failed",
+      startedAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const recentResultId = await seedRefreshFeedResultAt(testDatabase.db, {
+      feedId: feeds.dueFeedId,
+      status: "succeeded",
+      startedAt: new Date("2026-04-20T00:00:00.000Z"),
+    });
+
+    const result = await refreshAll(refreshDependencies(registry), { force: false });
+
+    expect(result.run.status).toBe("succeeded");
+    expect(await findRefreshFeedResultById(overAgeResultId)).toBeUndefined();
+    expect(await findRefreshFeedResultById(recentResultId)).toMatchObject({ feedId: feeds.dueFeedId });
+    // The completed run's own results were recorded after the prune cutoff.
+    expect(await listRefreshFeedResultsForRun(testDatabase.db, { refreshRunId: result.run.id, limit: 10 })).toHaveLength(2);
+  });
+
+  test("startRefreshAll's background processing path prunes aged results too", async () => {
+    const feeds = await seedFeeds(testDatabase.db);
+    const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
+    const overAgeResultId = await seedRefreshFeedResultAt(testDatabase.db, {
+      feedId: feeds.creatorTwoFeedId,
+      status: "failed",
+      startedAt: new Date("2026-03-15T00:00:00.000Z"),
+    });
+
+    const started = await startRefreshAll(refreshDependencies(registry), { force: true });
+    const completed = await started.process();
+
+    expect(completed.run.status).toBe("succeeded");
+    expect(await findRefreshFeedResultById(overAgeResultId)).toBeUndefined();
+    expect(completed.feedResults).toHaveLength(4);
+  });
+
+  test("a failing retention prune is logged and does not fail the run report", async () => {
+    const feeds = await seedFeeds(testDatabase.db);
+    const registry = createSourceAdapterRegistry([createRefreshAdapter({ failingFeedExternalIds: [] })]);
+    const overAgeResultId = await seedRefreshFeedResultAt(testDatabase.db, {
+      feedId: feeds.dueFeedId,
+      status: "failed",
+      startedAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const consoleErrors: unknown[][] = [];
+    const originalConsoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      consoleErrors.push(args);
+    };
+
+    let result;
+    try {
+      result = await refreshAll(
+        { ...refreshDependencies(registry), db: dbWithFailingDelete(testDatabase.db) },
+        { force: true },
+      );
+    } finally {
+      console.error = originalConsoleError;
+    }
+
+    // The run completes normally despite the broken prune DELETE.
+    expect(result.run.status).toBe("succeeded");
+    expect(result.feedResults).toHaveLength(4);
+    expect(consoleErrors).toHaveLength(1);
+    expect(String(consoleErrors[0]?.[0])).toContain("retention prune failed");
+    // Handled degradation, not a silent swallow: the over-age row is retained
+    // for the next terminal run to prune.
+    expect(await findRefreshFeedResultById(overAgeResultId)).toMatchObject({ feedId: feeds.dueFeedId });
+  });
 });
 
 function fixedNow(): Date {
   return new Date("2026-05-16T12:00:00.000Z");
+}
+
+/**
+ * Seed one historical feed result through the real repository writes, wrapped
+ * in its own refresh run (refresh_feed_result is unique per (run, feed)).
+ */
+async function seedRefreshFeedResultAt(
+  db: RepositoryDb,
+  input: { readonly feedId: string; readonly status: "succeeded" | "failed"; readonly startedAt: Date },
+): Promise<string> {
+  const run = await createRefreshRun(db, { scope: "all", status: "succeeded", startedAt: input.startedAt });
+  const result = await recordRefreshFeedResult(db, {
+    refreshRunId: run.id,
+    feedId: input.feedId,
+    status: input.status,
+    startedAt: input.startedAt,
+    completedAt: input.startedAt,
+  });
+  return result.id;
+}
+
+async function findRefreshFeedResultById(id: string) {
+  return testDatabase.db.query.refreshFeedResult.findFirst({
+    where: eq(schema.refreshFeedResult.id, id),
+  });
+}
+
+/**
+ * Repository double whose DELETE statements fail, simulating a broken
+ * retention prune. Everything else forwards to the real database, so the run
+ * itself proceeds normally up to the terminal-state prune.
+ */
+function dbWithFailingDelete(db: RepositoryDb): RepositoryDb {
+  return new Proxy(db, {
+    get(target, property) {
+      if (property === "delete") {
+        return () => {
+          throw new Error("Fixture retention prune delete failed.");
+        };
+      }
+      return Reflect.get(target, property, target);
+    },
+  });
 }
 
 function sorted(values: readonly string[]): readonly string[] {

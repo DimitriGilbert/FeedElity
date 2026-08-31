@@ -12,6 +12,7 @@ import type {
   CatalogCreatorSummary,
   CatalogFeed,
   ContentType,
+  FeedHealthEntry,
   RefreshFeedResult,
   RefreshFeedResultWithFeed,
   RefreshRun,
@@ -186,6 +187,10 @@ export interface ListRunningRefreshRunsInput {
 export interface ListRefreshFeedResultsForRunInput {
   readonly refreshRunId: string;
   readonly limit: number;
+}
+
+export interface ListFeedHealthInput {
+  readonly limit?: number;
 }
 
 export async function findOrCreateCreator(db: RepositoryDb, input: SaveCreatorInput): Promise<CatalogCreator> {
@@ -1046,6 +1051,167 @@ export async function listRefreshFeedResultsWithFeedsForRun(
     ...toRefreshFeedResult(row),
     feed: toCatalogFeed(row.feed),
   }));
+}
+
+const feedHealthDefaultLimit = 200;
+const feedHealthMaxLimit = 500;
+/** Per-feed metric window: only the latest N refresh attempts feed the health metrics. */
+const feedHealthWindowPerFeed = 10;
+
+interface FeedHealthFeedRow {
+  readonly feedId: string;
+  readonly feedTitle: string | null;
+  readonly feedUrl: string;
+  readonly sourceType: SourceType;
+  readonly nextRefreshAfter: Date | null;
+  readonly creatorId: string;
+  readonly creatorDisplayName: string;
+}
+
+interface FeedHealthResultRow {
+  readonly feedId: string;
+  readonly status: RefreshStatus;
+  readonly itemsCreatedCount: number;
+  readonly startedAt: Date;
+  readonly completedAt: Date | null;
+  readonly errorSummaryJson: string | null;
+}
+
+/**
+ * Feed health metrics for the dashboard, over catalog-global data only (never
+ * user-owned overlay rows). Every feed joined to its creator, with metrics
+ * computed in the mapper from a bounded window of the latest
+ * `refresh_feed_result` rows per feed (correlated subselect on started_at,
+ * served by refresh_feed_result_feed_id_idx):
+ *
+ * - lastAttemptAt = max started_at in the window;
+ * - lastSuccessAt = max completed_at among succeeded rows (null-safe: a feed
+ *   with no successes stays null);
+ * - consecutiveFailureCount = trailing run of failed rows, scanned newest to
+ *   oldest in TS (the first non-failed row stops the count; a success inside
+ *   the window therefore resets it, and the window bounds the count);
+ * - lastErrorSummaryJson = the RAW error_summary_json of the newest row when
+ *   that row failed, else null. It is deliberately NOT parsed server-side —
+ *   the web parses it with parseRefreshErrorSummaries;
+ * - itemsCreatedTotal = SUM(items_created_count) over the window.
+ *
+ * Ordering: by feed.url (feed.id tie-break) for determinism; the client
+ * re-sorts by staleness/failures for display.
+ */
+export async function listFeedHealth(
+  db: RepositoryDb,
+  input: ListFeedHealthInput = {},
+): Promise<readonly FeedHealthEntry[]> {
+  // The API boundary already validates 1..500 with a 200 default; the clamp
+  // keeps the repository contract safe if it is ever called directly.
+  const limit = Math.min(Math.max(input.limit ?? feedHealthDefaultLimit, 1), feedHealthMaxLimit);
+
+  const feedRows = await db
+    .select({
+      feedId: schema.feed.id,
+      feedTitle: schema.feed.title,
+      feedUrl: schema.feed.url,
+      sourceType: schema.feed.sourceType,
+      nextRefreshAfter: schema.feed.nextRefreshAfter,
+      creatorId: schema.creator.id,
+      creatorDisplayName: schema.creator.displayName,
+    })
+    .from(schema.feed)
+    .innerJoin(schema.creator, eq(schema.feed.creatorId, schema.creator.id))
+    .orderBy(asc(schema.feed.url), asc(schema.feed.id))
+    .limit(limit);
+
+  if (feedRows.length === 0) {
+    return [];
+  }
+
+  const resultRows = await db
+    .select({
+      feedId: schema.refreshFeedResult.feedId,
+      status: schema.refreshFeedResult.status,
+      itemsCreatedCount: schema.refreshFeedResult.itemsCreatedCount,
+      startedAt: schema.refreshFeedResult.startedAt,
+      completedAt: schema.refreshFeedResult.completedAt,
+      errorSummaryJson: schema.refreshFeedResult.errorSummaryJson,
+    })
+    .from(schema.refreshFeedResult)
+    .where(
+      and(
+        inArray(
+          schema.refreshFeedResult.feedId,
+          feedRows.map((row) => row.feedId),
+        ),
+        // Latest N rows per feed; the inner alias makes the outer feed_id
+        // reference correlate. id breaks started_at ties deterministically.
+        sql`${schema.refreshFeedResult.id} in (
+          select recent.id from ${schema.refreshFeedResult} as recent
+          where recent.feed_id = ${schema.refreshFeedResult.feedId}
+          order by recent.started_at desc, recent.id desc
+          limit ${feedHealthWindowPerFeed}
+        )`,
+      ),
+    )
+    .orderBy(
+      asc(schema.refreshFeedResult.feedId),
+      asc(schema.refreshFeedResult.startedAt),
+      asc(schema.refreshFeedResult.id),
+    );
+
+  const windowByFeed = new Map<string, FeedHealthResultRow[]>();
+  for (const row of resultRows) {
+    const window = windowByFeed.get(row.feedId);
+    if (window === undefined) {
+      windowByFeed.set(row.feedId, [row]);
+    } else {
+      window.push(row);
+    }
+  }
+
+  return feedRows.map((feedRow) => toFeedHealthEntry(feedRow, windowByFeed.get(feedRow.feedId) ?? []));
+}
+
+/**
+ * Map one feed plus its result window (ordered oldest -> newest) to the health
+ * entry. All metric decisions are documented on {@link listFeedHealth}.
+ */
+function toFeedHealthEntry(
+  feedRow: FeedHealthFeedRow,
+  window: readonly FeedHealthResultRow[],
+): FeedHealthEntry {
+  const newest = window.at(-1) ?? null;
+
+  let lastSuccessAt: Date | null = null;
+  let itemsCreatedTotal = 0;
+  for (const row of window) {
+    if (row.status === "succeeded" && row.completedAt !== null && (lastSuccessAt === null || row.completedAt > lastSuccessAt)) {
+      lastSuccessAt = row.completedAt;
+    }
+    itemsCreatedTotal += row.itemsCreatedCount;
+  }
+
+  let consecutiveFailureCount = 0;
+  for (let index = window.length - 1; index >= 0; index -= 1) {
+    const row = window[index];
+    if (row === undefined || row.status !== "failed") {
+      break;
+    }
+    consecutiveFailureCount += 1;
+  }
+
+  return {
+    feedId: feedRow.feedId,
+    feedTitle: feedRow.feedTitle,
+    feedUrl: feedRow.feedUrl,
+    sourceType: feedRow.sourceType,
+    creatorId: feedRow.creatorId,
+    creatorDisplayName: feedRow.creatorDisplayName,
+    nextRefreshAfter: feedRow.nextRefreshAfter,
+    lastAttemptAt: newest?.startedAt ?? null,
+    lastSuccessAt,
+    consecutiveFailureCount,
+    lastErrorSummaryJson: newest !== null && newest.status === "failed" ? newest.errorSummaryJson : null,
+    itemsCreatedTotal,
+  };
 }
 
 function toCatalogCreator(row: typeof schema.creator.$inferSelect): CatalogCreator {

@@ -12,6 +12,7 @@ import type {
 } from "@FeedElity/api";
 import { For, Match, Show, Suspense, Switch, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
 import { useNavigate } from "@tanstack/solid-router";
+import Activity from "lucide-solid/icons/activity";
 import ArrowDownAZ from "lucide-solid/icons/arrow-down-a-z";
 import ClockArrowDown from "lucide-solid/icons/clock-arrow-down";
 import LayoutGrid from "lucide-solid/icons/layout-grid";
@@ -38,6 +39,7 @@ import { client } from "@/utils/orpc";
 import { ContentListColumn, type ContentShortcutCommand } from "./app-shell-content-column";
 import { PaneResizer } from "./pane-resizer";
 import { CreatorSourceRow, FeedRow } from "./app-shell-rows";
+import { FeedHealthDialog } from "./feed-health-dialog";
 import { RefreshStatusDialog } from "./refresh-status-dialog";
 import {
   PlaylistColumnSection,
@@ -69,6 +71,7 @@ import {
   paneWidthsLocalStorageKey,
   shellGridClass,
   shellRootClass,
+  sortFeedHealthEntries,
   sourceActionsRegionClass,
   sourceCatalogRegionClass,
   sourceColumnClass,
@@ -417,6 +420,46 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     client.overlays.subscriptions(),
   );
   const subscriptionsValue = createMemo(() => subscriptions.latest);
+  // Feed health (Phase 8.2): fetched only while the health dialog is open, and
+  // refetched after a destructive unsubscribe via a dedicated reload key so the
+  // rows reflect the new failure/subscription reality without touching any
+  // other resource.
+  const [feedHealthOpen, setFeedHealthOpen] = createSignal(false);
+  const [feedHealthReloadKey, setFeedHealthReloadKey] = createSignal(0);
+  const [feedHealthUnsubscribeBusy, setFeedHealthUnsubscribeBusy] = createSignal(false);
+  const [feedHealthActionError, setFeedHealthActionError] = createSignal<string | null>(null);
+  const feedHealthResourceInput = createMemo(() => {
+    if (!props.isAuthenticated() || !feedHealthOpen()) {
+      return null;
+    }
+
+    return feedHealthReloadKey().toString();
+  });
+  const [feedHealth] = createResource(feedHealthResourceInput, () => client.overlays.feedHealth({}));
+  const feedHealthEntries = createMemo(() => sortFeedHealthEntries(feedHealth.latest ?? []));
+  const feedHealthLoadError = createMemo(() => (feedHealth.error !== undefined ? formatError(feedHealth.error) : null));
+  // Destructive path for the health dialog. The dialog only calls this after
+  // its confirm dialog was accepted; the procedure reports unsubscribed vs
+  // missing ids instead of failing, and both the subscriptions overlays (list +
+  // unread counts, keyed on subscriptionsReloadKey in AppShell) and the health
+  // rows refetch afterwards.
+  const unsubscribeHealthCreators = async (creatorIds: readonly string[]) => {
+    if (!props.isAuthenticated() || creatorIds.length === 0 || feedHealthUnsubscribeBusy()) {
+      return;
+    }
+
+    setFeedHealthUnsubscribeBusy(true);
+    setFeedHealthActionError(null);
+    try {
+      await client.overlays.bulkUnsubscribe({ creatorIds: [...creatorIds] });
+      props.onSubscriptionsChanged();
+      setFeedHealthReloadKey((key) => key + 1);
+    } catch (error) {
+      setFeedHealthActionError(formatError(error));
+    } finally {
+      setFeedHealthUnsubscribeBusy(false);
+    }
+  };
   const feedListInput = createMemo(() => toFeedListInput(props.selectedCreatorId()));
   // Surgical reload signal scoped to the selected creator's feed rows only.
   // Bumped after a single-creator refresh so the feed metadata
@@ -1246,6 +1289,31 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
           run={lastCompletedStatus()?.run ?? null}
           feedResults={lastCompletedStatus()?.results ?? []}
           onClose={() => setRefreshStatusOpen(false)}
+        />
+        <Show when={props.isAuthenticated()}>
+          <div class="flex justify-end px-2 py-1">
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs font-semibold text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              aria-label="Feed health"
+              title="Feed health"
+              data-feed-health-trigger
+              onClick={() => setFeedHealthOpen(true)}
+            >
+              <Activity size={14} aria-hidden="true" />
+              Feed health
+            </button>
+          </div>
+        </Show>
+        <FeedHealthDialog
+          open={feedHealthOpen()}
+          entries={feedHealthEntries()}
+          loading={feedHealth.loading}
+          busy={feedHealthUnsubscribeBusy()}
+          loadErrorMessage={feedHealthLoadError()}
+          actionErrorMessage={feedHealthActionError()}
+          onClose={() => setFeedHealthOpen(false)}
+          onUnsubscribeCreators={unsubscribeHealthCreators}
         />
       </div>
     </section>

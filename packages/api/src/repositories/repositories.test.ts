@@ -19,6 +19,7 @@ import {
   listCatalogContentItems,
   listCatalogCreators,
   listCatalogFeedsForBrowsing,
+  listFeedHealth,
   listRefreshFeedResultsForRun,
   listRefreshRuns,
   recordRefreshFeedResult,
@@ -50,6 +51,7 @@ import {
   upsertPlaybackPositionForUser,
 } from "./overlays";
 import type { CreatorUnreadSummary } from "../domain/overlays";
+import type { FeedHealthEntry } from "../domain/catalog";
 
 interface TestDatabase {
   readonly client: Client;
@@ -662,6 +664,152 @@ describe("catalog and overlay repositories", () => {
 
     expect(refreshRuns.map((run) => run.id)).toEqual([latestRun.id, secondRun.id]);
     expect(refreshFeedResults).toHaveLength(2);
+  });
+
+  test("feed health metrics honor the result window, trailing failure runs, and null-safe successes", async () => {
+    const creator = await findOrCreateCreator(testDatabase.db, {
+      displayName: "Health Creator",
+    });
+    // Created in ccc/aaa/bbb order: the repository must still return rows
+    // sorted by feed.url for determinism.
+    const feedCcc = await findOrCreateFeed(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "health-feed-ccc",
+      url: "https://health.example.test/ccc",
+      title: "Health Feed Ccc",
+    });
+    const feedAaa = await findOrCreateFeed(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "odysee",
+      sourceExternalId: "health-feed-aaa",
+      url: "https://health.example.test/aaa",
+      title: "Health Feed Aaa",
+    });
+    const feedBbb = await findOrCreateFeed(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "peertube",
+      sourceExternalId: "health-feed-bbb",
+      url: "https://health.example.test/bbb",
+      title: "Health Feed Bbb",
+    });
+    await setFeedNextRefreshAfter(testDatabase.db, feedBbb.id, new Date("2026-06-05T00:00:00.000Z"));
+
+    // aaa: fail, success, fail, fail (oldest -> newest). The success inside the
+    // window resets the trailing failure count to 2.
+    const aaaOldestFailureJson = JSON.stringify({ feedId: feedAaa.id, code: "remote-fetch-failed", message: "old timeout" });
+    const aaaNewestFailureJson = JSON.stringify({ feedId: feedAaa.id, code: "remote-fetch-failed", message: "timeout again" });
+    await seedFeedHealthResult(testDatabase.db, {
+      feedId: feedAaa.id,
+      status: "failed",
+      startedAt: new Date("2026-06-01T10:00:00.000Z"),
+      completedAt: new Date("2026-06-01T10:00:05.000Z"),
+      errorSummaryJson: aaaOldestFailureJson,
+    });
+    await seedFeedHealthResult(testDatabase.db, {
+      feedId: feedAaa.id,
+      status: "succeeded",
+      startedAt: new Date("2026-06-02T10:00:00.000Z"),
+      completedAt: new Date("2026-06-02T10:01:00.000Z"),
+      itemsCreatedCount: 3,
+    });
+    await seedFeedHealthResult(testDatabase.db, {
+      feedId: feedAaa.id,
+      status: "failed",
+      startedAt: new Date("2026-06-03T10:00:00.000Z"),
+      completedAt: new Date("2026-06-03T10:00:05.000Z"),
+      errorSummaryJson: JSON.stringify({ feedId: feedAaa.id, code: "provider-refresh-paused", message: "rate limited" }),
+    });
+    await seedFeedHealthResult(testDatabase.db, {
+      feedId: feedAaa.id,
+      status: "failed",
+      startedAt: new Date("2026-06-04T10:00:00.000Z"),
+      completedAt: new Date("2026-06-04T10:00:05.000Z"),
+      errorSummaryJson: aaaNewestFailureJson,
+    });
+
+    // bbb: never refreshed — every metric must be null-safe.
+
+    // ccc: eleven consecutive failures. The window keeps the latest 10, so the
+    // trailing count caps at 10 and the oldest run's items stay out of the sum.
+    for (let index = 0; index < 11; index += 1) {
+      const startedAt = new Date(Date.parse("2026-06-01T00:00:00.000Z") + index * 3_600_000);
+      await seedFeedHealthResult(testDatabase.db, {
+        feedId: feedCcc.id,
+        status: "failed",
+        startedAt,
+        completedAt: new Date(startedAt.getTime() + 5_000),
+        itemsCreatedCount: index,
+        errorSummaryJson: JSON.stringify({ feedId: feedCcc.id, code: "remote-fetch-failed", message: `failure ${index}` }),
+      });
+    }
+    const cccNewestStartedAt = new Date(Date.parse("2026-06-01T00:00:00.000Z") + 10 * 3_600_000);
+    const cccNewestFailureJson = JSON.stringify({ feedId: feedCcc.id, code: "remote-fetch-failed", message: "failure 10" });
+
+    const entries = await listFeedHealth(testDatabase.db, {});
+
+    expect(entries.map((entry) => entry.feedUrl)).toEqual([
+      "https://health.example.test/aaa",
+      "https://health.example.test/bbb",
+      "https://health.example.test/ccc",
+    ]);
+
+    const aaaEntry = requireFeedHealthEntry(entries, feedAaa.id);
+    expect(aaaEntry).toEqual({
+      feedId: feedAaa.id,
+      feedTitle: "Health Feed Aaa",
+      feedUrl: "https://health.example.test/aaa",
+      sourceType: "odysee",
+      creatorId: creator.id,
+      creatorDisplayName: "Health Creator",
+      nextRefreshAfter: null,
+      lastAttemptAt: new Date("2026-06-04T10:00:00.000Z"),
+      lastSuccessAt: new Date("2026-06-02T10:01:00.000Z"),
+      consecutiveFailureCount: 2,
+      lastErrorSummaryJson: aaaNewestFailureJson,
+      itemsCreatedTotal: 3,
+    });
+
+    // Health entries are catalog-global: exactly these keys, never user overlay data.
+    expect(Object.keys(aaaEntry).sort()).toEqual([
+      "consecutiveFailureCount",
+      "creatorDisplayName",
+      "creatorId",
+      "feedId",
+      "feedTitle",
+      "feedUrl",
+      "itemsCreatedTotal",
+      "lastAttemptAt",
+      "lastErrorSummaryJson",
+      "lastSuccessAt",
+      "nextRefreshAfter",
+      "sourceType",
+    ]);
+
+    const bbbEntry = requireFeedHealthEntry(entries, feedBbb.id);
+    expect(bbbEntry).toMatchObject({
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      consecutiveFailureCount: 0,
+      lastErrorSummaryJson: null,
+      itemsCreatedTotal: 0,
+      nextRefreshAfter: new Date("2026-06-05T00:00:00.000Z"),
+    });
+
+    const cccEntry = requireFeedHealthEntry(entries, feedCcc.id);
+    expect(cccEntry).toMatchObject({
+      lastAttemptAt: cccNewestStartedAt,
+      lastSuccessAt: null,
+      consecutiveFailureCount: 10,
+      lastErrorSummaryJson: cccNewestFailureJson,
+      itemsCreatedTotal: 55,
+    });
+
+    const limitedEntries = await listFeedHealth(testDatabase.db, { limit: 2 });
+    expect(limitedEntries.map((entry) => entry.feedUrl)).toEqual([
+      "https://health.example.test/aaa",
+      "https://health.example.test/bbb",
+    ]);
   });
 
   test("catalog repository pagination uses explicit offsets and stable tie-breakers", async () => {
@@ -1487,6 +1635,48 @@ function requireMetadataJson(metadataJson: string | null | undefined): string {
     throw new Error("Expected playback metadata to be persisted on the opened row.");
   }
   return metadataJson;
+}
+
+/**
+ * Seed one feed refresh attempt through the real repository writes, wrapped in
+ * its own refresh run (refresh_feed_result is unique per (run, feed)).
+ */
+async function seedFeedHealthResult(
+  db: RepositoryDb,
+  input: {
+    readonly feedId: string;
+    readonly status: "succeeded" | "failed";
+    readonly startedAt: Date;
+    readonly completedAt?: Date;
+    readonly itemsCreatedCount?: number;
+    readonly errorSummaryJson?: string;
+  },
+): Promise<void> {
+  const run = await createRefreshRun(db, { scope: "all", status: "succeeded", startedAt: input.startedAt });
+  await recordRefreshFeedResult(db, {
+    refreshRunId: run.id,
+    feedId: input.feedId,
+    status: input.status,
+    itemsCreatedCount: input.itemsCreatedCount ?? 0,
+    startedAt: input.startedAt,
+    completedAt: input.completedAt ?? null,
+    errorSummaryJson: input.errorSummaryJson ?? null,
+  });
+}
+
+async function setFeedNextRefreshAfter(db: RepositoryDb, feedId: string, nextRefreshAfter: Date): Promise<void> {
+  await db.update(schema.feed).set({ nextRefreshAfter }).where(eq(schema.feed.id, feedId));
+}
+
+function requireFeedHealthEntry(
+  entries: readonly FeedHealthEntry[],
+  feedId: string,
+): FeedHealthEntry {
+  const entry = entries.find((candidate) => candidate.feedId === feedId);
+  if (entry === undefined) {
+    throw new Error(`Expected a feed health entry for feed ${feedId}.`);
+  }
+  return entry;
 }
 
 function readPlaybackMetadata(metadata: unknown): { updatedAt: string } {
