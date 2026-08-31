@@ -765,10 +765,10 @@ function PlaybackSurface(props: PlaybackSurfaceProps) {
   return (
     <div class="aspect-video overflow-hidden rounded-lg border border-border bg-muted">
       <Switch>
-        <Match when={trackedEmbedSource()}>
+        <Match when={trackedEmbedSource()} keyed>
           {(source) => (
             <TrackedEmbedPlayer
-              source={source()}
+              source={source}
               title={props.title}
               contentItemId={props.contentItemId}
               resumePosition={props.resumePosition}
@@ -778,11 +778,11 @@ function PlaybackSurface(props: PlaybackSurfaceProps) {
             />
           )}
         </Match>
-        <Match when={bareEmbedSource()}>
+        <Match when={bareEmbedSource()} keyed>
           {(source) => (
             <iframe
               class="h-full w-full"
-              src={source().url}
+              src={source.url}
               title={props.title}
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
               allowfullscreen
@@ -790,10 +790,10 @@ function PlaybackSurface(props: PlaybackSurfaceProps) {
             />
           )}
         </Match>
-        <Match when={nativeSource()}>
+        <Match when={nativeSource()} keyed>
           {(source) => (
             <NativeVideoPlayer
-              source={source()}
+              source={source}
               contentItemId={props.contentItemId}
               resumePosition={props.resumePosition}
               onPositionUpdate={props.onPositionUpdate}

@@ -913,6 +913,23 @@ test("selected viewer places playback before body in source order", async () => 
   expect(bodyIndex).toBeGreaterThan(playbackIndex);
 });
 
+test("playback surface remounts players per source change via keyed matches", async () => {
+  const source = await Bun.file(new URL("./app-shell-viewer.tsx", import.meta.url)).text();
+
+  // Each playback-surface Match carries a per-video source object; non-keyed
+  // Matches only re-invoke children on truthiness flips, so a truthy-to-truthy
+  // source change would keep the previously mounted player (whose embed src
+  // and resume position are frozen at creation) rendering the old video.
+  for (const memoName of ["trackedEmbedSource()", "bareEmbedSource()", "nativeSource()"]) {
+    expect(source).toContain(`<Match when={${memoName}} keyed>`);
+  }
+  // Keyed function children receive the source value directly, not an accessor.
+  expect(source).not.toContain("source={source()}");
+  // The embed src stays frozen at mount (resume rides the start param), so a
+  // keyed remount is the only way a new selection picks up the new URL.
+  expect(source).toContain("const embedSrc = toEmbedUrlWithApi(");
+});
+
 test("selected viewer derives playable sources only from safe API source URLs", () => {
   const sources: readonly CatalogContentSource[] = [
     {
@@ -1332,7 +1349,7 @@ test("selected viewer supports source switching and real playback render contrac
   // embed keeps its bare provider URL with no tracker.
   expect(source).toContain("<iframe");
   expect(source).toContain("src={embedSrc}");
-  expect(source).toContain("src={source().url}");
+  expect(source).toContain("src={source.url}");
   // Native video keeps real controls without any play-start auto-mark.
   expect(source).toContain("src={props.source.url}\n      controls\n      preload=\"metadata\"");
 });
@@ -1359,7 +1376,7 @@ test("near-end and ended playback auto-mark played exactly once per selection (D
   // tracked embed declares and receives the shared onNearEnd flow, and its
   // IFrame-bridge position path runs the identical once-per-session check.
   expect(source).toContain("interface TrackedEmbedPlayerProps {\n  readonly source: PlayableSource;\n  readonly title: string;\n  readonly contentItemId: string;\n  readonly resumePosition: () => PlaybackPosition | null;\n  readonly onPositionUpdate: (positionSeconds: number, durationSeconds: number | null) => void;\n  readonly onNearEnd: () => void;");
-  expect(source).toContain("<TrackedEmbedPlayer\n              source={source()}\n              title={props.title}\n              contentItemId={props.contentItemId}\n              resumePosition={props.resumePosition}\n              onPositionUpdate={props.onPositionUpdate}\n              onNearEnd={props.onNearEnd}");
+  expect(source).toContain("<TrackedEmbedPlayer\n              source={source}\n              title={props.title}\n              contentItemId={props.contentItemId}\n              resumePosition={props.resumePosition}\n              onPositionUpdate={props.onPositionUpdate}\n              onNearEnd={props.onNearEnd}");
   expect(source).toContain("!nearEndReported &&\n          (position.positionSeconds >= position.durationSeconds - 30 || position.positionSeconds >= position.durationSeconds * 0.9)\n        ) {\n          nearEndReported = true;\n          props.onNearEnd();\n        }");
   // Bridge duration inputs require a positive value: YouTube reports 0 until
   // the video's metadata loads, and a 0 duration would trivially satisfy the
