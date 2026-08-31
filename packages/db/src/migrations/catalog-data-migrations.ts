@@ -67,6 +67,21 @@ const CONTENT_ITEM_LIST_ORDER_INDEX = "content_item_published_created_id_idx";
 const CONTENT_ITEM_LIST_ORDER_INDEX_DDL =
   `CREATE INDEX IF NOT EXISTS ${CONTENT_ITEM_LIST_ORDER_INDEX} ON content_item (published_at DESC, created_at DESC, id DESC)`;
 
+/** Retention window for refresh feed results, in days (decision D8). */
+const REFRESH_FEED_RESULT_RETENTION_DAYS = 30;
+
+const REFRESH_FEED_RESULT_RETENTION_SECONDS = REFRESH_FEED_RESULT_RETENTION_DAYS * 86400;
+
+// started_at (like every catalog timestamp column) stores epoch MILLISECONDS:
+// schema defaults are `cast(unixepoch('subsecond') * 1000 as integer)` and the
+// 0002 backfill copies the ms published_at verbatim. unixepoch() is seconds,
+// hence the *1000. Parameterized so the window stays one bound value.
+const REFRESH_FEED_RESULT_RETENTION_DELETE_SQL =
+  "DELETE FROM refresh_feed_result WHERE started_at < (cast(unixepoch() - ? as integer) * 1000)";
+
+const REFRESH_FEED_RESULT_RETENTION_COUNT_SQL =
+  "SELECT count(*) AS n FROM refresh_feed_result WHERE started_at < (cast(unixepoch() - ? as integer) * 1000)";
+
 export interface CatalogCounts {
   readonly creators: number;
   readonly feeds: number;
@@ -239,10 +254,18 @@ const contentItemListOrderIndexStep: CatalogMigrationStep = {
   run: runContentItemListOrderIndex,
 };
 
+const refreshFeedResultRetentionStep: CatalogMigrationStep = {
+  id: "refresh_feed_result_retention",
+  description:
+    "Delete refresh_feed_result rows whose started_at is older than 30 days so per-feed refresh histories stay bounded (D8).",
+  run: runRefreshFeedResultRetention,
+};
+
 const catalogMigrationSteps: readonly CatalogMigrationStep[] = [
   creatorCrossSourceMergeStep,
   contentCrossSourceKeyStep,
   contentItemListOrderIndexStep,
+  refreshFeedResultRetentionStep,
 ];
 
 function runCreatorCrossSourceMerge(db: Database, apply: boolean): readonly string[] {
@@ -388,6 +411,29 @@ function runContentItemListOrderIndex(db: Database, apply: boolean): readonly st
   return [
     `created index ${CONTENT_ITEM_LIST_ORDER_INDEX} on content_item (published_at DESC, created_at DESC, id DESC)`,
   ];
+}
+
+/**
+ * One-time 30-day prune of refresh_feed_result (D8). Idempotent twice over:
+ * the migration id records the step, and the started_at predicate is naturally
+ * re-runnable. Databases so old that the refresh tables do not exist yet have
+ * nothing to prune — that state is reported instead of failing the step.
+ */
+function runRefreshFeedResultRetention(db: Database, apply: boolean): readonly string[] {
+  if (!tableExists(db, "refresh_feed_result")) {
+    return ["refresh_feed_result table does not exist yet; nothing to prune"];
+  }
+
+  if (!apply) {
+    const staleCount = readSingleNumber(db, REFRESH_FEED_RESULT_RETENTION_COUNT_SQL, REFRESH_FEED_RESULT_RETENTION_SECONDS);
+    return [
+      `would delete ${staleCount} refresh_feed_result row(s) older than ${REFRESH_FEED_RESULT_RETENTION_DAYS} days`,
+      "no writes performed (dry run)",
+    ];
+  }
+
+  const deleted = db.query(REFRESH_FEED_RESULT_RETENTION_DELETE_SQL).run(REFRESH_FEED_RESULT_RETENTION_SECONDS).changes;
+  return [`deleted ${deleted} refresh_feed_result row(s) older than ${REFRESH_FEED_RESULT_RETENTION_DAYS} days`];
 }
 
 interface ContentItemKeyRow {

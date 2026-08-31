@@ -302,7 +302,7 @@ describe("name_key backfill parity", () => {
 
     const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
 
-    expect(report.appliedCount).toBe(3);
+    expect(report.appliedCount).toBe(4);
     const db = openCatalogDatabase(path, { readOnly: true });
     try {
       // The unique index is created after the backfill: it only exists if every
@@ -338,7 +338,7 @@ describe("name_key backfill parity", () => {
 
     const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
 
-    expect(report.appliedCount).toBe(3);
+    expect(report.appliedCount).toBe(4);
     const mergeDetails = report.steps[0]?.details.join("\n") ?? "";
     expect(mergeDetails).toContain("recomputed name_key for 1 row(s)");
 
@@ -376,8 +376,8 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
 
     expect(report.apply).toBe(true);
-    expect(report.appliedCount).toBe(3);
-    expect(report.steps).toHaveLength(3);
+    expect(report.appliedCount).toBe(4);
+    expect(report.steps).toHaveLength(4);
     expect(report.steps[0]?.id).toBe("creator_cross_source_merge");
     expect(report.steps[0]?.applied).toBe(true);
     expect(report.steps[1]?.id).toBe("content_cross_source_key");
@@ -388,6 +388,9 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     expect(report.steps[2]?.id).toBe("content_item_list_order_idx");
     expect(report.steps[2]?.applied).toBe(true);
     expect(report.steps[2]?.details.join("\n")).toContain("created index content_item_published_created_id_idx");
+    expect(report.steps[3]?.id).toBe("refresh_feed_result_retention");
+    expect(report.steps[3]?.applied).toBe(true);
+    expect(report.steps[3]?.details.join("\n")).toContain("refresh_feed_result table does not exist yet");
 
     const after = inspectDatabaseFile(path);
     // 4 creators -> 2 (the three Scott Manley rows collapse onto the youtube one).
@@ -472,13 +475,15 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     const secondRun = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
 
     expect(secondRun.appliedCount).toBe(0);
-    expect(secondRun.steps).toHaveLength(3);
+    expect(secondRun.steps).toHaveLength(4);
     expect(secondRun.steps[0]?.applied).toBe(false);
     expect(secondRun.steps[0]?.details).toEqual(["skipped: migration id already recorded"]);
     expect(secondRun.steps[1]?.applied).toBe(false);
     expect(secondRun.steps[1]?.details).toEqual(["skipped: migration id already recorded"]);
     expect(secondRun.steps[2]?.applied).toBe(false);
     expect(secondRun.steps[2]?.details).toEqual(["skipped: migration id already recorded"]);
+    expect(secondRun.steps[3]?.applied).toBe(false);
+    expect(secondRun.steps[3]?.details).toEqual(["skipped: migration id already recorded"]);
 
     const after = inspectDatabaseFile(path);
     expect(after.counts.creators).toBe(2);
@@ -503,7 +508,7 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
 
     // The content_cross_source_key step reports the planned column, index, and
     // backfill work without writing.
-    expect(report.steps).toHaveLength(3);
+    expect(report.steps).toHaveLength(4);
     expect(report.steps[1]?.id).toBe("content_cross_source_key");
     expect(report.steps[1]?.applied).toBe(false);
     const keyStepDetails = report.steps[1]?.details.join("\n") ?? "";
@@ -519,6 +524,11 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     const listOrderStepDetails = report.steps[2]?.details.join("\n") ?? "";
     expect(listOrderStepDetails).toContain("create index content_item_published_created_id_idx");
     expect(listOrderStepDetails).toContain("no writes performed (dry run)");
+
+    // The retention step reports that this legacy shape has no refresh table.
+    expect(report.steps[3]?.id).toBe("refresh_feed_result_retention");
+    expect(report.steps[3]?.applied).toBe(false);
+    expect(report.steps[3]?.details.join("\n")).toContain("refresh_feed_result table does not exist yet");
 
     // Nothing was written: no migration record, no schema change, no merge.
     const db = openCatalogDatabase(path, { readOnly: true });
@@ -548,7 +558,7 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     seedDb.close();
 
     const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
-    expect(report.appliedCount).toBe(3);
+    expect(report.appliedCount).toBe(4);
 
     const after = inspectDatabaseFile(path);
     expect(after.counts.creators).toBe(2);
@@ -583,7 +593,7 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     }
 
     const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
-    expect(report.appliedCount).toBe(3);
+    expect(report.appliedCount).toBe(4);
     expect(report.steps[0]?.details[0]).toContain("already converged");
     expect(report.steps[1]?.details[0]).toContain(
       "already converged: content_item.cross_source_key exists, is indexed, and has no NULL rows",
@@ -591,6 +601,7 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
     expect(report.steps[2]?.details[0]).toContain(
       "already converged: index content_item_published_created_id_idx exists",
     );
+    expect(report.steps[3]?.details[0]).toContain("refresh_feed_result table does not exist yet");
 
     const secondRun = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
     expect(secondRun.appliedCount).toBe(0);
@@ -617,7 +628,7 @@ describe("runCatalogDataMigrations on a legacy-shaped database", () => {
 
     const report = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
 
-    expect(report.appliedCount).toBe(3);
+    expect(report.appliedCount).toBe(4);
     const mergeDetails = report.steps[0]?.details.join("\n") ?? "";
     expect(mergeDetails).not.toContain("already converged");
     expect(mergeDetails).toContain("recomputed name_key for 1 row(s)");
@@ -700,3 +711,161 @@ describe("content_item_list_order_idx step", () => {
     }
   });
 });
+
+describe("refresh_feed_result_retention step", () => {
+  test("deletes only refresh_feed_result rows older than 30 days and reports the count", async () => {
+    const nowMs = Date.now();
+    const path = await createLegacyDatabaseFile("feedelity-db-retention-");
+    const seedDb = createModernSchemaDatabase(path);
+    seedRetentionRows(seedDb, nowMs);
+    seedDb.close();
+
+    // Dry run: reports the planned delete without writing.
+    const dryRun = await runCatalogDataMigrations({ databaseUrl: path, apply: false });
+    const dryStep = dryRun.steps.at(3);
+    expect(dryStep?.id).toBe("refresh_feed_result_retention");
+    expect(dryStep?.applied).toBe(false);
+    expect(dryStep?.details.join("\n")).toContain("would delete 1 refresh_feed_result row(s) older than 30 days");
+    expect(dryStep?.details.join("\n")).toContain("no writes performed (dry run)");
+
+    const apply = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
+    const appliedStep = apply.steps.at(3);
+    expect(appliedStep?.id).toBe("refresh_feed_result_retention");
+    expect(appliedStep?.applied).toBe(true);
+    expect(appliedStep?.details).toEqual(["deleted 1 refresh_feed_result row(s) older than 30 days"]);
+
+    const db = openCatalogDatabase(path, { readOnly: true });
+    try {
+      // The over-age row is gone; the 29-day-old boundary row and the
+      // day-old row survive the strict `<` cutoff.
+      expect(queryNumber(db, "SELECT count(*) AS n FROM refresh_feed_result WHERE id = 'rfr-old'")).toBe(0);
+      expect(
+        queryNumber(db, "SELECT count(*) AS n FROM refresh_feed_result WHERE id IN ('rfr-boundary', 'rfr-recent')"),
+      ).toBe(2);
+      expect(
+        queryNumber(
+          db,
+          "SELECT count(*) AS n FROM refresh_feed_result WHERE started_at < (cast(unixepoch() - ? as integer) * 1000)",
+          30 * 86400,
+        ),
+      ).toBe(0);
+    } finally {
+      db.close();
+    }
+
+    // Re-run is a no-op by migration id.
+    const secondRun = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
+    expect(secondRun.steps.at(3)?.applied).toBe(false);
+    expect(secondRun.steps.at(3)?.details).toEqual(["skipped: migration id already recorded"]);
+
+    // And idempotent by predicate: clearing the record re-runs the step, which
+    // deletes nothing new.
+    const wipe = openCatalogDatabase(path, { readOnly: false });
+    try {
+      wipe.query("DELETE FROM __feedelity_migrations WHERE id = 'refresh_feed_result_retention'").run();
+    } finally {
+      wipe.close();
+    }
+    const thirdRun = await runCatalogDataMigrations({ databaseUrl: path, apply: true });
+    expect(thirdRun.steps.at(3)?.applied).toBe(true);
+    expect(thirdRun.steps.at(3)?.details).toEqual(["deleted 0 refresh_feed_result row(s) older than 30 days"]);
+  });
+});
+
+/**
+ * Current-schema fixture for the retention step: converged creator table plus
+ * the refresh tables, so the first three steps converge immediately and the
+ * runner reaches refresh_feed_result_retention against a populated table.
+ */
+function createModernSchemaDatabase(path: string): Database {
+  const db = new Database(path);
+  db.exec(`
+    CREATE TABLE creator (
+      id text PRIMARY KEY NOT NULL,
+      name_key text NOT NULL,
+      display_name text NOT NULL,
+      last_content_published_at integer,
+      created_at integer NOT NULL,
+      updated_at integer NOT NULL
+    );
+    CREATE UNIQUE INDEX creator_name_key_uidx ON creator (name_key);
+    CREATE INDEX creator_display_name_idx ON creator (display_name);
+    CREATE INDEX creator_last_content_published_at_idx ON creator (last_content_published_at);
+    CREATE TABLE feed (
+      id text PRIMARY KEY NOT NULL,
+      creator_id text NOT NULL REFERENCES creator(id) ON DELETE CASCADE,
+      source_type text NOT NULL,
+      source_external_id text NOT NULL,
+      url text NOT NULL
+    );
+    CREATE UNIQUE INDEX feed_source_identity_uidx ON feed (source_type, source_external_id);
+    CREATE TABLE content_item (
+      id text PRIMARY KEY NOT NULL,
+      creator_id text NOT NULL REFERENCES creator(id) ON DELETE CASCADE,
+      source_type text NOT NULL,
+      source_external_id text NOT NULL,
+      title text NOT NULL,
+      published_at integer,
+      cross_source_key text,
+      created_at integer NOT NULL DEFAULT 0
+    );
+    CREATE INDEX content_item_cross_source_key_idx ON content_item (cross_source_key);
+    CREATE TABLE subscription (
+      user_id text NOT NULL,
+      creator_id text NOT NULL REFERENCES creator(id) ON DELETE CASCADE,
+      created_at integer NOT NULL,
+      PRIMARY KEY (user_id, creator_id)
+    );
+    CREATE TABLE refresh_run (
+      id text PRIMARY KEY NOT NULL,
+      requested_creator_id text REFERENCES creator(id) ON DELETE SET NULL
+    );
+    CREATE TABLE refresh_feed_result (
+      id text PRIMARY KEY NOT NULL,
+      refresh_run_id text NOT NULL REFERENCES refresh_run(id) ON DELETE CASCADE,
+      feed_id text NOT NULL REFERENCES feed(id) ON DELETE CASCADE,
+      status text NOT NULL,
+      items_created_count integer NOT NULL DEFAULT 0,
+      started_at integer NOT NULL,
+      completed_at integer
+    );
+    CREATE UNIQUE INDEX refresh_feed_result_run_feed_uidx ON refresh_feed_result (refresh_run_id, feed_id);
+    CREATE INDEX refresh_feed_result_feed_id_idx ON refresh_feed_result (feed_id);
+  `);
+  return db;
+}
+
+/** One creator/feed plus three feed results: 40d old, 29d old, and 1d old. */
+function seedRetentionRows(db: Database, nowMs: number): void {
+  db.query("INSERT INTO creator (id, name_key, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(
+    "creator-retention",
+    creatorNameKey("Retention Creator"),
+    "Retention Creator",
+    1,
+    1,
+  );
+  db.query("INSERT INTO feed (id, creator_id, source_type, source_external_id, url) VALUES (?, ?, ?, ?, ?)").run(
+    "feed-retention",
+    "creator-retention",
+    "youtube",
+    "UC-retention",
+    "https://retention.example.test/feed",
+  );
+  insertRetentionResult(db, "rfr-old", "rr-old", "failed", nowMs - 40 * 86400 * 1000, 0);
+  insertRetentionResult(db, "rfr-boundary", "rr-boundary", "succeeded", nowMs - 29 * 86400 * 1000, 2);
+  insertRetentionResult(db, "rfr-recent", "rr-recent", "succeeded", nowMs - 1 * 86400 * 1000, 3);
+}
+
+function insertRetentionResult(
+  db: Database,
+  id: string,
+  runId: string,
+  status: string,
+  startedAtMs: number,
+  itemsCreatedCount: number,
+): void {
+  db.query("INSERT INTO refresh_run (id, requested_creator_id) VALUES (?, NULL)").run(runId);
+  db.query(
+    "INSERT INTO refresh_feed_result (id, refresh_run_id, feed_id, status, items_created_count, started_at, completed_at) VALUES (?, ?, 'feed-retention', ?, ?, ?, ?)",
+  ).run(id, runId, status, itemsCreatedCount, startedAtMs, startedAtMs + 5_000);
+}
