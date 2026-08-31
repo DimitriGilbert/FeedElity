@@ -8,6 +8,8 @@ import { z } from "zod";
 import type { AuthenticatedSession } from "../context";
 import { protectedProcedure, publicProcedure } from "../index";
 import { runImportMigration } from "../migration/run-migration";
+import { exportUserDataForUser } from "../migration/user-data-export";
+import { importUserDataForUser } from "../migration/user-data-import";
 import type { RepositoryDb } from "../repositories/catalog";
 import {
   getCatalogContentDetail,
@@ -234,6 +236,14 @@ const saveSettingInput = z.object({
 });
 
 const migrationImportInput = z.object({
+  exportData: z.unknown(),
+  sourceFilename: z.string().trim().min(1).max(255).nullable().optional(),
+});
+
+// Same shape as migrationImportInput so the settings UI posts parsed user-data
+// files identically; sourceFilename is accepted for that shape parity, while
+// the import itself fingerprints and stores only the payload.
+const importUserDataInput = z.object({
   exportData: z.unknown(),
   sourceFilename: z.string().trim().min(1).max(255).nullable().optional(),
 });
@@ -816,6 +826,18 @@ export const appRouter = {
     }),
     deleteSetting: protectedProcedure.input(deleteSettingInput).handler(async ({ input, context }) => {
       return { deleted: await deleteUserSettingForUser(context.db, context.session.user.id, input.key) };
+    }),
+    // User-data portability (qol plan F4): export reads only the signed-in
+    // user's overlays; import writes only into them (every write is scoped by
+    // context.session.user.id inside the migration services).
+    exportUserData: protectedProcedure.handler(({ context }) => {
+      return exportUserDataForUser(context.db, context.session.user.id);
+    }),
+    importUserData: protectedProcedure.input(importUserDataInput).handler(({ input, context }) => {
+      return importUserDataForUser(context.db, {
+        userId: context.session.user.id,
+        exportData: input.exportData,
+      });
     }),
     collections: protectedProcedure.handler(({ context }) => {
       return listCollectionsForUser(context.db, context.session.user.id);
