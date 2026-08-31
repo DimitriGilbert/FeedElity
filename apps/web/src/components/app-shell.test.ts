@@ -3250,3 +3250,24 @@ test("feed health trigger is authenticated-only beside the refresh status dialog
   expect(actionsRegion).toContain("onClick={() => setFeedHealthOpen(true)}");
   expect(actionsRegion).toContain("<FeedHealthDialog");
 });
+
+test("every bridge postMessage call site is throw-guarded so playback tracking can never break rendering", async () => {
+  const bridgeSource = await Bun.file(new URL("../lib/youtube-player-bridge.ts", import.meta.url)).text();
+
+  // The bridge's single outbound post site must sit inside a try/catch: a
+  // failed post (origin mismatch while the frame is still about:blank) is a
+  // silent no-op — the poll/handshake retry recovers.
+  const postSite = bridgeSource.indexOf("contentWindow.postMessage(");
+  expect(postSite).toBeGreaterThan(-1);
+  expect(bridgeSource.split("contentWindow.postMessage(")).toHaveLength(2);
+  const tryStart = bridgeSource.lastIndexOf("try {", postSite);
+  expect(tryStart).toBeGreaterThan(-1);
+  const catchStart = bridgeSource.indexOf("} catch {", tryStart);
+  expect(catchStart).toBeGreaterThan(postSite);
+  const closeStart = bridgeSource.indexOf("};", catchStart);
+  expect(closeStart).toBeGreaterThan(catchStart);
+
+  // The window `message` listener must swallow handler errors instead of
+  // propagating them into Solid's render/effect flush.
+  expect(bridgeSource).toContain("// silent — the bridge degrades to untracked playback");
+});

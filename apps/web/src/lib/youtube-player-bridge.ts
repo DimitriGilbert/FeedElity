@@ -133,7 +133,13 @@ export function createYouTubePlaybackTracker(options: YouTubePlaybackTrackerOpti
       return;
     }
 
-    contentWindow.postMessage(JSON.stringify(payload), targetOrigin);
+    try {
+      contentWindow.postMessage(JSON.stringify(payload), targetOrigin);
+    } catch {
+      // silent — the bridge degrades to untracked playback. A post can throw
+      // while the frame is still about:blank (origin mismatch with the parent)
+      // right after a remount; the 1s poll/handshake retry recovers.
+    }
   };
 
   // Fires onPosition only when the (position, ended) pair actually changed
@@ -233,6 +239,16 @@ export function createYouTubePlaybackTracker(options: YouTubePlaybackTrackerOpti
   };
 
   const handleMessage = (event: MessageEvent): void => {
+    try {
+      handleMessageInner(event);
+    } catch {
+      // silent — the bridge degrades to untracked playback. A handler error
+      // (parse oddity, user onPosition/onEnded throw) must never propagate
+      // into the embedder's render/effect flush.
+    }
+  };
+
+  const handleMessageInner = (event: MessageEvent): void => {
     if (disposed) {
       return;
     }
