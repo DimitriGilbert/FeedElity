@@ -69,6 +69,12 @@ import {
   type ShellMode,
 } from "./app-shell.contract";
 
+// TO BE FIXED (disabled 2026-08-31): the virtualized list caused stale row
+// renders, scroll resets, and selection breakage (non-keyed <Show> over
+// reconciled virtual items + index-based rebuilds). The code is kept for a
+// proper rework; the plain list below is the live rendering path.
+const contentListVirtualizationEnabled = false;
+
 type ContentItemsResourceMode = "catalog" | "subscribed" | "favorites" | "history-opened" | "played";
 
 const allContentSourceFilterValue = "all";
@@ -543,7 +549,9 @@ export function ContentListColumn(props: ContentListColumnProps) {
   const playbackPositionByItemId = createMemo(() => toPlaybackPositionsByItemId(props.contentStatuses()));
 
   // Decision D10: virtualize the content list only from the lg breakpoint up.
-  // Below lg the plain <For> branch renders every row unchanged.
+  // Below lg the plain <For> branch renders every row unchanged. The whole
+  // mechanism is disabled while the TO BE FIXED defects above stand, so the
+  // virtualizer stays inert (enabled=false) and its branch never renders.
   const isDesktopViewport = createDesktopMediaQuerySignal();
   let contentScrollRegionEl: HTMLDivElement | undefined;
   // Option values that change over time are exposed as getters: the Solid
@@ -558,13 +566,19 @@ export function ContentListColumn(props: ContentListColumnProps) {
     overscan: 5,
     getItemKey: (index) => displayedContentItems()[index]?.id ?? index,
     get enabled() {
-      return isDesktopViewport();
+      return isDesktopViewport() && contentListVirtualizationEnabled;
     },
   });
   // estimateSize is not part of the virtualizer's own change detection: after a
   // density switch the cached row sizes must be dropped explicitly so rows fall
   // back to the new estimates (measureElement then re-locks real heights).
-  createEffect(on(() => props.readerDensity(), () => contentVirtualizer.measure(), { defer: true }));
+  // Gated with the virtualizer: no virtual rows are mounted while disabled, so
+  // the measure() call is a no-op anyway, but it stays short-circuited.
+  createEffect(on(() => props.readerDensity(), () => {
+    if (contentListVirtualizationEnabled) {
+      contentVirtualizer.measure();
+    }
+  }, { defer: true }));
 
   const visibleContentCollectionLabel = createMemo(() => {
     if (viewMode() === "favorites") {
@@ -596,14 +610,15 @@ export function ContentListColumn(props: ContentListColumnProps) {
     }
   };
 
-  // Scroll follow-up for j/k. On lg the virtualizer scrolls the active index
-  // into its window; below lg the plain list is scanned by the same
-  // data-content-item-id attribute both branches render on their <li>. The
-  // row is always mounted here: the index was just clamped against this same
-  // array and the list branch renders from it, so a single immediate lookup
-  // is enough.
+  // Scroll follow-up for j/k. With the virtualizer disabled (TO BE FIXED
+  // above), the below-lg row-lookup mechanism is the ONLY live path: the plain
+  // list is scanned by the data-content-item-id attribute its <li> renders.
+  // The row is always mounted here: the index was just clamped against this
+  // same array and the plain list renders from it, so a single immediate
+  // lookup is enough. The virtualizer.scrollToIndex path stays in the file,
+  // unreachable behind the disabled flag, for the rework.
   const scrollActiveRowIntoView = (index: number): void => {
-    if (isDesktopViewport()) {
+    if (contentListVirtualizationEnabled && isDesktopViewport()) {
       contentVirtualizer.scrollToIndex(index);
       return;
     }
@@ -978,7 +993,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
           </Match>
           <Match when={displayedContentItems().length > 0}>
             <Show
-              when={isDesktopViewport()}
+              when={contentListVirtualizationEnabled && isDesktopViewport()}
               fallback={
                 <ol aria-label={`${visibleContentCollectionLabel()} videos, ${contentCount()} shown`}>
                   <For each={displayedContentItems()}>

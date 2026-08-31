@@ -829,6 +829,11 @@ export function bindMediaQueryMatches(
  * content list (lg and up) and the plain list below lg. Starts `false` so the
  * first render matches the mobile layout, then syncs from the real query on
  * mount; the change listener is removed when the owning scope is disposed.
+ *
+ * KEPT FOR THE VIRTUALIZATION REWORK: content-list virtualization is currently
+ * disabled (TO BE FIXED in app-shell-content-column.tsx) and the plain list is
+ * the live path, but this signal still feeds the (inert) virtualizer gate and
+ * is required again by the rework.
  */
 export function createDesktopMediaQuerySignal(): () => boolean {
   const [isDesktop, setIsDesktop] = createSignal(false);
@@ -845,6 +850,10 @@ export function createDesktopMediaQuerySignal(): () => boolean {
  * plus the 1px bottom border. measureElement replaces estimates with real
  * heights as rows mount, so estimates only seed the scroll-thumb size and the
  * first-pass window calculation.
+ *
+ * KEPT FOR THE VIRTUALIZATION REWORK: content-list virtualization is currently
+ * disabled (TO BE FIXED in app-shell-content-column.tsx); only the inert
+ * virtualizer still reads this, and the rework needs it again.
  */
 export function estimateContentItemRowHeight(readerDensity: ReaderDensity): number {
   return readerDensity === "compact" ? 72 : 76;

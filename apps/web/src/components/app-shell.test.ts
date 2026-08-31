@@ -1978,44 +1978,28 @@ test("hide played is state filtering and not DOM filtering", async () => {
   expect(source).not.toContain("hidden =");
 });
 
-test("content list virtualizes on lg only with stable keys and variable row heights", async () => {
+test("content list virtualization is disabled and the plain list is the live path", async () => {
   const source = await readAppShellSource();
 
-  // Decision D10: the virtualized branch is gated on the shared desktop
-  // signal, and the virtualizer itself is disabled below lg.
-  expect(source).toContain("const isDesktopViewport = createDesktopMediaQuerySignal();");
-  expect(source).toContain("get enabled() {\n      return isDesktopViewport();\n    }");
-  // The existing scroll region doubles as the virtualizer scroll element.
-  expect(source).toContain("let contentScrollRegionEl: HTMLDivElement | undefined;");
-  expect(source).toContain("getScrollElement: () => contentScrollRegionEl ?? null");
-  expect(source).toContain("contentScrollRegionEl = el;");
-  // Virtualizer options: reactive item count, density-aware estimates,
-  // overscan 5, stable item identity by id.
+  // TO BE FIXED (disabled 2026-08-31): the virtualized list caused stale row
+  // renders, scroll resets, and selection breakage. The virtualization code is
+  // kept in the file for a proper rework, but the module-level flag turns the
+  // whole mechanism off and the plain <For> list is the only live path.
+  expect(source).toContain("const contentListVirtualizationEnabled = false;");
+  expect(source).toContain("TO BE FIXED (disabled 2026-08-31)");
+  expect(source).toContain("the plain list below is the live rendering path");
+  // The virtual branch is unreachable: the <Show> gate requires the flag.
+  expect(source).toContain("when={contentListVirtualizationEnabled && isDesktopViewport()}");
+  // The virtualizer itself stays inert while disabled (kept for the rework).
   expect(source).toContain("const contentVirtualizer = createVirtualizer({");
-  expect(source).toContain("get count() {\n      return displayedContentItems().length;\n    }");
-  expect(source).toContain("estimateSize: () => estimateContentItemRowHeight(props.readerDensity())");
-  expect(source).toContain("overscan: 5");
-  expect(source).toContain("getItemKey: (index) => displayedContentItems()[index]?.id ?? index");
-  // Virtual rows: absolutely positioned inside a total-size container, keyed
-  // for the later j/k row lookup, measured for real variable heights.
-  expect(source).toContain("<For each={contentVirtualizer.getVirtualItems()}>");
-  expect(source).toContain("data-content-item-id={displayedContentItems()[virtualItem.index]?.id ?? \"\"}");
-  expect(source).toContain("ref={(el) => contentVirtualizer.measureElement(el)}");
-  expect(source).toContain('style={{ position: "relative", height: `${contentVirtualizer.getTotalSize()}px` }}');
-  expect(source).toContain('position: "absolute"');
-  expect(source).toContain("transform: `translateY(${virtualItem.start}px)`");
-  // The virtual row's <Show> is KEYED on the displayed item: the virtual
-  // store reconciles by "index" in place, so when hide-played removes the
-  // marked item and the list shifts, a non-keyed Show would keep stale
-  // pre-shift rows mounted (the marked video never disappears).
-  expect(source).toContain("<Show when={displayedContentItems()[virtualItem.index]} keyed>");
-  expect(source).toContain("{(contentItem) => renderContentItemRow(contentItem)}");
-  expect(source).not.toContain("renderContentItemRow(contentItem())");
-  // A density switch invalidates cached row sizes so the new estimates apply
-  // and measureElement re-locks the real heights.
-  expect(source).toContain("createEffect(on(() => props.readerDensity(), () => contentVirtualizer.measure(), { defer: true }));");
-  // Both branches share one row renderer; pagination stays explicit.
+  expect(source).toContain("get enabled() {\n      return isDesktopViewport() && contentListVirtualizationEnabled;\n    }");
+  expect(source).toContain("if (contentListVirtualizationEnabled) {\n      contentVirtualizer.measure();\n    }");
+  // The plain list is the live rendering path: a single shared row renderer and
+  // the lookup attribute keyboard shortcuts depend on.
   expect(source).toContain("const renderContentItemRow = (contentItem: CatalogContentListItem) => (");
+  expect(source).toContain("<li data-content-item-id={contentItem.id}>");
+  expect(source).toContain("<For each={displayedContentItems()}>");
+  // Pagination stays explicit and unchanged.
   expect(source).toContain("<ContentLoadMoreControl");
 });
 
@@ -2077,13 +2061,14 @@ test("content column owns the keyboard-active row with clamped moves and both sc
   expect(source).toContain("await toggleFavorite(activeItem.id);");
   // f is an authenticated overlay action: anonymous presses stay no-ops.
   expect(source).toContain("if (!props.isAuthenticated()) {\n      return;\n    }");
-  // Scroll: virtualizer.scrollToIndex on lg, row lookup below lg. The
-  // below-lg <li> must carry the lookup attribute on BOTH branches.
-  expect(source).toContain("if (isDesktopViewport()) {\n      contentVirtualizer.scrollToIndex(index);");
+  // Scroll: with virtualization disabled, j/k ALWAYS uses the below-lg
+  // row-lookup path (scrollIntoView on the queried row). The
+  // contentVirtualizer.scrollToIndex call stays in the file but is
+  // unreachable behind the disabled flag.
+  expect(source).toContain("if (contentListVirtualizationEnabled && isDesktopViewport()) {\n      contentVirtualizer.scrollToIndex(index);");
   expect(source).toContain("const rows = region.querySelectorAll<HTMLElement>(\"[data-content-item-id]\");");
   expect(source).toContain("row.scrollIntoView({ block: \"nearest\" });");
   expect(source).toContain("<li data-content-item-id={contentItem.id}>");
-  expect(source).toContain("data-content-item-id={displayedContentItems()[virtualItem.index]?.id ?? \"\"}");
   // The active row is highlighted through the shared row renderer.
   expect(source).toContain("active={() => activeContentItemId() === contentItem.id}");
   // Shortcut failures surface in the column instead of being swallowed.
@@ -2337,9 +2322,9 @@ test("mobile navigation adds no timers observers or unstable resource source obj
   const source = await readAppShellSource();
 
   expect(source).not.toContain("IntersectionObserver");
-  // The lg-only content-list virtualizer keeps its ResizeObserver encapsulated
-  // inside @tanstack/solid-virtual (and disabled below lg); the shell source
-  // itself never touches observer APIs.
+  // The content-list virtualizer is disabled (TO BE FIXED) and keeps its
+  // ResizeObserver encapsulated inside @tanstack/solid-virtual; the shell
+  // source itself never touches observer APIs.
   expect(source).not.toContain("ResizeObserver");
   expect(source).not.toContain("MutationObserver");
   expect(source).not.toContain("setInterval");
