@@ -98,6 +98,13 @@ import {
   viewerColumnClass,
   viewerScrollRegionClass,
 } from "./app-shell.contract";
+import {
+  maxUserDataImportFileBytes,
+  parseUserDataImportText,
+  toUserDataExportFilename,
+  toUserDataExportJson,
+  triggerUserDataDownload,
+} from "./app-shell-source-sections";
 
 const changedUiSourceFiles = [
   "./app-shell.contract.ts",
@@ -1668,6 +1675,147 @@ test("settings UI has no fake defaults and displays only stored API values", asy
   expect(source).not.toContain("reader.layout");
   expect(source).not.toContain("player.autoplay");
   expect(source).not.toContain("defaultSettings");
+});
+
+test("user data export builds a dated filename and pretty-printed JSON with a trailing newline", () => {
+  expect(toUserDataExportFilename("2026-08-30T12:34:56.789Z")).toBe("feedelity-user-data-2026-08-30.json");
+
+  const exportJson = toUserDataExportJson({ format: "feedelity.user-data", version: 1 });
+  expect(exportJson.endsWith("\n")).toBe(true);
+  expect(exportJson).toContain('\n  "format": "feedelity.user-data"');
+  expect(JSON.parse(exportJson)).toEqual({ format: "feedelity.user-data", version: 1 });
+
+  // Mirrors the plan's ~8 MB client-side pre-check bound.
+  expect(maxUserDataImportFileBytes).toBe(8 * 1024 * 1024);
+});
+
+test("user data import parse guard rejects malformed files before any client call", () => {
+  const malformed = parseUserDataImportText("{ not-json");
+  expect(malformed.ok).toBe(false);
+  if (!malformed.ok) {
+    expect(malformed.message).toContain("not valid JSON");
+  }
+
+  const valid = parseUserDataImportText('{"format":"feedelity.user-data","version":1}');
+  expect(valid.ok).toBe(true);
+  if (valid.ok) {
+    expect(valid.exportData).toEqual({ format: "feedelity.user-data", version: 1 });
+  }
+});
+
+test("user data download helper names the file, triggers the anchor click, and revokes the object URL", () => {
+  const anchors: { href: string; download: string; clicks: number }[] = [];
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      createElement: (_tagName: string) => {
+        const anchor = {
+          href: "",
+          download: "",
+          clicks: 0,
+          click: () => {
+            anchor.clicks += 1;
+          },
+        };
+        anchors.push(anchor);
+        return anchor;
+      },
+    },
+  });
+  const createdObjectUrls: string[] = [];
+  const revokedObjectUrls: string[] = [];
+  const originalCreateObjectUrl = URL.createObjectURL;
+  const originalRevokeObjectUrl = URL.revokeObjectURL;
+  URL.createObjectURL = (blob: Blob) => {
+    const objectUrl = originalCreateObjectUrl(blob);
+    createdObjectUrls.push(objectUrl);
+    return objectUrl;
+  };
+  URL.revokeObjectURL = (objectUrl: string) => {
+    revokedObjectUrls.push(objectUrl);
+    originalRevokeObjectUrl(objectUrl);
+  };
+
+  try {
+    const blob = new Blob(['{"format":"feedelity.user-data"}'], { type: "application/json" });
+    triggerUserDataDownload(blob, "feedelity-user-data-2026-08-30.json");
+  } finally {
+    URL.createObjectURL = originalCreateObjectUrl;
+    URL.revokeObjectURL = originalRevokeObjectUrl;
+    Object.defineProperty(globalThis, "document", { configurable: true, value: undefined });
+  }
+
+  expect(anchors.length).toBe(1);
+  const anchor = anchors[0];
+  expect(anchor.href.startsWith("blob:")).toBe(true);
+  expect(anchor.download).toBe("feedelity-user-data-2026-08-30.json");
+  expect(anchor.clicks).toBe(1);
+  // The object URL is revoked exactly once, and for the URL that was handed
+  // to the anchor.
+  expect(revokedObjectUrls).toEqual(createdObjectUrls);
+  expect(revokedObjectUrls.length).toBe(1);
+});
+
+test("settings Data block wires export download and guarded import through protected procedures", async () => {
+  const source = await readChangedUiSource();
+
+  // JSON-only per decision D6: no OPML affordance in markup or code (the D6
+  // rationale comment itself is the only allowed mention, so line comments
+  // are stripped before this check).
+  const sourceWithoutComments = source.replace(/\/\/[^\n]*/g, "");
+  expect(sourceWithoutComments).not.toMatch(/opml/i);
+
+  // Export: pretty-printed blob, programmatic download through the protected
+  // procedure, busy state, and the object URL is always revoked.
+  expect(source).toContain("data-export-user-data");
+  expect(source).toContain("await client.overlays.exportUserData();");
+  expect(source).toContain("new Blob([toUserDataExportJson(exportData)], { type: \"application/json\" })");
+  expect(source).toContain("triggerUserDataDownload(blob, toUserDataExportFilename(exportData.exportedAt));");
+  expect(source).toContain("disabled={exportUserDataBusy()}");
+  const createObjectUrlIndex = source.indexOf("const objectUrl = URL.createObjectURL(blob);");
+  const anchorDownloadIndex = source.indexOf("anchor.download = filename;");
+  const anchorClickIndex = source.indexOf("anchor.click();");
+  const revokeObjectUrlIndex = source.indexOf("URL.revokeObjectURL(objectUrl);");
+  expect(createObjectUrlIndex).toBeGreaterThan(-1);
+  expect(anchorDownloadIndex).toBeGreaterThan(createObjectUrlIndex);
+  expect(anchorClickIndex).toBeGreaterThan(anchorDownloadIndex);
+  expect(revokeObjectUrlIndex).toBeGreaterThan(anchorClickIndex);
+
+  // Import: bounded JSON file input; the size pre-check and the JSON parse
+  // guard both early-return before the client call can fire, so a rejected
+  // file produces an error and no call.
+  expect(source).toContain("data-import-user-data-input");
+  expect(source).toContain('accept=".json,application/json"');
+  expect(source).toContain("disabled={importUserDataBusy()}");
+  // Two occurrences total: the outcome type alias and the single live call.
+  expect(source.split("client.overlays.importUserData")).toHaveLength(3);
+  const handlerStart = source.indexOf("const importUserDataFromFile = async (file: File) => {");
+  const handlerCallIndex = source.indexOf("client.overlays.importUserData({ exportData: parsed.exportData, sourceFilename: file.name });");
+  expect(handlerStart).toBeGreaterThan(-1);
+  expect(handlerCallIndex).toBeGreaterThan(handlerStart);
+  const handler = source.slice(handlerStart, handlerCallIndex);
+  const sizeGuardIndex = handler.indexOf("file.size > maxUserDataImportFileBytes");
+  const busyStartIndex = handler.indexOf("setImportUserDataBusy(true)");
+  const parseGuardIndex = handler.indexOf("if (!parsed.ok)");
+  expect(handler).toContain("parseUserDataImportText(await file.text())");
+  expect(sizeGuardIndex).toBeGreaterThan(-1);
+  expect(busyStartIndex).toBeGreaterThan(sizeGuardIndex);
+  expect(handler.slice(sizeGuardIndex, busyStartIndex)).toContain("return;");
+  expect(parseGuardIndex).toBeGreaterThan(busyStartIndex);
+  expect(handler.slice(parseGuardIndex)).toContain("return;");
+
+  // The report renders inline: skipped notice, per-entity counts, warnings,
+  // and failures in the destructive text style.
+  expect(source).toContain("data-import-user-data-report");
+  expect(source).toContain("data-import-user-data-skipped");
+  expect(source).toContain("data-import-user-data-count={entry.key}");
+  expect(source).toContain("{entry.label}: {result().report.counts[entry.key]}");
+  expect(source).toContain("<For each={result().report.warnings}>");
+  expect(source).toContain("data-import-user-data-warning");
+  expect(source).toContain("<For each={result().report.failures}>");
+  const failuresListStart = source.indexOf("<For each={result().report.failures}>");
+  expect(failuresListStart).toBeGreaterThan(-1);
+  expect(source.slice(failuresListStart, failuresListStart + 600)).toContain("text-destructive");
 });
 
 test("favorites view is an authenticated content-pane filter using protected procedures", async () => {
