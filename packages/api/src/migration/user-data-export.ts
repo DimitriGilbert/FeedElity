@@ -2,7 +2,7 @@ import { asc, eq } from "drizzle-orm";
 
 import * as schema from "@FeedElity/db/schema";
 
-import { USER_DATA_FINGERPRINT_SETTING_KEY } from "./user-data-schema";
+import { USER_DATA_METADATA_JSON_MAX_CHARS, USER_DATA_SETTINGS_JSON_MAX_CHARS, USER_DATA_FINGERPRINT_SETTING_KEY } from "./user-data-schema";
 import type {
   UserDataExport,
   UserDataExportCollection,
@@ -60,7 +60,12 @@ async function listSubscriptionEntries(db: RepositoryDb, userId: string): Promis
   return rows.map((row) => ({
     creator: { nameKey: row.nameKey },
     titleOverride: row.titleOverride,
-    settingsJson: row.settingsJson,
+    // settings_json is a TEXT passthrough with no DB-side cap; a value over
+    // the import schema's bound would export fine but get the whole envelope
+    // REJECTED on re-import, so over-cap values are dropped (null) here. The
+    // result is silent at export but always importable — a dropped passthrough
+    // preference beats a failed round trip.
+    settingsJson: withinSettingsJsonBound(row.settingsJson) ? row.settingsJson : null,
   }));
 }
 
@@ -87,8 +92,12 @@ async function listContentStatusEntries(db: RepositoryDb, userId: string): Promi
     content: { sourceType: row.sourceType, sourceExternalId: row.sourceExternalId },
     status: row.status,
     // metadata_json is carried verbatim (including the phase-2 `playback`
-    // resume position) so re-import restores the exact stored payload.
-    metadataJson: row.metadataJson,
+    // resume position) so re-import restores the exact stored payload. TEXT is
+    // unbounded in the DB, so a value over the import schema's bound would
+    // export fine but get the whole envelope REJECTED on re-import; over-cap
+    // metadata is dropped (null) instead — silent at export but importable,
+    // and no realistic payload (the small playback JSON) comes near the cap.
+    metadataJson: withinMetadataJsonBound(row.metadataJson) ? row.metadataJson : null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   }));
@@ -184,10 +193,23 @@ async function listSettingEntries(db: RepositoryDb, userId: string): Promise<Use
   // The import-fingerprint key is machine state written by user-data-import;
   // skipping it keeps export -> wipe -> import -> export round trips stable
   // (each import re-stores the fingerprint of the payload it imported).
+  // value_json is a TEXT passthrough with no DB-side cap; entries over the
+  // import schema's bound are dropped entirely (the field is not nullable) so
+  // the emitted envelope always re-imports — silent at export but importable
+  // beats a rejected envelope.
   return rows
     .filter((row) => row.key !== USER_DATA_FINGERPRINT_SETTING_KEY)
+    .filter((row) => withinSettingsJsonBound(row.valueJson))
     .map((row) => ({
       key: row.key,
       valueJson: row.valueJson,
     }));
+}
+
+function withinMetadataJsonBound(metadataJson: string | null): boolean {
+  return metadataJson === null || metadataJson.length <= USER_DATA_METADATA_JSON_MAX_CHARS;
+}
+
+function withinSettingsJsonBound(settingsJson: string | null): boolean {
+  return settingsJson === null || settingsJson.length <= USER_DATA_SETTINGS_JSON_MAX_CHARS;
 }

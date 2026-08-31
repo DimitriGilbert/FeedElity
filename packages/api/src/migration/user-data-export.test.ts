@@ -6,7 +6,12 @@ import { drizzle } from "drizzle-orm/libsql";
 import * as schema from "@FeedElity/db/schema";
 
 import { exportUserDataForUser } from "./user-data-export";
-import { USER_DATA_FINGERPRINT_SETTING_KEY } from "./user-data-schema";
+import {
+  USER_DATA_FINGERPRINT_SETTING_KEY,
+  USER_DATA_METADATA_JSON_MAX_CHARS,
+  USER_DATA_SETTINGS_JSON_MAX_CHARS,
+  userDataExportSchema,
+} from "./user-data-schema";
 import type { UserDataExport } from "./user-data-schema";
 import type { RepositoryDb } from "../repositories/catalog";
 import { findOrCreateContentItem, findOrCreateCreator } from "../repositories/catalog";
@@ -201,13 +206,91 @@ describe("user data export", () => {
     const first = await exportUserDataForUser(testDatabase.db, "user-a");
     const second = await exportUserDataForUser(testDatabase.db, "user-a");
 
-    expect(second.exportedAt).not.toBe(first.exportedAt);
+    // exportedAt is wall-clock at ISO millisecond precision, so consecutive
+    // exports can legally land in the same millisecond; the stable contract is
+    // the payload equality (and, downstream, the data-identity fingerprint in
+    // user-data-import.ts treating the two exports as the same data).
     expect(withoutExportedAt(second)).toEqual(withoutExportedAt(first));
     expect(first.data.subscriptions.map((subscription) => subscription.creator.nameKey)).toEqual([
       "alphachannel",
       "zetachannel",
     ]);
     expect(first.data.settings).toEqual([{ key: "reader.layout", valueJson: JSON.stringify("compact") }]);
+  });
+
+  test("export drops passthrough JSON values that exceed the import bounds so the envelope always re-imports", async () => {
+    await insertUser(testDatabase.db, "user-a", "export-bounds@example.test");
+    const creator = await findOrCreateCreator(testDatabase.db, { displayName: "Bounds Channel" });
+    const contentItem = await findOrCreateContentItem(testDatabase.db, {
+      creatorId: creator.id,
+      sourceType: "youtube",
+      sourceExternalId: "bounds-video-1",
+      title: "Bounds video 1",
+    });
+    await findOrCreateSubscription(testDatabase.db, { userId: "user-a", creatorId: creator.id });
+    const otherCreator = await findOrCreateCreator(testDatabase.db, { displayName: "Bounds Other" });
+    const inBoundMetadata = JSON.stringify({ playback: { positionSeconds: 1 } });
+    const overBoundMetadata = `{"bulk":"${"x".repeat(USER_DATA_METADATA_JSON_MAX_CHARS)}"}`;
+    const overBoundValue = `"${"y".repeat(USER_DATA_SETTINGS_JSON_MAX_CHARS)}"`;
+    await findOrCreateContentStatus(testDatabase.db, {
+      userId: "user-a",
+      contentItemId: contentItem.id,
+      status: "opened",
+      metadataJson: inBoundMetadata,
+    });
+    await testDatabase.db.insert(schema.contentStatus).values({
+      id: "status-over-cap",
+      userId: "user-a",
+      contentItemId: contentItem.id,
+      status: "played",
+      metadataJson: overBoundMetadata,
+    });
+    await testDatabase.db.insert(schema.subscription).values({
+      id: "sub-over-cap",
+      userId: "user-a",
+      creatorId: otherCreator.id,
+      settingsJson: `{"bulk":"${"s".repeat(USER_DATA_SETTINGS_JSON_MAX_CHARS)}"}`,
+    });
+    await saveUserSetting(testDatabase.db, {
+      userId: "user-a",
+      key: "reader.layout",
+      valueJson: JSON.stringify("compact"),
+    });
+    await testDatabase.db.insert(schema.userSetting).values({
+      id: "setting-over-cap",
+      userId: "user-a",
+      key: "reader.bulk",
+      valueJson: overBoundValue,
+    });
+
+    const envelope = await exportUserDataForUser(testDatabase.db, "user-a");
+
+    // The real contract: the emitted envelope validates against the import
+    // schema — every exported value fits the import bounds — with over-cap
+    // passthrough values dropped (null or entry removed) instead of carried.
+    const parsed = userDataExportSchema.safeParse(envelope);
+    expect(parsed.success).toBe(true);
+    expect(envelope.data.subscriptions).toEqual([
+      { creator: { nameKey: "boundschannel" }, titleOverride: null, settingsJson: null },
+      { creator: { nameKey: "boundsother" }, titleOverride: null, settingsJson: null },
+    ]);
+    expect(envelope.data.contentStatuses).toEqual([
+      {
+        content: { sourceType: "youtube", sourceExternalId: "bounds-video-1" },
+        status: "opened",
+        metadataJson: inBoundMetadata,
+        createdAt: expect.any(String),
+        updatedAt: expect.any(String),
+      },
+      {
+        content: { sourceType: "youtube", sourceExternalId: "bounds-video-1" },
+        status: "played",
+        metadataJson: null,
+        createdAt: expect.any(String),
+        updatedAt: expect.any(String),
+      },
+    ]);
+    expect(envelope.data.settings).toEqual([{ key: "reader.layout", valueJson: JSON.stringify("compact") }]);
   });
 });
 

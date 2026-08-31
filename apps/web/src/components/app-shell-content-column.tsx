@@ -625,10 +625,13 @@ export function ContentListColumn(props: ContentListColumnProps) {
 
   // Executes one command sent by AppShell's keydown listener. on() keeps the
   // effect's only dependency on the command itself, so the activeIndex and
-  // list reads below stay untracked.
+  // list reads below stay untracked. The written index is clamped so repeated
+  // boundary moves cannot walk the signal far out of range and leave the
+  // opposite-direction command unresponsive for several presses; the memo's
+  // clamp stays as display-side defense.
   const executeContentShortcutCommand = async (command: ContentShortcutCommand) => {
     if (command.kind === "move") {
-      setRequestedActiveIndex(requestedActiveIndex() + command.delta);
+      setRequestedActiveIndex(clampActiveIndex(requestedActiveIndex() + command.delta, displayedContentItems().length));
       scrollActiveRowIntoView(activeIndex());
       return;
     }

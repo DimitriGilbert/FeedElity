@@ -234,6 +234,78 @@ export async function findCreatorByNameKey(db: RepositoryDb, nameKey: string): P
   return row === undefined ? null : toCatalogCreator(row);
 }
 
+/** Natural identity pair accepted by the bulk source-identity lookup. */
+export type ContentSourceIdentity = Pick<SaveContentItemInput, "sourceType" | "sourceExternalId">;
+
+/**
+ * Chunk size for the bulk IN lookups below: one query per 500 keys keeps each
+ * statement's bind-parameter count far inside SQLite's variable limit while
+ * turning O(rows) sequential lookups into O(rows / 500) queries.
+ */
+const BULK_LOOKUP_CHUNK_SIZE = 500;
+
+/**
+ * Resolve catalog creator ids for many name keys in chunked IN queries — one
+ * query per BULK_LOOKUP_CHUNK_SIZE keys instead of one per key. Name keys with
+ * no catalog creator are absent from the returned map; callers decide how to
+ * report them.
+ */
+export async function listCreatorIdsByNameKeys(
+  db: RepositoryDb,
+  nameKeys: readonly string[],
+): Promise<Map<string, string>> {
+  const idByNameKey = new Map<string, string>();
+  for (let start = 0; start < nameKeys.length; start += BULK_LOOKUP_CHUNK_SIZE) {
+    const chunk = nameKeys.slice(start, start + BULK_LOOKUP_CHUNK_SIZE);
+    const rows = await db
+      .select({ id: schema.creator.id, nameKey: schema.creator.nameKey })
+      .from(schema.creator)
+      .where(inArray(schema.creator.nameKey, chunk));
+    for (const row of rows) {
+      idByNameKey.set(row.nameKey, row.id);
+    }
+  }
+  return idByNameKey;
+}
+
+/**
+ * Resolve catalog content-item rows for many (source_type, source_external_id)
+ * identities in chunked queries — one per (chunk, source type) pair instead of
+ * one per identity, with the external ids of each chunk grouped by source type
+ * so every statement stays one parameter per identity. Rows carry their natural
+ * identity so callers can key the result themselves; identities with no
+ * catalog content item are absent from the result.
+ */
+export async function listContentItemsBySourceIdentities(
+  db: RepositoryDb,
+  identities: readonly ContentSourceIdentity[],
+): Promise<readonly { id: string; sourceType: SourceType; sourceExternalId: string }[]> {
+  const rows: { id: string; sourceType: SourceType; sourceExternalId: string }[] = [];
+  for (let start = 0; start < identities.length; start += BULK_LOOKUP_CHUNK_SIZE) {
+    const chunk = identities.slice(start, start + BULK_LOOKUP_CHUNK_SIZE);
+    const externalIdsByType = new Map<SourceType, string[]>();
+    for (const identity of chunk) {
+      const externalIds = externalIdsByType.get(identity.sourceType) ?? [];
+      externalIds.push(identity.sourceExternalId);
+      externalIdsByType.set(identity.sourceType, externalIds);
+    }
+    for (const [sourceType, sourceExternalIds] of externalIdsByType) {
+      const matched = await db
+        .select({
+          id: schema.contentItem.id,
+          sourceType: schema.contentItem.sourceType,
+          sourceExternalId: schema.contentItem.sourceExternalId,
+        })
+        .from(schema.contentItem)
+        .where(
+          and(eq(schema.contentItem.sourceType, sourceType), inArray(schema.contentItem.sourceExternalId, sourceExternalIds)),
+        );
+      rows.push(...matched);
+    }
+  }
+  return rows;
+}
+
 /**
  * Advance the creator's denormalized latest-publish marker to the given
  * timestamp, but never backwards and never back to NULL once set. Ingestion

@@ -19,6 +19,13 @@ function ShellLayout() {
   // The layout's one-time mount redirect below reads it to reopen the last
   // section when a session exists; search text and other ephemeral state stay
   // unpersisted.
+  // The persisted value is snapshotted synchronously during component setup,
+  // BEFORE the effect below first writes: the effect persists the
+  // pathname-derived mode (at "/" that is "catalog") at mount, long before the
+  // redirect's async session check resolves, so re-reading storage inside the
+  // redirect would always observe the clobbered value.
+  const persistedInitialMode = toPersistedShellMode(readPersistedLocalValue(shellModeLocalStorageKey));
+
   createEffect(() => {
     persistLocalValue(shellModeLocalStorageKey, mode());
   });
@@ -43,8 +50,8 @@ function ShellLayout() {
       const session = await authClient.getSession();
       if (
         session.data &&
-        toPersistedShellMode(readPersistedLocalValue(shellModeLocalStorageKey)) === "library" &&
-        location().pathname !== "/dashboard"
+        persistedInitialMode === "library" &&
+        !location().pathname.startsWith("/dashboard")
       ) {
         void navigate({ to: "/dashboard", replace: true });
       }

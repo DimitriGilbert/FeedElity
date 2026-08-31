@@ -139,6 +139,15 @@ export interface MarkContentOpenedResult {
 const MARK_CREATOR_CONTENT_OPENED_BATCH_LIMIT = 1000;
 
 /**
+ * Global bound of `opened` rows written per mark-all call across ALL of the
+ * user's subscriptions (qol plan decision D4, set-based mark-all): the newest
+ * 10000 matching items are inserted in one statement, and the batched
+ * threshold write below covers any remaining tail without fabricating more
+ * overlay rows.
+ */
+const MARK_ALL_CONTENT_OPENED_GLOBAL_LIMIT = 10_000;
+
+/**
  * Prefix of the per-creator unread threshold user_setting keys. The stored
  * `value_json` is `JSON.stringify(<epoch ms number>)`, and the key inherits the
  * creator id (lowercase UUID), so full keys like
@@ -533,29 +542,111 @@ export async function markCreatorContentOpenedForUser(
 }
 
 /**
- * "Mark everything read" across all of the user's subscriptions: loops the
- * subscribed creator ids through the per-creator bounded logic with one shared
- * `markedBeforeMs` and aggregates the inserted-row counts. Idempotent — a
- * second run inserts nothing because every creator's threshold now equals
- * `markedBeforeMs`.
+ * "Mark everything read" across all of the user's subscriptions in TWO
+ * statements instead of one per creator: a single set-based INSERT..SELECT
+ * joined to the user's subscriptions with the same unread predicate as the
+ * per-creator path (threshold CASE join, NOT EXISTS opened/played, per-
+ * subscription creator filter), capped at MARK_ALL_CONTENT_OPENED_GLOBAL_LIMIT
+ * rows ordered newest first, followed by ONE batched
+ * INSERT..ON CONFLICT DO UPDATE over user_setting that advances every
+ * subscription's `unread.threshold.<creatorId>` setting to `markedBeforeMs`
+ * (the per-creator path advances its threshold even when nothing was inserted,
+ * so the batched write covers all subscriptions unconditionally). Only
+ * `opened` rows are written (decision D4); ON CONFLICT DO NOTHING plus the
+ * threshold semantics keep the call idempotent — a second run inserts nothing
+ * because every threshold now equals `markedBeforeMs`. `markedBeforeMs` is the
+ * server-side bound, validated like the single-creator path.
  */
 export async function markAllCreatorsContentOpenedForUser(
   db: RepositoryDb,
   input: { readonly userId: string; readonly markedBeforeMs: number },
 ): Promise<MarkContentOpenedResult> {
-  const subscriptions = await listSubscriptionsForUser(db, input.userId);
-
-  let markedCount = 0;
-  for (const subscription of subscriptions) {
-    const result = await markCreatorContentOpenedForUser(db, {
-      userId: input.userId,
-      creatorId: subscription.creatorId,
-      markedBeforeMs: input.markedBeforeMs,
-    });
-    markedCount += result.markedCount;
+  if (!Number.isInteger(input.markedBeforeMs) || input.markedBeforeMs < 0) {
+    throw new Error(`Mark-before timestamp must be an integer epoch ms >= 0, received ${input.markedBeforeMs}.`);
   }
 
-  return { markedCount };
+  const inserted = await db
+    .insert(schema.contentStatus)
+    .select((selectQuery) =>
+      selectQuery
+        .select({
+          // 32-char lowercase hex id; unique per row and opaque like the UUID
+          // ids used elsewhere — SQLite has no native uuid() to inline here.
+          id: sql`(lower(hex(randomblob(16))))`,
+          userId: sql`${input.userId}`,
+          contentItemId: schema.contentItem.id,
+          status: sql`'opened'`,
+          metadataJson: sql`null`,
+          createdAt: sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+          updatedAt: sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+        })
+        .from(schema.contentItem)
+        .innerJoin(
+          schema.subscription,
+          and(
+            eq(schema.subscription.userId, input.userId),
+            eq(schema.subscription.creatorId, schema.contentItem.creatorId),
+          ),
+        )
+        .leftJoin(
+          schema.userSetting,
+          and(
+            eq(schema.userSetting.userId, input.userId),
+            eq(schema.userSetting.key, sql`${unreadThresholdKeyPrefix} || ${schema.subscription.creatorId}`),
+          ),
+        )
+        .where(
+          and(
+            sql`coalesce(${schema.contentItem.publishedAt}, ${schema.contentItem.createdAt}) > coalesce(${unreadThresholdValueJson()}, ${schema.subscription.createdAt})`,
+            sql`coalesce(${schema.contentItem.publishedAt}, ${schema.contentItem.createdAt}) <= ${input.markedBeforeMs}`,
+            sql`not exists (
+              select 1
+              from ${schema.contentStatus}
+              where ${schema.contentStatus.userId} = ${input.userId}
+                and ${schema.contentStatus.contentItemId} = ${schema.contentItem.id}
+                and ${schema.contentStatus.status} in ('opened', 'played')
+            )`,
+          ),
+        )
+        .orderBy(
+          desc(sql`coalesce(${schema.contentItem.publishedAt}, ${schema.contentItem.createdAt})`),
+          desc(schema.contentItem.id),
+        )
+        .limit(MARK_ALL_CONTENT_OPENED_GLOBAL_LIMIT)
+        // Rendered as SQL so the insert builder takes its raw-SQL overload;
+        // the select's column order matches the content_status definition.
+        .getSQL(),
+    )
+    .onConflictDoNothing({
+      target: [schema.contentStatus.userId, schema.contentStatus.contentItemId, schema.contentStatus.status],
+    })
+    .returning({ contentItemId: schema.contentStatus.contentItemId });
+
+  await db
+    .insert(schema.userSetting)
+    .select((selectQuery) =>
+      selectQuery
+        .select({
+          id: sql`(lower(hex(randomblob(16))))`,
+          userId: sql`${input.userId}`,
+          key: sql`${unreadThresholdKeyPrefix} || ${schema.subscription.creatorId}`,
+          valueJson: sql`${JSON.stringify(input.markedBeforeMs)}`,
+          createdAt: sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+          updatedAt: sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+        })
+        .from(schema.subscription)
+        .where(eq(schema.subscription.userId, input.userId))
+        .getSQL(),
+    )
+    .onConflictDoUpdate({
+      target: [schema.userSetting.userId, schema.userSetting.key],
+      set: {
+        valueJson: sql`excluded.value_json`,
+        updatedAt: sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+      },
+    });
+
+  return { markedCount: inserted.length };
 }
 
 export async function findOrCreateContentStatus(

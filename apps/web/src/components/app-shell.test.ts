@@ -2058,10 +2058,13 @@ test("content column owns the keyboard-active row with clamped moves and both sc
   expect(source).toContain("const activeIndex = createMemo(() => clampActiveIndex(requestedActiveIndex(), displayedContentItems().length));");
   expect(source).toContain("const activeContentItemId = createMemo(() => displayedContentItems()[activeIndex()]?.id ?? null);");
   expect(source).toContain("createEffect(on(contentItemsResourceKey, () => setRequestedActiveIndex(0), { defer: true }));");
-  // Commands execute against the active row: moves clamp then scroll, Enter
-  // opens through onSelectContent, f reuses the column's toggleFavorite path.
+  // Commands execute against the active row: moves clamp the WRITTEN index (so
+  // repeated boundary moves cannot walk the raw signal out of range and leave
+  // the opposite-direction command unresponsive) then scroll, Enter opens
+  // through onSelectContent, f reuses the column's toggleFavorite path.
   expect(source).toContain("if (command.kind === \"move\") {");
-  expect(source).toContain("setRequestedActiveIndex(requestedActiveIndex() + command.delta);");
+  expect(source).toContain("setRequestedActiveIndex(clampActiveIndex(requestedActiveIndex() + command.delta, displayedContentItems().length));");
+  expect(source).not.toContain("setRequestedActiveIndex(requestedActiveIndex() + command.delta);");
   expect(source).toContain("scrollActiveRowIntoView(activeIndex());");
   expect(source).toContain("await props.onSelectContent(activeItem);");
   expect(source).toContain("await toggleFavorite(activeItem.id);");
@@ -2825,12 +2828,26 @@ test("shell layout persists the last mode and reopens it once on mount without t
   // The one-time "reopen the last section" redirect lives in the shell layout,
   // which stays mounted across child navigations, and runs at most once per
   // app mount: gated on a resolved session AND a persisted library mode AND
-  // not already being on /dashboard, with replace so Back leaves the
+  // not already being on a /dashboard route, with replace so Back leaves the
   // pre-redirect history entry instead of re-entering the redirect.
   expect(shellRouteSource).toContain("let didInitialSectionRedirect = false;");
   expect(shellRouteSource).toContain("const session = await authClient.getSession();");
-  expect(shellRouteSource).toContain('toPersistedShellMode(readPersistedLocalValue(shellModeLocalStorageKey)) === "library"');
-  expect(shellRouteSource).toContain('location().pathname !== "/dashboard"');
+  // The redirect reads a synchronous setup-time snapshot of the persisted
+  // mode, not storage: the persistence effect writes the pathname-derived
+  // mode (at "/" that is "catalog") at mount, long before the redirect's
+  // async session check resolves, so re-reading storage inside the redirect
+  // would always observe the clobbered value and reopen-last-section would
+  // never fire for users who open the app on "/".
+  const snapshotDeclaration = 'const persistedInitialMode = toPersistedShellMode(readPersistedLocalValue(shellModeLocalStorageKey));';
+  expect(shellRouteSource).toContain(snapshotDeclaration);
+  expect(shellRouteSource).toContain('persistedInitialMode === "library"');
+  const snapshotIndex = shellRouteSource.indexOf(snapshotDeclaration);
+  const persistenceEffectIndex = shellRouteSource.indexOf("createEffect(() => {");
+  expect(snapshotIndex).toBeGreaterThanOrEqual(0);
+  expect(persistenceEffectIndex).toBeGreaterThan(snapshotIndex);
+  // The guard tolerates any /dashboard route (not just the exact path) so
+  // future nested dashboard routes stay intact.
+  expect(shellRouteSource).toContain('!location().pathname.startsWith("/dashboard")');
   expect(shellRouteSource).toContain('navigate({ to: "/dashboard", replace: true });');
   // The dashboard guard is unchanged: anonymous users go to login.
   expect(dashboardRouteSource).toContain('to: "/login",');

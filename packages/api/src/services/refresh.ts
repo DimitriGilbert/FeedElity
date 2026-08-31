@@ -111,7 +111,10 @@ export interface PruneRefreshFeedResultsResult {
 
 /**
  * Delete refresh feed results that aged out of the retention window with a
- * single DELETE on started_at (epoch-ms timestamp column). DB errors propagate
+ * single DELETE on started_at (epoch-ms timestamp column). `olderThanMs` must
+ * be a finite, non-negative number of milliseconds — a negative value would
+ * delete fresh results and a non-finite value would build an invalid cutoff —
+ * so invalid input throws before any rows are touched. DB errors propagate
  * to the caller, which decides how to degrade (see
  * pruneAfterTerminalRefreshState).
  */
@@ -119,6 +122,12 @@ export async function pruneRefreshFeedResultsForRetention(
   db: RepositoryDb,
   input: PruneRefreshFeedResultsInput,
 ): Promise<PruneRefreshFeedResultsResult> {
+  if (!Number.isFinite(input.olderThanMs) || input.olderThanMs < 0) {
+    throw new Error(
+      `Refresh feed result retention prune requires a finite, non-negative olderThanMs (received ${String(input.olderThanMs)}).`,
+    );
+  }
+
   const cutoff = new Date(input.now.getTime() - input.olderThanMs);
   const deleted = await db
     .delete(schema.refreshFeedResult)

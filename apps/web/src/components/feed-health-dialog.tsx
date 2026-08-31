@@ -45,6 +45,18 @@ function feedLabel(entry: FeedHealthEntry): string {
 }
 
 /**
+ * Confirm title for a staged unsubscribe: singular for a single creator,
+ * count-named plural for the bulk action so the destructive scope is spelled
+ * out before confirmation.
+ */
+function unsubscribeConfirmTitle(pending: PendingUnsubscribe | null): string {
+  if (pending === null || pending.creatorIds.length === 1) {
+    return "Unsubscribe from creator?";
+  }
+  return `Unsubscribe ${pending.creatorIds.length} creators?`;
+}
+
+/**
  * Native dialog-based feed health dashboard. Lists every catalog feed with its
  * refresh health (failure streak, last success age, last error) and offers
  * destructive unsubscribe actions for creators whose feeds keep failing. Rows
@@ -299,7 +311,7 @@ export function FeedHealthDialog(props: FeedHealthDialogProps) {
 
       <ConfirmDialog
         open={pendingUnsubscribe() !== null}
-        title="Unsubscribe from creator?"
+        title={unsubscribeConfirmTitle(pendingUnsubscribe())}
         body={`This removes your subscription to ${pendingUnsubscribe()?.targetLabel ?? "the selected creators"}. Their feeds stay in the public catalog and health list.`}
         confirmLabel="Unsubscribe"
         onConfirm={confirmPendingUnsubscribe}

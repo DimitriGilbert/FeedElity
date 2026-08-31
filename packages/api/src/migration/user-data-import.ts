@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import * as schema from "@FeedElity/db/schema";
 
-import { findContentItemBySourceIdentity, findCreatorByNameKey } from "../repositories/catalog";
+import { listContentItemsBySourceIdentities, listCreatorIdsByNameKeys } from "../repositories/catalog";
 import type { RepositoryDb } from "../repositories/catalog";
 import {
   addCollectionMember,
@@ -15,7 +15,6 @@ import {
 } from "../repositories/overlays";
 import { USER_DATA_FINGERPRINT_SETTING_KEY, userDataExportSchema } from "./user-data-schema";
 import type {
-  UserDataExport,
   UserDataExportContentStatus,
   UserDataExportData,
 } from "./user-data-schema";
@@ -90,15 +89,19 @@ export async function importUserDataForUser(db: RepositoryDb, input: ImportUserD
     };
   }
 
-  const fingerprint = fingerprintUserData(parsedExport.data);
+  const fingerprint = fingerprintUserData(parsedExport.data.data);
   const storedFingerprint = await readStoredFingerprint(db, input.userId);
   if (storedFingerprint === fingerprint) {
     return { skipped: true, report: { counts: zeroCounts(), warnings: [], failures: [] } };
   }
 
   const data = parsedExport.data.data;
-  const creatorIdsByNameKey = await resolveCreatorsByNameKeys(db, collectCreatorNameKeys(data));
-  const contentItemIdsByIdentity = await resolveContentItemsByIdentities(db, collectContentIdentities(data));
+  const creatorIdsByNameKey = await listCreatorIdsByNameKeys(db, collectCreatorNameKeys(data));
+  const contentIdentityRows = await listContentItemsBySourceIdentities(db, collectContentIdentities(data));
+  const contentItemIdsByIdentity = new Map<string, string>();
+  for (const row of contentIdentityRows) {
+    contentItemIdsByIdentity.set(contentIdentityKey(row), row.id);
+  }
 
   const warnings: UserDataReportedRecord[] = [];
   const counts: MutableUserDataImportCounts = zeroCounts();
@@ -309,34 +312,6 @@ async function restoreContentStatusTimestamps(
     .where(and(eq(schema.contentStatus.id, statusRowId), eq(schema.contentStatus.userId, userId)));
 }
 
-async function resolveCreatorsByNameKeys(
-  db: RepositoryDb,
-  nameKeys: readonly string[],
-): Promise<Map<string, string>> {
-  const resolved = new Map<string, string>();
-  for (const nameKey of nameKeys) {
-    const creator = await findCreatorByNameKey(db, nameKey);
-    if (creator !== null) {
-      resolved.set(nameKey, creator.id);
-    }
-  }
-  return resolved;
-}
-
-async function resolveContentItemsByIdentities(
-  db: RepositoryDb,
-  identities: readonly { sourceType: "youtube" | "odysee" | "peertube"; sourceExternalId: string }[],
-): Promise<Map<string, string>> {
-  const resolved = new Map<string, string>();
-  for (const identity of identities) {
-    const contentItem = await findContentItemBySourceIdentity(db, identity);
-    if (contentItem !== null) {
-      resolved.set(contentIdentityKey(identity), contentItem.id);
-    }
-  }
-  return resolved;
-}
-
 function collectCreatorNameKeys(data: UserDataExportData): string[] {
   const nameKeys = new Set<string>();
   for (const entry of data.subscriptions) {
@@ -395,7 +370,13 @@ function buildDeterministicRowId(kind: string, naturalKey: string): string {
   return `user-data-${kind}-${digest}`;
 }
 
-function fingerprintUserData(exportData: UserDataExport): string {
+/**
+ * Data-identity fingerprint of a user-data payload: only the `data` section is
+ * hashed, never `exportedAt`, so re-exporting unchanged overlays produces the
+ * same fingerprint and re-importing such a file short-circuits ("unchanged
+ * user data" skip) instead of rewriting every row.
+ */
+function fingerprintUserData(exportData: UserDataExportData): string {
   return createHash("sha256").update(stableStringify(exportData)).digest("hex");
 }
 

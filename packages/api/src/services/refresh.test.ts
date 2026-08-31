@@ -24,7 +24,7 @@ import type {
   SourceDetectionFailure,
   SourceDetectionSuccess,
 } from "../sources";
-import { refreshAll, refreshCreator, refreshFeed, resumeRefreshRun, startRefreshAll } from "./refresh";
+import { pruneRefreshFeedResultsForRetention, refreshAll, refreshCreator, refreshFeed, resumeRefreshRun, startRefreshAll } from "./refresh";
 import { nextRefreshDate } from "./refresh-policy";
 
 interface TestDatabase {
@@ -454,6 +454,29 @@ describe("manual refresh orchestration", () => {
     expect(await findRefreshFeedResultById(recentResultId)).toMatchObject({ feedId: feeds.dueFeedId });
     // The completed run's own results were recorded after the prune cutoff.
     expect(await listRefreshFeedResultsForRun(testDatabase.db, { refreshRunId: result.run.id, limit: 10 })).toHaveLength(2);
+  });
+
+  test("retention prune rejects a non-finite or negative olderThanMs before deleting anything", async () => {
+    const feeds = await seedFeeds(testDatabase.db);
+    const seededResultId = await seedRefreshFeedResultAt(testDatabase.db, {
+      feedId: feeds.dueFeedId,
+      status: "succeeded",
+      startedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    for (const olderThanMs of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      let thrown: unknown = null;
+      try {
+        await pruneRefreshFeedResultsForRetention(testDatabase.db, { olderThanMs, now: fixedNow() });
+      } catch (error: unknown) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(Error);
+      expect(String(thrown)).toContain("olderThanMs");
+    }
+
+    // Validation happens before any DELETE: the seeded row is untouched.
+    expect(await findRefreshFeedResultById(seededResultId)).toMatchObject({ feedId: feeds.dueFeedId });
   });
 
   test("startRefreshAll's background processing path prunes aged results too", async () => {

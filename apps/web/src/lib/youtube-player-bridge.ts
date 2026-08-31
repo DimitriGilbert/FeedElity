@@ -136,14 +136,17 @@ export function createYouTubePlaybackTracker(options: YouTubePlaybackTrackerOpti
     contentWindow.postMessage(JSON.stringify(payload), targetOrigin);
   };
 
-  // Fires onPosition only when the report actually changed, so the ~1/s poll
-  // (three command replies per tick) does not spam identical positions.
+  // Fires onPosition only when the (position, ended) pair actually changed
+  // since the last delivery, so the ~1/s poll (three command replies per tick)
+  // never reports an identical pair twice — including a repeated ended
+  // report at an unchanged position. The parent's own once-per-session
+  // endedReported guard stays the single gate for onEnded.
   const deliverPosition = (ended: boolean): void => {
     if (trackedPositionSeconds === null) {
       return;
     }
 
-    if (!ended && trackedPositionSeconds === lastReportedPositionSeconds && !lastReportedEnded) {
+    if (trackedPositionSeconds === lastReportedPositionSeconds && ended === lastReportedEnded) {
       return;
     }
 

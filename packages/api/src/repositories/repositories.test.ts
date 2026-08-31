@@ -1579,6 +1579,77 @@ describe("catalog and overlay repositories", () => {
     ).toBe(true);
   });
 
+  test("mark-all across many creators marks everything in one call and advances every threshold", async () => {
+    await insertUser(testDatabase.db, "user-a", "unread-markall-many@example.test");
+    const creatorCount = 25;
+    const itemsPerCreator = 2;
+    const markedBeforeMs = Date.parse("2026-01-10T00:00:00.000Z");
+    const creators: { id: string }[] = [];
+    for (let creatorIndex = 0; creatorIndex < creatorCount; creatorIndex += 1) {
+      const creator = await findOrCreateCreator(testDatabase.db, {
+        displayName: `Unread MarkAll Many ${creatorIndex}`,
+      });
+      creators.push(creator);
+      for (let itemIndex = 0; itemIndex < itemsPerCreator; itemIndex += 1) {
+        await findOrCreateContentItem(testDatabase.db, {
+          creatorId: creator.id,
+          sourceType: "youtube",
+          sourceExternalId: `unread-markall-many-${creatorIndex}-${itemIndex}`,
+          title: `Unread markall many ${creatorIndex} ${itemIndex}`,
+          publishedAt: new Date(Date.parse("2026-01-05T00:00:00.000Z") + itemIndex * 1_000),
+        });
+      }
+      await insertSubscriptionFixture(testDatabase.db, {
+        id: `sub-unread-markall-many-${creatorIndex}`,
+        userId: "user-a",
+        creatorId: creator.id,
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      });
+    }
+
+    const firstMarkAll = await markAllCreatorsContentOpenedForUser(testDatabase.db, {
+      userId: "user-a",
+      markedBeforeMs,
+    });
+    const summaries = await listCreatorUnreadForUser(testDatabase.db, "user-a");
+    const statuses = await listContentStatusesForUser(testDatabase.db, "user-a");
+    const settings = await listUserSettingsForUser(testDatabase.db, "user-a");
+    const secondMarkAll = await markAllCreatorsContentOpenedForUser(testDatabase.db, {
+      userId: "user-a",
+      markedBeforeMs,
+    });
+
+    expect(firstMarkAll).toEqual({ markedCount: creatorCount * itemsPerCreator });
+    expect(summaries).toEqual([]);
+    expect(statuses).toHaveLength(creatorCount * itemsPerCreator);
+    expect(statuses.every((status) => status.status === "opened")).toBe(true);
+    // Every subscription's threshold advanced to markedBeforeMs in the one
+    // batched write, and the second call is a no-op.
+    expect(settings).toHaveLength(creatorCount);
+    expect(settings.map((setting) => setting.key).sort()).toEqual(
+      creators.map((creator) => `unread.threshold.${creator.id}`).sort(),
+    );
+    expect(settings.every((setting) => setting.valueJson === JSON.stringify(markedBeforeMs))).toBe(true);
+    expect(secondMarkAll).toEqual({ markedCount: 0 });
+  });
+
+  test("mark-all is set-based: no per-creator loop over the single-creator path", async () => {
+    const source = await Bun.file(new URL("./overlays.ts", import.meta.url)).text();
+    const markAllStart = source.indexOf("export async function markAllCreatorsContentOpenedForUser(");
+    expect(markAllStart).toBeGreaterThanOrEqual(0);
+    const markAllEnd = source.indexOf("export async function", markAllStart + 1);
+    const markAllSource = source.slice(markAllStart, markAllEnd === -1 ? undefined : markAllEnd);
+
+    // The former N+1 shape (per-creator INSERT..SELECT plus per-creator
+    // threshold write) must stay confined to markCreatorContentOpenedForUser;
+    // mark-all performs ONE set-based insert and ONE batched threshold upsert.
+    expect(markAllSource).not.toContain("markCreatorContentOpenedForUser(");
+    expect(markAllSource.match(/\.insert\(schema\.contentStatus\)/gu)?.length).toBe(1);
+    expect(markAllSource.match(/\.insert\(schema\.userSetting\)/gu)?.length).toBe(1);
+    expect(markAllSource).toContain("onConflictDoNothing(");
+    expect(markAllSource).toContain("onConflictDoUpdate(");
+  });
+
   test("unread summaries order deterministically by unread count then display name then id", async () => {
     await insertUser(testDatabase.db, "user-a", "unread-order-a@example.test");
     const busyCreator = await findOrCreateCreator(testDatabase.db, {

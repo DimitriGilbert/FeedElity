@@ -13,7 +13,9 @@ import { z } from "zod";
  * user-data import. It is import machinery state rather than user preference:
  * the export skips it (see user-data-export.ts) so export -> wipe -> import ->
  * export round trips stay stable, and each successful import re-stores the
- * current payload's fingerprint.
+ * current payload's fingerprint. The fingerprint covers only the payload's
+ * `data` section (data identity, see user-data-import.ts), so re-exporting
+ * unchanged data — at any `exportedAt` — re-imports as a skip.
  */
 export const USER_DATA_FINGERPRINT_SETTING_KEY = "import.user-data.fingerprint";
 
@@ -29,8 +31,7 @@ const playlistSortModeSchema = z.enum(["manual", "published_at_desc", "published
 
 // Bounds mirror the equivalent router inputs: creator name keys are normalized
 // display names, playlist/collection names follow playlistNameInput, positions
-// follow playlistPositionInput, and free-form JSON passthrough strings follow
-// the 4_096-char settingValueInput bound.
+// follow playlistPositionInput.
 const creatorNameKeySchema = z.string().trim().min(1).max(200);
 
 const sourceExternalIdSchema = z.string().min(1).max(2_048);
@@ -41,7 +42,21 @@ const overlayDescriptionSchema = z.string().max(2_000).nullable();
 
 const overlayPositionSchema = z.number().int().min(0).max(1_000_000);
 
-const boundedJsonTextSchema = z.string().max(4_096);
+/**
+ * JSON passthrough bounds for columns whose TEXT storage is unbounded in the
+ * DB, so any cap is conventional. They are generous enough for realistic data
+ * (the only current metadataJson writer is the small phase-2 playback payload;
+ * settings values are bounded to 4_096 at the write API) while keeping a
+ * hostile envelope from allocating unbounded strings — and, together with the
+ * export-side filtering in user-data-export.ts, they keep round trips
+ * importable: every value the exporter emits fits these bounds.
+ */
+export const USER_DATA_METADATA_JSON_MAX_CHARS = 65_536;
+export const USER_DATA_SETTINGS_JSON_MAX_CHARS = 16_384;
+
+const metadataJsonTextSchema = z.string().max(USER_DATA_METADATA_JSON_MAX_CHARS);
+
+const settingsJsonTextSchema = z.string().max(USER_DATA_SETTINGS_JSON_MAX_CHARS);
 
 const settingKeySchema = z.string().trim().min(1).max(64).regex(/^[a-z][a-z0-9._-]*$/);
 
@@ -62,7 +77,7 @@ const subscriptionEntrySchema = z
   .object({
     creator: creatorReferenceSchema,
     titleOverride: z.string().max(200).nullable(),
-    settingsJson: boundedJsonTextSchema.nullable(),
+    settingsJson: settingsJsonTextSchema.nullable(),
   })
   .strict();
 
@@ -70,7 +85,7 @@ const contentStatusEntrySchema = z
   .object({
     content: contentIdentitySchema,
     status: contentStatusKindSchema,
-    metadataJson: boundedJsonTextSchema.nullable(),
+    metadataJson: metadataJsonTextSchema.nullable(),
     createdAt: timestampSchema,
     updatedAt: timestampSchema,
   })
@@ -112,7 +127,7 @@ const collectionEntrySchema = z
 const settingEntrySchema = z
   .object({
     key: settingKeySchema,
-    valueJson: boundedJsonTextSchema,
+    valueJson: settingsJsonTextSchema,
   })
   .strict();
 

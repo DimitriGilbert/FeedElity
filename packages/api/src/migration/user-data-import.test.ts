@@ -275,6 +275,24 @@ describe("user data import", () => {
     expect(layoutSetting?.valueJson).toBe(JSON.stringify("spacious"));
   });
 
+  test("a re-export with unchanged data but a new exportedAt skips as unchanged", async () => {
+    await insertUser(testDatabase.db, "user-a", "import-reexport@example.test");
+    await seedCatalog(testDatabase.db);
+    await importUserDataForUser(testDatabase.db, { userId: "user-a", exportData: buildExportPayload() });
+
+    // The fingerprint is data-identity (exportedAt excluded), so a later
+    // re-export of the same overlays — a different exportedAt, plus the
+    // fingerprint setting the first import stored, which the export drops —
+    // must short-circuit instead of rewriting rows.
+    const reExported = buildExportPayload();
+    reExported.exportedAt = "2026-08-31T00:00:00.000Z";
+    const second = await importUserDataForUser(testDatabase.db, { userId: "user-a", exportData: reExported });
+
+    expect(second.skipped).toBe(true);
+    expect(second.report.counts.settings).toBe(0);
+    expect(await testDatabase.db.select().from(schema.contentStatus)).toHaveLength(2);
+  });
+
   test("imports stay scoped to the requesting user", async () => {
     await insertUser(testDatabase.db, "user-a", "import-scope-a@example.test");
     await insertUser(testDatabase.db, "user-b", "import-scope-b@example.test");
