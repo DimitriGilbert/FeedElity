@@ -11,6 +11,8 @@ import type {
   CatalogCreator,
   CatalogCreatorSummary,
   CatalogFeed,
+  ContentType,
+  FeedHealthEntry,
   RefreshFeedResult,
   RefreshFeedResultWithFeed,
   RefreshRun,
@@ -187,6 +189,10 @@ export interface ListRefreshFeedResultsForRunInput {
   readonly limit: number;
 }
 
+export interface ListFeedHealthInput {
+  readonly limit?: number;
+}
+
 export async function findOrCreateCreator(db: RepositoryDb, input: SaveCreatorInput): Promise<CatalogCreator> {
   const nameKey = creatorNameKey(input.displayName);
   const id = crypto.randomUUID();
@@ -226,6 +232,78 @@ export async function findCreatorByNameKey(db: RepositoryDb, nameKey: string): P
   });
 
   return row === undefined ? null : toCatalogCreator(row);
+}
+
+/** Natural identity pair accepted by the bulk source-identity lookup. */
+export type ContentSourceIdentity = Pick<SaveContentItemInput, "sourceType" | "sourceExternalId">;
+
+/**
+ * Chunk size for the bulk IN lookups below: one query per 500 keys keeps each
+ * statement's bind-parameter count far inside SQLite's variable limit while
+ * turning O(rows) sequential lookups into O(rows / 500) queries.
+ */
+const BULK_LOOKUP_CHUNK_SIZE = 500;
+
+/**
+ * Resolve catalog creator ids for many name keys in chunked IN queries — one
+ * query per BULK_LOOKUP_CHUNK_SIZE keys instead of one per key. Name keys with
+ * no catalog creator are absent from the returned map; callers decide how to
+ * report them.
+ */
+export async function listCreatorIdsByNameKeys(
+  db: RepositoryDb,
+  nameKeys: readonly string[],
+): Promise<Map<string, string>> {
+  const idByNameKey = new Map<string, string>();
+  for (let start = 0; start < nameKeys.length; start += BULK_LOOKUP_CHUNK_SIZE) {
+    const chunk = nameKeys.slice(start, start + BULK_LOOKUP_CHUNK_SIZE);
+    const rows = await db
+      .select({ id: schema.creator.id, nameKey: schema.creator.nameKey })
+      .from(schema.creator)
+      .where(inArray(schema.creator.nameKey, chunk));
+    for (const row of rows) {
+      idByNameKey.set(row.nameKey, row.id);
+    }
+  }
+  return idByNameKey;
+}
+
+/**
+ * Resolve catalog content-item rows for many (source_type, source_external_id)
+ * identities in chunked queries — one per (chunk, source type) pair instead of
+ * one per identity, with the external ids of each chunk grouped by source type
+ * so every statement stays one parameter per identity. Rows carry their natural
+ * identity so callers can key the result themselves; identities with no
+ * catalog content item are absent from the result.
+ */
+export async function listContentItemsBySourceIdentities(
+  db: RepositoryDb,
+  identities: readonly ContentSourceIdentity[],
+): Promise<readonly { id: string; sourceType: SourceType; sourceExternalId: string }[]> {
+  const rows: { id: string; sourceType: SourceType; sourceExternalId: string }[] = [];
+  for (let start = 0; start < identities.length; start += BULK_LOOKUP_CHUNK_SIZE) {
+    const chunk = identities.slice(start, start + BULK_LOOKUP_CHUNK_SIZE);
+    const externalIdsByType = new Map<SourceType, string[]>();
+    for (const identity of chunk) {
+      const externalIds = externalIdsByType.get(identity.sourceType) ?? [];
+      externalIds.push(identity.sourceExternalId);
+      externalIdsByType.set(identity.sourceType, externalIds);
+    }
+    for (const [sourceType, sourceExternalIds] of externalIdsByType) {
+      const matched = await db
+        .select({
+          id: schema.contentItem.id,
+          sourceType: schema.contentItem.sourceType,
+          sourceExternalId: schema.contentItem.sourceExternalId,
+        })
+        .from(schema.contentItem)
+        .where(
+          and(eq(schema.contentItem.sourceType, sourceType), inArray(schema.contentItem.sourceExternalId, sourceExternalIds)),
+        );
+      rows.push(...matched);
+    }
+  }
+  return rows;
 }
 
 /**
@@ -716,17 +794,32 @@ async function listCatalogContentListItemsByMirrorKey(
   return toCatalogContentListItems(db, rows);
 }
 
+/**
+ * Slim catalog list row: the narrow content_item columns the list pages render
+ * (description and metadata_json are intentionally omitted — the detail
+ * endpoint fetches them), plus the creator row, source count, and cross-source
+ * mirror count.
+ */
 interface CatalogContentListItemRow {
-  readonly contentItem: typeof schema.contentItem.$inferSelect;
+  readonly id: string;
+  readonly creatorId: string;
+  readonly sourceType: SourceType;
+  readonly sourceExternalId: string;
+  readonly title: string;
+  readonly publishedAt: Date | null;
+  readonly contentType: ContentType;
+  readonly durationSeconds: number | null;
+  readonly thumbnailUrl: string | null;
+  readonly canonicalUrl: string | null;
   readonly creator: typeof schema.creator.$inferSelect;
   readonly sourceCount: number;
   readonly mirrorCount: number;
 }
 
 /**
- * Shared projection for catalog content list rows: the item, its creator, how
- * many playback sources the item has, and how many CROSS-SOURCE mirror
- * siblings share its non-null cross_source_key (excluding itself and
+ * Shared projection for catalog content list rows: the slim item columns, its
+ * creator, how many playback sources the item has, and how many CROSS-SOURCE
+ * mirror siblings share its non-null cross_source_key (excluding itself and
  * same-source duplicates; 0 when the key is null). The mirror count subselect
  * aliases the inner table so the qualified outer columns correlate against
  * the driving row.
@@ -734,7 +827,16 @@ interface CatalogContentListItemRow {
 function selectCatalogContentListItemRows(db: RepositoryDb) {
   return db
     .select({
-      contentItem: schema.contentItem,
+      id: schema.contentItem.id,
+      creatorId: schema.contentItem.creatorId,
+      sourceType: schema.contentItem.sourceType,
+      sourceExternalId: schema.contentItem.sourceExternalId,
+      title: schema.contentItem.title,
+      publishedAt: schema.contentItem.publishedAt,
+      contentType: schema.contentItem.contentType,
+      durationSeconds: schema.contentItem.durationSeconds,
+      thumbnailUrl: schema.contentItem.thumbnailUrl,
+      canonicalUrl: schema.contentItem.canonicalUrl,
       creator: schema.creator,
       sourceCount: sql<number>`(
         select count(*)
@@ -754,18 +856,34 @@ function selectCatalogContentListItemRows(db: RepositoryDb) {
     .innerJoin(schema.creator, eq(schema.contentItem.creatorId, schema.creator.id));
 }
 
+function toCatalogContentListItem(
+  row: CatalogContentListItemRow,
+  sourceTypes: readonly SourceType[],
+): CatalogContentListItem {
+  return {
+    id: row.id,
+    creatorId: row.creatorId,
+    sourceType: row.sourceType,
+    sourceExternalId: row.sourceExternalId,
+    title: row.title,
+    publishedAt: row.publishedAt,
+    contentType: row.contentType,
+    durationSeconds: row.durationSeconds,
+    thumbnailUrl: row.thumbnailUrl,
+    canonicalUrl: row.canonicalUrl,
+    creator: toCatalogCreatorSummary(row.creator, sourceTypes),
+    sourceCount: row.sourceCount,
+    mirrorCount: row.mirrorCount,
+  };
+}
+
 async function toCatalogContentListItems(
   db: RepositoryDb,
   rows: readonly CatalogContentListItemRow[],
 ): Promise<readonly CatalogContentListItem[]> {
   const sourceTypesByCreator = await loadSourceTypesByCreatorId(db, rows.map((row) => row.creator.id));
 
-  return rows.map((row) => ({
-    ...toCatalogContentItem(row.contentItem),
-    creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
-    sourceCount: row.sourceCount,
-    mirrorCount: row.mirrorCount,
-  }));
+  return rows.map((row) => toCatalogContentListItem(row, sourceTypesByCreator.get(row.creator.id) ?? []));
 }
 
 export async function listCatalogFeedsForCreator(db: RepositoryDb, creatorId: string): Promise<readonly CatalogFeed[]> {
@@ -1005,6 +1123,167 @@ export async function listRefreshFeedResultsWithFeedsForRun(
     ...toRefreshFeedResult(row),
     feed: toCatalogFeed(row.feed),
   }));
+}
+
+const feedHealthDefaultLimit = 200;
+const feedHealthMaxLimit = 500;
+/** Per-feed metric window: only the latest N refresh attempts feed the health metrics. */
+const feedHealthWindowPerFeed = 10;
+
+interface FeedHealthFeedRow {
+  readonly feedId: string;
+  readonly feedTitle: string | null;
+  readonly feedUrl: string;
+  readonly sourceType: SourceType;
+  readonly nextRefreshAfter: Date | null;
+  readonly creatorId: string;
+  readonly creatorDisplayName: string;
+}
+
+interface FeedHealthResultRow {
+  readonly feedId: string;
+  readonly status: RefreshStatus;
+  readonly itemsCreatedCount: number;
+  readonly startedAt: Date;
+  readonly completedAt: Date | null;
+  readonly errorSummaryJson: string | null;
+}
+
+/**
+ * Feed health metrics for the dashboard, over catalog-global data only (never
+ * user-owned overlay rows). Every feed joined to its creator, with metrics
+ * computed in the mapper from a bounded window of the latest
+ * `refresh_feed_result` rows per feed (correlated subselect on started_at,
+ * served by refresh_feed_result_feed_id_idx):
+ *
+ * - lastAttemptAt = max started_at in the window;
+ * - lastSuccessAt = max completed_at among succeeded rows (null-safe: a feed
+ *   with no successes stays null);
+ * - consecutiveFailureCount = trailing run of failed rows, scanned newest to
+ *   oldest in TS (the first non-failed row stops the count; a success inside
+ *   the window therefore resets it, and the window bounds the count);
+ * - lastErrorSummaryJson = the RAW error_summary_json of the newest row when
+ *   that row failed, else null. It is deliberately NOT parsed server-side —
+ *   the web parses it with parseRefreshErrorSummaries;
+ * - itemsCreatedTotal = SUM(items_created_count) over the window.
+ *
+ * Ordering: by feed.url (feed.id tie-break) for determinism; the client
+ * re-sorts by staleness/failures for display.
+ */
+export async function listFeedHealth(
+  db: RepositoryDb,
+  input: ListFeedHealthInput = {},
+): Promise<readonly FeedHealthEntry[]> {
+  // The API boundary already validates 1..500 with a 200 default; the clamp
+  // keeps the repository contract safe if it is ever called directly.
+  const limit = Math.min(Math.max(input.limit ?? feedHealthDefaultLimit, 1), feedHealthMaxLimit);
+
+  const feedRows = await db
+    .select({
+      feedId: schema.feed.id,
+      feedTitle: schema.feed.title,
+      feedUrl: schema.feed.url,
+      sourceType: schema.feed.sourceType,
+      nextRefreshAfter: schema.feed.nextRefreshAfter,
+      creatorId: schema.creator.id,
+      creatorDisplayName: schema.creator.displayName,
+    })
+    .from(schema.feed)
+    .innerJoin(schema.creator, eq(schema.feed.creatorId, schema.creator.id))
+    .orderBy(asc(schema.feed.url), asc(schema.feed.id))
+    .limit(limit);
+
+  if (feedRows.length === 0) {
+    return [];
+  }
+
+  const resultRows = await db
+    .select({
+      feedId: schema.refreshFeedResult.feedId,
+      status: schema.refreshFeedResult.status,
+      itemsCreatedCount: schema.refreshFeedResult.itemsCreatedCount,
+      startedAt: schema.refreshFeedResult.startedAt,
+      completedAt: schema.refreshFeedResult.completedAt,
+      errorSummaryJson: schema.refreshFeedResult.errorSummaryJson,
+    })
+    .from(schema.refreshFeedResult)
+    .where(
+      and(
+        inArray(
+          schema.refreshFeedResult.feedId,
+          feedRows.map((row) => row.feedId),
+        ),
+        // Latest N rows per feed; the inner alias makes the outer feed_id
+        // reference correlate. id breaks started_at ties deterministically.
+        sql`${schema.refreshFeedResult.id} in (
+          select recent.id from ${schema.refreshFeedResult} as recent
+          where recent.feed_id = ${schema.refreshFeedResult.feedId}
+          order by recent.started_at desc, recent.id desc
+          limit ${feedHealthWindowPerFeed}
+        )`,
+      ),
+    )
+    .orderBy(
+      asc(schema.refreshFeedResult.feedId),
+      asc(schema.refreshFeedResult.startedAt),
+      asc(schema.refreshFeedResult.id),
+    );
+
+  const windowByFeed = new Map<string, FeedHealthResultRow[]>();
+  for (const row of resultRows) {
+    const window = windowByFeed.get(row.feedId);
+    if (window === undefined) {
+      windowByFeed.set(row.feedId, [row]);
+    } else {
+      window.push(row);
+    }
+  }
+
+  return feedRows.map((feedRow) => toFeedHealthEntry(feedRow, windowByFeed.get(feedRow.feedId) ?? []));
+}
+
+/**
+ * Map one feed plus its result window (ordered oldest -> newest) to the health
+ * entry. All metric decisions are documented on {@link listFeedHealth}.
+ */
+function toFeedHealthEntry(
+  feedRow: FeedHealthFeedRow,
+  window: readonly FeedHealthResultRow[],
+): FeedHealthEntry {
+  const newest = window.at(-1) ?? null;
+
+  let lastSuccessAt: Date | null = null;
+  let itemsCreatedTotal = 0;
+  for (const row of window) {
+    if (row.status === "succeeded" && row.completedAt !== null && (lastSuccessAt === null || row.completedAt > lastSuccessAt)) {
+      lastSuccessAt = row.completedAt;
+    }
+    itemsCreatedTotal += row.itemsCreatedCount;
+  }
+
+  let consecutiveFailureCount = 0;
+  for (let index = window.length - 1; index >= 0; index -= 1) {
+    const row = window[index];
+    if (row === undefined || row.status !== "failed") {
+      break;
+    }
+    consecutiveFailureCount += 1;
+  }
+
+  return {
+    feedId: feedRow.feedId,
+    feedTitle: feedRow.feedTitle,
+    feedUrl: feedRow.feedUrl,
+    sourceType: feedRow.sourceType,
+    creatorId: feedRow.creatorId,
+    creatorDisplayName: feedRow.creatorDisplayName,
+    nextRefreshAfter: feedRow.nextRefreshAfter,
+    lastAttemptAt: newest?.startedAt ?? null,
+    lastSuccessAt,
+    consecutiveFailureCount,
+    lastErrorSummaryJson: newest !== null && newest.status === "failed" ? newest.errorSummaryJson : null,
+    itemsCreatedTotal,
+  };
 }
 
 function toCatalogCreator(row: typeof schema.creator.$inferSelect): CatalogCreator {

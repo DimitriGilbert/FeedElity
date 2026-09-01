@@ -96,6 +96,17 @@ export const contentItem = sqliteTable(
     uniqueIndex("content_item_source_identity_uidx").on(table.sourceType, table.sourceExternalId),
     index("content_item_creator_id_idx").on(table.creatorId),
     index("content_item_published_at_idx").on(table.publishedAt),
+    // Newest-first list pages order by (published_at DESC, created_at DESC,
+    // id DESC); this composite index lets those queries read rows pre-sorted
+    // instead of sorting with a TEMP B-TREE. The single-column published_at
+    // index above stays for queries that filter or sort on published_at alone.
+    // DESC order is declared through SQL-expression columns because this
+    // drizzle sqlite-core version exposes no .desc() index helper.
+    index("content_item_published_created_id_idx").on(
+      sql`${table.publishedAt} desc`,
+      sql`${table.createdAt} desc`,
+      sql`${table.id} desc`,
+    ),
     index("content_item_cross_source_key_idx").on(table.crossSourceKey),
   ],
 );

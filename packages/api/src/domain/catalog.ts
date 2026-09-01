@@ -100,7 +100,24 @@ export interface CatalogContentSource {
   readonly metadataJson: string | null;
 }
 
-export interface CatalogContentListItem extends CatalogContentItem {
+/**
+ * Slim catalog list row. Deliberately standalone and narrow: list pages render
+ * only identity, ordering, and playback-summary fields, so rows stop carrying
+ * the heavyweight `description` and `metadataJson` blobs. The detail endpoint
+ * (`CatalogContentDetail`) keeps fetching them. Mirror counts stay catalog-
+ * global data (source identity only), never user-owned overlay data.
+ */
+export interface CatalogContentListItem {
+  readonly id: string;
+  readonly creatorId: string;
+  readonly sourceType: SourceType;
+  readonly sourceExternalId: string;
+  readonly title: string;
+  readonly publishedAt: Date | null;
+  readonly contentType: ContentType;
+  readonly durationSeconds: number | null;
+  readonly thumbnailUrl: string | null;
+  readonly canonicalUrl: string | null;
   readonly creator: CatalogCreatorSummary;
   readonly sourceCount: number;
   /**
@@ -210,4 +227,29 @@ export interface RefreshFeedResult {
 
 export interface RefreshFeedResultWithFeed extends RefreshFeedResult {
   readonly feed: CatalogFeed;
+}
+
+/**
+ * Catalog-global feed refresh health for the health dashboard. Carries ONLY
+ * catalog and refresh-run data — never user-owned overlay rows. Metrics are
+ * computed over a bounded window of the latest refresh feed results per feed.
+ *
+ * `lastErrorSummaryJson` is the RAW `error_summary_json` of the newest failed
+ * result (null when the newest attempt succeeded or no attempt exists). It is
+ * deliberately not parsed server-side; the web derives code/message via
+ * `parseRefreshErrorSummaries`.
+ */
+export interface FeedHealthEntry {
+  readonly feedId: string;
+  readonly feedTitle: string | null;
+  readonly feedUrl: string;
+  readonly sourceType: SourceType;
+  readonly creatorId: string;
+  readonly creatorDisplayName: string;
+  readonly nextRefreshAfter: Date | null;
+  readonly lastAttemptAt: Date | null;
+  readonly lastSuccessAt: Date | null;
+  readonly consecutiveFailureCount: number;
+  readonly lastErrorSummaryJson: string | null;
+  readonly itemsCreatedTotal: number;
 }

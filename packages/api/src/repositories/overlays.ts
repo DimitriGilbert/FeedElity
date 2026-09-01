@@ -2,12 +2,13 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 
 import * as schema from "@FeedElity/db/schema";
 
-import type { CatalogContentItem, CatalogContentListItem, CatalogCreatorSummary, ContentStatusKind, SourceType } from "../domain/catalog";
+import type { CatalogContentListItem, CatalogCreatorSummary, ContentStatusKind, ContentType, SourceType } from "../domain/catalog";
 import { loadSourceTypesByCreatorId, loadSourceTypesForCreator } from "./catalog";
 import type {
   CollectionMember,
   CollectionMemberWithCreator,
   CreatorCollection,
+  CreatorUnreadSummary,
   MigrationMapping,
   MigrationRun,
   MigrationRunStatus,
@@ -47,6 +48,13 @@ export interface SaveContentStatusInput {
   readonly contentItemId: string;
   readonly status: ContentStatusKind;
   readonly metadataJson?: string | null;
+}
+
+export interface UpsertPlaybackPositionInput {
+  readonly userId: string;
+  readonly contentItemId: string;
+  readonly positionSeconds: number;
+  readonly durationSeconds?: number | null;
 }
 
 export interface ListContentStatusWithContentForUserInput {
@@ -111,6 +119,44 @@ export interface SaveUserSettingInput {
   readonly userId: string;
   readonly key: string;
   readonly valueJson: string;
+}
+
+export interface MarkCreatorContentOpenedInput {
+  readonly userId: string;
+  readonly creatorId: string;
+  readonly markedBeforeMs: number;
+}
+
+export interface MarkContentOpenedResult {
+  readonly markedCount: number;
+}
+
+/**
+ * Upper bound of `opened` rows written per creator per mark call (qol plan
+ * decision D4): the newest 1000 matching items are inserted, and the threshold
+ * write below covers any remaining tail without fabricating more overlay rows.
+ */
+const MARK_CREATOR_CONTENT_OPENED_BATCH_LIMIT = 1000;
+
+/**
+ * Global bound of `opened` rows written per mark-all call across ALL of the
+ * user's subscriptions (qol plan decision D4, set-based mark-all): the newest
+ * 10000 matching items are inserted in one statement, and the batched
+ * threshold write below covers any remaining tail without fabricating more
+ * overlay rows.
+ */
+const MARK_ALL_CONTENT_OPENED_GLOBAL_LIMIT = 10_000;
+
+/**
+ * Prefix of the per-creator unread threshold user_setting keys. The stored
+ * `value_json` is `JSON.stringify(<epoch ms number>)`, and the key inherits the
+ * creator id (lowercase UUID), so full keys like
+ * `unread.threshold.3f2c…-…` satisfy the router's `^[a-z][a-z0-9._-]*$` shape.
+ */
+const unreadThresholdKeyPrefix = "unread.threshold.";
+
+function unreadThresholdSettingKey(creatorId: string): string {
+  return `${unreadThresholdKeyPrefix}${creatorId}`;
 }
 
 export interface CreateMigrationRunInput {
@@ -231,7 +277,16 @@ export async function listSubscribedContentItemsForUser(
 
   const contentQuery = db
     .select({
-      contentItem: schema.contentItem,
+      id: schema.contentItem.id,
+      creatorId: schema.contentItem.creatorId,
+      sourceType: schema.contentItem.sourceType,
+      sourceExternalId: schema.contentItem.sourceExternalId,
+      title: schema.contentItem.title,
+      publishedAt: schema.contentItem.publishedAt,
+      contentType: schema.contentItem.contentType,
+      durationSeconds: schema.contentItem.durationSeconds,
+      thumbnailUrl: schema.contentItem.thumbnailUrl,
+      canonicalUrl: schema.contentItem.canonicalUrl,
       creator: schema.creator,
       sourceCount: sql<number>`(
         select count(*)
@@ -276,12 +331,7 @@ export async function listSubscribedContentItemsForUser(
 
   const sourceTypesByCreator = await loadSourceTypesByCreatorId(db, rows.map((row) => row.creator.id));
 
-  return rows.map((row) => ({
-    ...toCatalogContentItem(row.contentItem),
-    creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
-    sourceCount: row.sourceCount,
-    mirrorCount: row.mirrorCount,
-  }));
+  return rows.map((row) => toCatalogContentListItem(row, sourceTypesByCreator.get(row.creator.id) ?? []));
 }
 
 export async function getSubscriptionWithCreatorForUser(
@@ -325,6 +375,278 @@ export async function unsubscribeFromCreatorForUser(
     .where(and(eq(schema.subscription.userId, userId), eq(schema.subscription.creatorId, creatorId)));
 
   return true;
+}
+
+/**
+ * SQL expression for the per-creator unread threshold epoch-ms value stored in
+ * the `unread.threshold.<creatorId>` user_setting row. Tolerant by design
+ * (qol plan decision D4): absent rows, malformed JSON, and valid JSON that is
+ * not a number all degrade to NULL so the caller falls back to
+ * `subscription.created_at` via the surrounding `coalesce`.
+ */
+function unreadThresholdValueJson() {
+  return sql`(
+    case
+      when json_valid(${schema.userSetting.valueJson}) then
+        case
+          when json_type(${schema.userSetting.valueJson}) in ('integer', 'real')
+            then cast(json_extract(${schema.userSetting.valueJson}, '$') as integer)
+          else null
+        end
+      else null
+    end
+  )`;
+}
+
+/**
+ * Unread summaries per subscribed creator for one user, in ONE grouped query.
+ * An item counts when its effective publish time
+ * `coalesce(published_at, created_at)` is newer than the creator's threshold
+ * (explicit user setting, else the subscription's created_at) and the user has
+ * no opened/played content_status row for it. Grouped per creator so
+ * `max(creator.last_content_published_at)` resolves to the creator's
+ * denormalized latest-publish marker used for badge freshness.
+ * Ordering is deterministic: unreadCount desc, then creator displayName asc,
+ * then creator id asc as the tie-breaker for colliding display names.
+ */
+export async function listCreatorUnreadForUser(
+  db: RepositoryDb,
+  userId: string,
+): Promise<readonly CreatorUnreadSummary[]> {
+  const rows = await db
+    .select({
+      creatorId: schema.creator.id,
+      unreadCount: sql<number>`count(*)`,
+      lastContentPublishedAt: sql<number | null>`max(${schema.creator.lastContentPublishedAt})`,
+    })
+    .from(schema.subscription)
+    .innerJoin(schema.creator, eq(schema.creator.id, schema.subscription.creatorId))
+    .innerJoin(schema.contentItem, eq(schema.contentItem.creatorId, schema.subscription.creatorId))
+    .leftJoin(
+      schema.userSetting,
+      and(
+        eq(schema.userSetting.userId, schema.subscription.userId),
+        eq(schema.userSetting.key, sql`${unreadThresholdKeyPrefix} || ${schema.subscription.creatorId}`),
+      ),
+    )
+    .where(
+      and(
+        eq(schema.subscription.userId, userId),
+        sql`coalesce(${schema.contentItem.publishedAt}, ${schema.contentItem.createdAt}) > coalesce(${unreadThresholdValueJson()}, ${schema.subscription.createdAt})`,
+        sql`not exists (
+          select 1
+          from ${schema.contentStatus}
+          where ${schema.contentStatus.userId} = ${userId}
+            and ${schema.contentStatus.contentItemId} = ${schema.contentItem.id}
+            and ${schema.contentStatus.status} in ('opened', 'played')
+        )`,
+      ),
+    )
+    .groupBy(schema.creator.id, schema.creator.displayName)
+    .orderBy(sql`count(*) desc`, asc(schema.creator.displayName), asc(schema.creator.id));
+
+  return rows.map((row) => ({
+    creatorId: row.creatorId,
+    unreadCount: row.unreadCount,
+    lastContentPublishedAt: row.lastContentPublishedAt === null ? null : new Date(row.lastContentPublishedAt),
+  }));
+}
+
+/**
+ * Bounded idempotent "mark creator read": inserts up to 1000 `opened`
+ * content_status rows — never `played` (decision D4) — for the subscribed
+ * creator's items matching the unread predicate whose effective publish time
+ * is at or before `markedBeforeMs`, newest first, then advances the creator's
+ * unread threshold user setting to `markedBeforeMs` so any items beyond the
+ * batch limit are also treated as read. Unknown or unsubscribed creators
+ * return `{ markedCount: 0 }`; callers that need a hard 404 check first
+ * (see the overlays router).
+ */
+export async function markCreatorContentOpenedForUser(
+  db: RepositoryDb,
+  input: MarkCreatorContentOpenedInput,
+): Promise<MarkContentOpenedResult> {
+  if (!Number.isInteger(input.markedBeforeMs) || input.markedBeforeMs < 0) {
+    throw new Error(`Mark-before timestamp must be an integer epoch ms >= 0, received ${input.markedBeforeMs}.`);
+  }
+
+  const subscription = await db.query.subscription.findFirst({
+    where: and(eq(schema.subscription.userId, input.userId), eq(schema.subscription.creatorId, input.creatorId)),
+  });
+  if (subscription === undefined) {
+    return { markedCount: 0 };
+  }
+
+  const inserted = await db
+    .insert(schema.contentStatus)
+    .select((selectQuery) =>
+      selectQuery
+        .select({
+          // 32-char lowercase hex id; unique per row and opaque like the UUID
+          // ids used elsewhere — SQLite has no native uuid() to inline here.
+          id: sql`(lower(hex(randomblob(16))))`,
+          userId: sql`${input.userId}`,
+          contentItemId: schema.contentItem.id,
+          status: sql`'opened'`,
+          metadataJson: sql`null`,
+          createdAt: sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+          updatedAt: sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+        })
+        .from(schema.contentItem)
+        .innerJoin(
+          schema.subscription,
+          and(eq(schema.subscription.userId, input.userId), eq(schema.subscription.creatorId, input.creatorId)),
+        )
+        .leftJoin(
+          schema.userSetting,
+          and(
+            eq(schema.userSetting.userId, input.userId),
+            eq(schema.userSetting.key, sql`${unreadThresholdKeyPrefix} || ${schema.subscription.creatorId}`),
+          ),
+        )
+        .where(
+          and(
+            eq(schema.contentItem.creatorId, input.creatorId),
+            sql`coalesce(${schema.contentItem.publishedAt}, ${schema.contentItem.createdAt}) > coalesce(${unreadThresholdValueJson()}, ${schema.subscription.createdAt})`,
+            sql`coalesce(${schema.contentItem.publishedAt}, ${schema.contentItem.createdAt}) <= ${input.markedBeforeMs}`,
+            sql`not exists (
+              select 1
+              from ${schema.contentStatus}
+              where ${schema.contentStatus.userId} = ${input.userId}
+                and ${schema.contentStatus.contentItemId} = ${schema.contentItem.id}
+                and ${schema.contentStatus.status} in ('opened', 'played')
+            )`,
+          ),
+        )
+        .orderBy(
+          desc(sql`coalesce(${schema.contentItem.publishedAt}, ${schema.contentItem.createdAt})`),
+          desc(schema.contentItem.id),
+        )
+        .limit(MARK_CREATOR_CONTENT_OPENED_BATCH_LIMIT)
+        // Rendered as SQL so the insert builder takes its raw-SQL overload;
+        // the select's column order matches the content_status definition.
+        .getSQL(),
+    )
+    .onConflictDoNothing({
+      target: [schema.contentStatus.userId, schema.contentStatus.contentItemId, schema.contentStatus.status],
+    })
+    .returning({ contentItemId: schema.contentStatus.contentItemId });
+
+  await saveUserSetting(db, {
+    userId: input.userId,
+    key: unreadThresholdSettingKey(input.creatorId),
+    valueJson: JSON.stringify(input.markedBeforeMs),
+  });
+
+  return { markedCount: inserted.length };
+}
+
+/**
+ * "Mark everything read" across all of the user's subscriptions in TWO
+ * statements instead of one per creator: a single set-based INSERT..SELECT
+ * joined to the user's subscriptions with the same unread predicate as the
+ * per-creator path (threshold CASE join, NOT EXISTS opened/played, per-
+ * subscription creator filter), capped at MARK_ALL_CONTENT_OPENED_GLOBAL_LIMIT
+ * rows ordered newest first, followed by ONE batched
+ * INSERT..ON CONFLICT DO UPDATE over user_setting that advances every
+ * subscription's `unread.threshold.<creatorId>` setting to `markedBeforeMs`
+ * (the per-creator path advances its threshold even when nothing was inserted,
+ * so the batched write covers all subscriptions unconditionally). Only
+ * `opened` rows are written (decision D4); ON CONFLICT DO NOTHING plus the
+ * threshold semantics keep the call idempotent — a second run inserts nothing
+ * because every threshold now equals `markedBeforeMs`. `markedBeforeMs` is the
+ * server-side bound, validated like the single-creator path.
+ */
+export async function markAllCreatorsContentOpenedForUser(
+  db: RepositoryDb,
+  input: { readonly userId: string; readonly markedBeforeMs: number },
+): Promise<MarkContentOpenedResult> {
+  if (!Number.isInteger(input.markedBeforeMs) || input.markedBeforeMs < 0) {
+    throw new Error(`Mark-before timestamp must be an integer epoch ms >= 0, received ${input.markedBeforeMs}.`);
+  }
+
+  const inserted = await db
+    .insert(schema.contentStatus)
+    .select((selectQuery) =>
+      selectQuery
+        .select({
+          // 32-char lowercase hex id; unique per row and opaque like the UUID
+          // ids used elsewhere — SQLite has no native uuid() to inline here.
+          id: sql`(lower(hex(randomblob(16))))`,
+          userId: sql`${input.userId}`,
+          contentItemId: schema.contentItem.id,
+          status: sql`'opened'`,
+          metadataJson: sql`null`,
+          createdAt: sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+          updatedAt: sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+        })
+        .from(schema.contentItem)
+        .innerJoin(
+          schema.subscription,
+          and(
+            eq(schema.subscription.userId, input.userId),
+            eq(schema.subscription.creatorId, schema.contentItem.creatorId),
+          ),
+        )
+        .leftJoin(
+          schema.userSetting,
+          and(
+            eq(schema.userSetting.userId, input.userId),
+            eq(schema.userSetting.key, sql`${unreadThresholdKeyPrefix} || ${schema.subscription.creatorId}`),
+          ),
+        )
+        .where(
+          and(
+            sql`coalesce(${schema.contentItem.publishedAt}, ${schema.contentItem.createdAt}) > coalesce(${unreadThresholdValueJson()}, ${schema.subscription.createdAt})`,
+            sql`coalesce(${schema.contentItem.publishedAt}, ${schema.contentItem.createdAt}) <= ${input.markedBeforeMs}`,
+            sql`not exists (
+              select 1
+              from ${schema.contentStatus}
+              where ${schema.contentStatus.userId} = ${input.userId}
+                and ${schema.contentStatus.contentItemId} = ${schema.contentItem.id}
+                and ${schema.contentStatus.status} in ('opened', 'played')
+            )`,
+          ),
+        )
+        .orderBy(
+          desc(sql`coalesce(${schema.contentItem.publishedAt}, ${schema.contentItem.createdAt})`),
+          desc(schema.contentItem.id),
+        )
+        .limit(MARK_ALL_CONTENT_OPENED_GLOBAL_LIMIT)
+        // Rendered as SQL so the insert builder takes its raw-SQL overload;
+        // the select's column order matches the content_status definition.
+        .getSQL(),
+    )
+    .onConflictDoNothing({
+      target: [schema.contentStatus.userId, schema.contentStatus.contentItemId, schema.contentStatus.status],
+    })
+    .returning({ contentItemId: schema.contentStatus.contentItemId });
+
+  await db
+    .insert(schema.userSetting)
+    .select((selectQuery) =>
+      selectQuery
+        .select({
+          id: sql`(lower(hex(randomblob(16))))`,
+          userId: sql`${input.userId}`,
+          key: sql`${unreadThresholdKeyPrefix} || ${schema.subscription.creatorId}`,
+          valueJson: sql`${JSON.stringify(input.markedBeforeMs)}`,
+          createdAt: sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+          updatedAt: sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+        })
+        .from(schema.subscription)
+        .where(eq(schema.subscription.userId, input.userId))
+        .getSQL(),
+    )
+    .onConflictDoUpdate({
+      target: [schema.userSetting.userId, schema.userSetting.key],
+      set: {
+        valueJson: sql`excluded.value_json`,
+        updatedAt: sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+      },
+    });
+
+  return { markedCount: inserted.length };
 }
 
 export async function findOrCreateContentStatus(
@@ -434,6 +756,55 @@ export async function toggleFavoriteContentStatusForUser(
   return { favorited: true, status };
 }
 
+/**
+ * Persists the playback resume position (decision D1) under the `playback` key
+ * of the item's `opened` row `metadata_json`, keeping every other metadata key.
+ * Insert-with-update on the unique (userId, contentItemId, status) triple, so
+ * repeated saves never duplicate rows — last write wins for `playback`.
+ */
+export async function upsertPlaybackPositionForUser(
+  db: RepositoryDb,
+  input: UpsertPlaybackPositionInput,
+): Promise<UserContentStatus> {
+  if (!Number.isInteger(input.positionSeconds) || input.positionSeconds < 0) {
+    throw new Error(`Playback position must be an integer >= 0, received ${input.positionSeconds}.`);
+  }
+  if (
+    input.durationSeconds !== null &&
+    input.durationSeconds !== undefined &&
+    (!Number.isInteger(input.durationSeconds) || input.durationSeconds < 0)
+  ) {
+    throw new Error(`Playback duration must be null or an integer >= 0, received ${input.durationSeconds}.`);
+  }
+
+  const existing = await getContentStatusForUser(db, input.userId, input.contentItemId, "opened");
+  const statusRow =
+    existing ??
+    (await findOrCreateContentStatus(db, {
+      userId: input.userId,
+      contentItemId: input.contentItemId,
+      status: "opened",
+    }));
+
+  const metadata = parseMetadataJsonObject(statusRow.metadataJson);
+  metadata.playback = {
+    positionSeconds: input.positionSeconds,
+    durationSeconds: input.durationSeconds ?? null,
+    updatedAt: new Date().toISOString(),
+  };
+
+  await db
+    .update(schema.contentStatus)
+    .set({ metadataJson: JSON.stringify(metadata) })
+    .where(and(eq(schema.contentStatus.id, statusRow.id), eq(schema.contentStatus.userId, input.userId)));
+
+  const updated = await getContentStatusForUser(db, input.userId, input.contentItemId, "opened");
+  if (updated === null) {
+    throw new Error("Playback position write did not produce a readable user overlay record.");
+  }
+  return updated;
+}
+
 export async function listContentStatusWithContentForUser(
   db: RepositoryDb,
   input: ListContentStatusWithContentForUserInput,
@@ -441,13 +812,26 @@ export async function listContentStatusWithContentForUser(
   const rows = await db
     .select({
       contentStatus: schema.contentStatus,
-      contentItem: schema.contentItem,
+      id: schema.contentItem.id,
+      creatorId: schema.contentItem.creatorId,
+      sourceType: schema.contentItem.sourceType,
+      sourceExternalId: schema.contentItem.sourceExternalId,
+      title: schema.contentItem.title,
+      publishedAt: schema.contentItem.publishedAt,
+      contentType: schema.contentItem.contentType,
+      durationSeconds: schema.contentItem.durationSeconds,
+      thumbnailUrl: schema.contentItem.thumbnailUrl,
+      canonicalUrl: schema.contentItem.canonicalUrl,
       creator: schema.creator,
       sourceCount: sql<number>`(
         select count(*)
         from ${schema.contentSource}
         where ${schema.contentSource.contentItemId} = ${schema.contentItem.id}
       )`,
+      // Favorites/history views do not compute mirror linkage; 0 means the UI
+      // shows no mirror affordance there. The viewer switcher reads mirrors
+      // from contentDetail instead.
+      mirrorCount: sql<number>`0`,
     })
     .from(schema.contentStatus)
     .innerJoin(schema.contentItem, eq(schema.contentStatus.contentItemId, schema.contentItem.id))
@@ -460,15 +844,7 @@ export async function listContentStatusWithContentForUser(
 
   return rows.map((row) => ({
     ...toUserContentStatus(row.contentStatus),
-    content: {
-      ...toCatalogContentItem(row.contentItem),
-      creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
-      sourceCount: row.sourceCount,
-      // Favorites/history views do not compute mirror linkage; 0 means the UI
-      // shows no mirror affordance there. The viewer switcher reads mirrors
-      // from contentDetail instead.
-      mirrorCount: 0,
-    },
+    content: toCatalogContentListItem(row, sourceTypesByCreator.get(row.creator.id) ?? []),
   }));
 }
 
@@ -647,13 +1023,26 @@ export async function listPlaylistItemsWithContentForUserPlaylist(
   const rows = await db
     .select({
       playlistItem: schema.playlistItem,
-      contentItem: schema.contentItem,
+      id: schema.contentItem.id,
+      creatorId: schema.contentItem.creatorId,
+      sourceType: schema.contentItem.sourceType,
+      sourceExternalId: schema.contentItem.sourceExternalId,
+      title: schema.contentItem.title,
+      publishedAt: schema.contentItem.publishedAt,
+      contentType: schema.contentItem.contentType,
+      durationSeconds: schema.contentItem.durationSeconds,
+      thumbnailUrl: schema.contentItem.thumbnailUrl,
+      canonicalUrl: schema.contentItem.canonicalUrl,
       creator: schema.creator,
       sourceCount: sql<number>`(
         select count(*)
         from ${schema.contentSource}
         where ${schema.contentSource.contentItemId} = ${schema.contentItem.id}
       )`,
+      // Playlist item views do not compute mirror linkage; 0 means the UI shows
+      // no mirror affordance there. The viewer switcher reads mirrors from
+      // contentDetail instead.
+      mirrorCount: sql<number>`0`,
     })
     .from(schema.playlistItem)
     .innerJoin(schema.contentItem, eq(schema.playlistItem.contentItemId, schema.contentItem.id))
@@ -665,15 +1054,7 @@ export async function listPlaylistItemsWithContentForUserPlaylist(
 
   return rows.map((row) => ({
     ...toPlaylistItem(row.playlistItem),
-    content: {
-      ...toCatalogContentItem(row.contentItem),
-      creator: toCatalogCreatorSummary(row.creator, sourceTypesByCreator.get(row.creator.id) ?? []),
-      sourceCount: row.sourceCount,
-      // Playlist item views do not compute mirror linkage; 0 means the UI shows
-      // no mirror affordance there. The viewer switcher reads mirrors from
-      // contentDetail instead.
-      mirrorCount: 0,
-    },
+    content: toCatalogContentListItem(row, sourceTypesByCreator.get(row.creator.id) ?? []),
   }));
 }
 
@@ -1145,20 +1526,46 @@ function toUserContentStatus(row: typeof schema.contentStatus.$inferSelect): Use
   };
 }
 
-function toCatalogContentItem(row: typeof schema.contentItem.$inferSelect): CatalogContentItem {
+/**
+ * Slim catalog list row used by the overlay list queries: the narrow
+ * content_item columns the list pages render (description and metadata_json
+ * are intentionally omitted — the detail endpoint fetches them), plus the
+ * creator row, source count, and mirror count.
+ */
+interface CatalogContentListItemRow {
+  readonly id: string;
+  readonly creatorId: string;
+  readonly sourceType: SourceType;
+  readonly sourceExternalId: string;
+  readonly title: string;
+  readonly publishedAt: Date | null;
+  readonly contentType: ContentType;
+  readonly durationSeconds: number | null;
+  readonly thumbnailUrl: string | null;
+  readonly canonicalUrl: string | null;
+  readonly creator: typeof schema.creator.$inferSelect;
+  readonly sourceCount: number;
+  readonly mirrorCount: number;
+}
+
+function toCatalogContentListItem(
+  row: CatalogContentListItemRow,
+  sourceTypes: readonly SourceType[],
+): CatalogContentListItem {
   return {
     id: row.id,
     creatorId: row.creatorId,
     sourceType: row.sourceType,
     sourceExternalId: row.sourceExternalId,
     title: row.title,
-    description: row.description,
     publishedAt: row.publishedAt,
     contentType: row.contentType,
     durationSeconds: row.durationSeconds,
     thumbnailUrl: row.thumbnailUrl,
     canonicalUrl: row.canonicalUrl,
-    metadataJson: row.metadataJson,
+    creator: toCatalogCreatorSummary(row.creator, sourceTypes),
+    sourceCount: row.sourceCount,
+    mirrorCount: row.mirrorCount,
   };
 }
 
@@ -1168,6 +1575,28 @@ function containsContentTitleNormalized(value: string) {
 
 function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
+}
+
+function isJsonObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Parses a `metadata_json` column value as a plain JSON object. Malformed or
+ * non-object payloads degrade to an empty object: the playback write then
+ * re-seeds fresh metadata instead of failing on legacy rows.
+ */
+function parseMetadataJsonObject(metadataJson: string | null): Record<string, unknown> {
+  if (metadataJson === null) {
+    return {};
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(metadataJson);
+    return isJsonObjectRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function toPlaylist(row: typeof schema.playlist.$inferSelect): Playlist {

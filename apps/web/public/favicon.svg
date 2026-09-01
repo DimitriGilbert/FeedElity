@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- App palette: rounded tile in --selected (oklch(0.32 0.11 160)), play mark in --primary/--ring (oklch(0.83 0.21 126)). -->
+  <rect width="64" height="64" rx="14" fill="#00421e"/>
+  <path d="M25 20 L47 32 L25 44 Z" fill="#a5de08" stroke="#a5de08" stroke-width="4" stroke-linejoin="round"/>
+</svg>

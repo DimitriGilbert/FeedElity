@@ -4,8 +4,10 @@ import { createDbConnection } from "./connection";
 
 export { createDbConnection } from "./connection";
 
-export function createDb() {
-  return createDbConnection(env.DATABASE_URL).db;
+export async function createDb() {
+  const connection = await createDbConnection(env.DATABASE_URL);
+
+  return connection.db;
 }
 
-export const db = createDb();
+export const db = await createDb();

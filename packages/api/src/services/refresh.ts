@@ -1,3 +1,7 @@
+import { and, lt, sql } from "drizzle-orm";
+
+import * as schema from "@FeedElity/db/schema";
+
 import type {
   CatalogFeed,
   RefreshFeedErrorSummary,
@@ -90,6 +94,81 @@ interface ProviderPause {
 }
 
 const providerRefusalPauseMs = 15 * 60 * 1000;
+
+/** Refresh feed results older than this are pruned once a run terminates (D8). */
+const refreshFeedResultRetentionMs = 30 * 24 * 60 * 60 * 1000;
+
+export interface PruneRefreshFeedResultsInput {
+  /** Rows whose started_at is older than `now - olderThanMs` are deleted, except each feed's newest row. */
+  readonly olderThanMs: number;
+  /** Clock for the cutoff computation; callers pass their run timestamp. */
+  readonly now: Date;
+}
+
+export interface PruneRefreshFeedResultsResult {
+  readonly deletedCount: number;
+}
+
+/**
+ * Delete refresh feed results that aged out of the retention window with a
+ * single DELETE on started_at (epoch-ms timestamp column), except the newest
+ * row of each feed, which is kept regardless of age: a long-dead feed whose
+ * every attempt is over-age must retain its last attempt so the feed-health
+ * dashboard keeps surfacing the stale-failure state instead of degrading to
+ * "never attempted". The kept-row guard orders by started_at desc with the id
+ * tie-break, mirroring listFeedHealth's latest window. `olderThanMs` must be a
+ * finite, non-negative number of milliseconds — a negative value would delete
+ * fresh results and a non-finite value would build an invalid cutoff — so
+ * invalid input throws before any rows are touched. DB errors propagate to the
+ * caller, which decides how to degrade (see pruneAfterTerminalRefreshState).
+ */
+export async function pruneRefreshFeedResultsForRetention(
+  db: RepositoryDb,
+  input: PruneRefreshFeedResultsInput,
+): Promise<PruneRefreshFeedResultsResult> {
+  if (!Number.isFinite(input.olderThanMs) || input.olderThanMs < 0) {
+    throw new Error(
+      `Refresh feed result retention prune requires a finite, non-negative olderThanMs (received ${String(input.olderThanMs)}).`,
+    );
+  }
+
+  const cutoff = new Date(input.now.getTime() - input.olderThanMs);
+  const deleted = await db
+    .delete(schema.refreshFeedResult)
+    .where(
+      and(
+        lt(schema.refreshFeedResult.startedAt, cutoff),
+        sql`${schema.refreshFeedResult.id} not in (
+          select newest.id from ${schema.refreshFeedResult} as newest
+          where newest.feed_id = ${schema.refreshFeedResult.feedId}
+          order by newest.started_at desc, newest.id desc
+          limit 1
+        )`,
+      ),
+    )
+    .returning({ id: schema.refreshFeedResult.id });
+  return { deletedCount: deleted.length };
+}
+
+/**
+ * D8 retention hook, invoked after a run reaches ANY terminal state (normal
+ * completion, catastrophic failure, and recovered runs all funnel through
+ * processPreparedRefreshRun). A prune failure must not fail the
+ * already-completed run report, so errors are caught and reported via
+ * console.error with context and the run result is still returned — a
+ * handled, logged degradation, never a silent swallow; the over-age rows stay
+ * until the next terminal run prunes again.
+ */
+async function pruneAfterTerminalRefreshState(dependencies: RefreshServiceDependencies): Promise<void> {
+  try {
+    await pruneRefreshFeedResultsForRetention(dependencies.db, {
+      olderThanMs: refreshFeedResultRetentionMs,
+      now: dependencies.now(),
+    });
+  } catch (cause: unknown) {
+    console.error("Refresh feed result retention prune failed after terminal run state; over-age rows are kept.", cause);
+  }
+}
 
 export async function refreshAll(
   dependencies: RefreshServiceDependencies,
@@ -270,7 +349,9 @@ async function processPreparedRefreshRun(
       }
     }
   } catch (cause: unknown) {
-    return completeCatastrophicRefreshFailure(dependencies, prepared, outcomes, deferredFeeds, cause);
+    const result = await completeCatastrophicRefreshFailure(dependencies, prepared, outcomes, deferredFeeds, cause);
+    await pruneAfterTerminalRefreshState(dependencies);
+    return result;
   }
 
   const existingFeedResults = prepared.existingFeedResults ?? [];
@@ -303,6 +384,8 @@ async function processPreparedRefreshRun(
   const feedResults = [...existingFeedResults, ...outcomes.map((outcome) => outcome.result)];
   const reportFeeds = prepared.reportFeeds ?? prepared.selectedFeeds;
   const skippedFeeds = [...prepared.skippedFeeds, ...deferredFeeds];
+
+  await pruneAfterTerminalRefreshState(dependencies);
 
   return {
     run: completedRun,

@@ -51,6 +51,8 @@ coverage
 local.db
 local.db-*
 local.db.backup-*
+/*.db
+/*.db-*
 /*.sqlite
 /*.sqlite-*
 /*.sqlite3

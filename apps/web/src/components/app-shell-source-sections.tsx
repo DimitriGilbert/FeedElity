@@ -12,6 +12,7 @@ import type {
   UserSetting,
 } from "@FeedElity/api";
 import { For, Match, Show, Switch, createMemo, createResource, createSignal, onCleanup } from "solid-js";
+import Download from "lucide-solid/icons/download";
 import Plus from "lucide-solid/icons/plus";
 import RotateCcw from "lucide-solid/icons/rotate-ccw";
 import RefreshCw from "lucide-solid/icons/refresh-cw";
@@ -67,6 +68,61 @@ const readerDensityOptions: readonly { readonly value: ReaderDensity; readonly l
   { value: "comfortable", label: "Comfortable", helper: "App default; roomier rows for scanning thumbnails and actions." },
   { value: "compact", label: "Compact", helper: "Denser rows for faster source and video scanning." },
 ];
+
+type UserDataImportOutcome = Awaited<ReturnType<typeof client.overlays.importUserData>>;
+
+type UserDataImportCounts = UserDataImportOutcome["report"]["counts"];
+
+const userDataImportCountLabels: readonly { readonly key: keyof UserDataImportCounts; readonly label: string }[] = [
+  { key: "subscriptions", label: "Subscriptions" },
+  { key: "contentStatuses", label: "Watched / opened statuses" },
+  { key: "playlists", label: "Playlists" },
+  { key: "playlistItems", label: "Playlist videos" },
+  { key: "collections", label: "Collections" },
+  { key: "collectionMembers", label: "Collection creators" },
+  { key: "settings", label: "Settings" },
+];
+
+// User-data portability (qol plan F4) is JSON-only by decision D6: the export
+// envelope is exactly the schema the server-side importer validates, so an
+// export/import round trip cannot silently drop records. OPML was cut because
+// it would need its own serializer plus a lossy feed-list mapping while
+// covering neither statuses, playlists, collections, nor settings.
+
+export function toUserDataExportJson(exportData: unknown): string {
+  return `${JSON.stringify(exportData, null, 2)}\n`;
+}
+
+export function toUserDataExportFilename(exportedAt: string): string {
+  return `feedelity-user-data-${exportedAt.slice(0, 10)}.json`;
+}
+
+export function triggerUserDataDownload(blob: Blob, filename: string): void {
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    anchor.click();
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+export const maxUserDataImportFileBytes = 8 * 1024 * 1024;
+
+export type UserDataImportParseResult =
+  | { readonly ok: true; readonly exportData: unknown }
+  | { readonly ok: false; readonly message: string };
+
+export function parseUserDataImportText(text: string): UserDataImportParseResult {
+  try {
+    const exportData: unknown = JSON.parse(text);
+    return { ok: true, exportData };
+  } catch {
+    return { ok: false, message: "File is not valid JSON. Import a file produced by FeedElity's export." };
+  }
+}
 
 function formatPlaylistSortMode(sortMode: PlaylistSortMode): string {
   return playlistSortOptions.find((option) => option.value === sortMode)?.label ?? "Manual";
@@ -249,14 +305,25 @@ export function SettingsColumnSection(props: SettingsColumnSectionProps) {
   const [metadataRefreshBusy, setMetadataRefreshBusy] = createSignal(false);
   const [metadataRefreshRun, setMetadataRefreshRun] = createSignal<CreatorMetadataRun | null>(null);
   const [metadataRefreshError, setMetadataRefreshError] = createSignal<string | null>(null);
+  const [exportUserDataBusy, setExportUserDataBusy] = createSignal(false);
+  const [exportUserDataError, setExportUserDataError] = createSignal<string | null>(null);
+  const [importUserDataBusy, setImportUserDataBusy] = createSignal(false);
+  const [importUserDataError, setImportUserDataError] = createSignal<string | null>(null);
+  const [importUserDataResult, setImportUserDataResult] = createSignal<UserDataImportOutcome | null>(null);
   let metadataPollTimer: ReturnType<typeof setTimeout> | null = null;
+  let metadataPollDisposed = false;
   const clearMetadataPollTimer = () => {
     if (metadataPollTimer !== null) {
       clearTimeout(metadataPollTimer);
       metadataPollTimer = null;
     }
   };
-  onCleanup(clearMetadataPollTimer);
+  onCleanup(() => {
+    // An in-flight poll fetch that resolves after unmount must not re-arm the
+    // timer chain; the timer alone is not enough to stop it.
+    metadataPollDisposed = true;
+    clearMetadataPollTimer();
+  });
 
   const scheduleMetadataPoll = () => {
     clearMetadataPollTimer();
@@ -266,6 +333,9 @@ export function SettingsColumnSection(props: SettingsColumnSectionProps) {
   };
 
   const pollCreatorMetadataStatus = async () => {
+    if (metadataPollDisposed) {
+      return;
+    }
     try {
       const status = await client.creatorMetadata.status();
       const run = status.run;
@@ -387,6 +457,46 @@ export function SettingsColumnSection(props: SettingsColumnSectionProps) {
     }
   };
 
+  const downloadUserDataExport = async () => {
+    setExportUserDataBusy(true);
+    setExportUserDataError(null);
+    try {
+      const exportData = await client.overlays.exportUserData();
+      const blob = new Blob([toUserDataExportJson(exportData)], { type: "application/json" });
+      triggerUserDataDownload(blob, toUserDataExportFilename(exportData.exportedAt));
+    } catch (error) {
+      setExportUserDataError(formatError(error));
+    } finally {
+      setExportUserDataBusy(false);
+    }
+  };
+
+  const importUserDataFromFile = async (file: File) => {
+    setImportUserDataError(null);
+    setImportUserDataResult(null);
+    // Client-side convenience pre-check only; the server re-bounds the payload.
+    if (file.size > maxUserDataImportFileBytes) {
+      setImportUserDataError(`${file.name} is larger than the 8 MB import limit.`);
+      return;
+    }
+
+    setImportUserDataBusy(true);
+    try {
+      const parsed = parseUserDataImportText(await file.text());
+      if (!parsed.ok) {
+        setImportUserDataError(`${file.name}: ${parsed.message}`);
+        return;
+      }
+
+      const result = await client.overlays.importUserData({ exportData: parsed.exportData, sourceFilename: file.name });
+      setImportUserDataResult(result);
+    } catch (error) {
+      setImportUserDataError(formatError(error));
+    } finally {
+      setImportUserDataBusy(false);
+    }
+  };
+
   return (
     <section class="border-t border-border px-2 py-2" aria-labelledby="settings-section-title" data-settings-entry-point>
       <div class="flex items-center justify-between gap-2"><h3 id="settings-section-title" class="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Settings</h3><span class="text-[0.68rem] text-muted-foreground">{props.settings().length} saved</span></div>
@@ -421,6 +531,90 @@ export function SettingsColumnSection(props: SettingsColumnSectionProps) {
               {(failure) => <li class="truncate text-[0.68rem] leading-5 text-destructive" title={failure.message}>{formatSourceLabel(failure.sourceType)} {failure.feedId}: {failure.code} — {failure.message}</li>}
             </For>
           </ul>
+        </Show>
+      </section>
+      <section class="mt-2 border-t border-border p-2" aria-labelledby="user-data-title" data-user-data>
+        <p id="user-data-title" class="text-[0.72rem] font-semibold text-foreground">Data</p>
+        <p class="mt-1 text-[0.68rem] leading-5 text-muted-foreground">Downloads or restores your subscriptions, watched history, playlists, collections, and settings as one portable JSON file.</p>
+        <button
+          type="button"
+          class="mt-2 w-full inline-flex items-center justify-center gap-1 rounded-sm border border-border bg-card px-2 py-1.5 text-xs font-semibold text-card-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+          data-export-user-data
+          disabled={exportUserDataBusy()}
+          onClick={async () => { await downloadUserDataExport(); }}
+        >
+          <Download size={14} />
+          {exportUserDataBusy() ? "Preparing export" : "Export user data"}
+        </button>
+        <Show when={exportUserDataError()}>
+          {(message) => <p class="mt-1 border border-destructive px-2 py-1.5 text-[0.72rem] leading-5 text-destructive">{message()}</p>}
+        </Show>
+        <label class="sr-only" for="user-data-import-input">Import user data file</label>
+        <input
+          id="user-data-import-input"
+          type="file"
+          class="mt-2 w-full border border-input bg-background px-2 py-1.5 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
+          accept=".json,application/json"
+          disabled={importUserDataBusy()}
+          data-import-user-data-input
+          onChange={async (event) => {
+            const input = event.currentTarget;
+            const file = input.files?.[0];
+            // Clear the selection so importing the same file again re-fires change.
+            input.value = "";
+            if (file !== undefined) {
+              await importUserDataFromFile(file);
+            }
+          }}
+        />
+        <Show when={importUserDataBusy()}>
+          <p class="mt-1 text-[0.68rem] leading-5 text-muted-foreground" role="status">Importing user data.</p>
+        </Show>
+        <Show when={importUserDataError()}>
+          {(message) => <p class="mt-1 border border-destructive px-2 py-1.5 text-[0.72rem] leading-5 text-destructive">{message()}</p>}
+        </Show>
+        <Show when={importUserDataResult()}>
+          {(result) => (
+            <div class="mt-2 border border-border bg-card px-2 py-1.5" role="status" data-import-user-data-report>
+              <Show
+                when={!result().skipped}
+                fallback={<p class="text-[0.72rem] font-semibold text-card-foreground" data-import-user-data-skipped>Skipped: this file matches the most recently imported user data, so nothing was written.</p>}
+              >
+                <p class="text-[0.72rem] font-semibold text-card-foreground" data-import-user-data-summary>Imported user data.</p>
+                <ul class="mt-1 space-y-0.5" aria-label="Imported records">
+                  <For each={userDataImportCountLabels}>
+                    {(entry) => (
+                      <li class="text-[0.68rem] text-muted-foreground" data-import-user-data-count={entry.key}>
+                        {entry.label}: {result().report.counts[entry.key]}
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </Show>
+              <Show when={result().report.warnings.length > 0}>
+                <ul class="mt-1 space-y-1" aria-label="Import warnings">
+                  <For each={result().report.warnings}>
+                    {(warning) => (
+                      <li class="truncate text-[0.68rem] leading-5 text-muted-foreground" title={warning.reason} data-import-user-data-warning>
+                        {warning.entityType} {warning.entityKey}: {warning.reason}
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </Show>
+              <Show when={result().report.failures.length > 0}>
+                <ul class="mt-1 space-y-1" aria-label="Import failures">
+                  <For each={result().report.failures}>
+                    {(failure) => (
+                      <li class="truncate text-[0.68rem] leading-5 text-destructive" title={failure.reason} data-import-user-data-failure>
+                        {failure.entityType} {failure.entityKey}: {failure.reason}
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </Show>
+            </div>
+          )}
         </Show>
       </section>
       <details class="mt-2 border-t border-border p-2" data-advanced-settings>
@@ -524,6 +718,17 @@ export function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
   };
 
   const updatePlaylist = async (playlist: Playlist) => {
+    // Resolve the entity from the live list at submit time: the captured
+    // object may be stale (refetch between render and click) and its position
+    // would clobber a concurrent reorder. If the playlist was deleted in the
+    // meantime, surface an error instead of acting on the stale snapshot.
+    const currentPlaylist = playlistsValue()?.find((candidate) => candidate.id === playlist.id) ?? null;
+    if (currentPlaylist === null) {
+      setPlaylistError("This playlist no longer exists.");
+      editPlaylist(null);
+      return;
+    }
+
     const name = playlistName().trim();
     if (name.length === 0) {
       setPlaylistError("Name the playlist before saving.");
@@ -533,7 +738,7 @@ export function PlaylistColumnSection(props: PlaylistColumnSectionProps) {
     setPlaylistBusy(true);
     setPlaylistError(null);
     try {
-      await client.overlays.updatePlaylist({ playlistId: playlist.id, name, description: playlistDescription().trim().length === 0 ? null : playlistDescription().trim(), sortMode: playlistSortMode(), position: playlist.position });
+      await client.overlays.updatePlaylist({ playlistId: currentPlaylist.id, name, description: playlistDescription().trim().length === 0 ? null : playlistDescription().trim(), sortMode: playlistSortMode(), position: currentPlaylist.position });
       await refetchPlaylists();
     } catch (error) {
       setPlaylistError(formatError(error));
@@ -756,6 +961,17 @@ export function CollectionColumnSection(props: CollectionColumnSectionProps) {
   };
 
   const updateCollection = async (collection: CreatorCollection) => {
+    // Resolve the entity from the live list at submit time: the captured
+    // object may be stale (refetch between render and click) and its position
+    // would clobber a concurrent reorder. If the collection was deleted in
+    // the meantime, surface an error instead of acting on the stale snapshot.
+    const currentCollection = collectionsValue()?.find((candidate) => candidate.id === collection.id) ?? null;
+    if (currentCollection === null) {
+      setCollectionError("This collection no longer exists.");
+      editCollection(null);
+      return;
+    }
+
     const name = collectionName().trim();
     if (name.length === 0) {
       setCollectionError("Name the collection before saving.");
@@ -766,10 +982,10 @@ export function CollectionColumnSection(props: CollectionColumnSectionProps) {
     setCollectionError(null);
     try {
       await client.overlays.updateCollection({
-        collectionId: collection.id,
+        collectionId: currentCollection.id,
         name,
         description: collectionDescription().trim().length === 0 ? null : collectionDescription().trim(),
-        position: collection.position,
+        position: currentCollection.position,
       });
       await refetchCollections();
       props.onCollectionsChanged();

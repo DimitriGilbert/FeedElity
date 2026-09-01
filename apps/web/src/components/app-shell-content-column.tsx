@@ -8,6 +8,7 @@ import type {
   UserContentStatus,
 } from "@FeedElity/api";
 import { For, Match, Show, Switch, createEffect, createMemo, createResource, createSignal, on, untrack } from "solid-js";
+import { createVirtualizer } from "@tanstack/solid-virtual";
 import CheckCircle from "lucide-solid/icons/circle-check";
 import ChevronDown from "lucide-solid/icons/chevron-down";
 import ChevronUp from "lucide-solid/icons/chevron-up";
@@ -16,6 +17,7 @@ import Heart from "lucide-solid/icons/heart";
 import LayoutGrid from "lucide-solid/icons/layout-grid";
 import X from "lucide-solid/icons/x";
 
+import { clampActiveIndex } from "@/lib/keyboard-shortcuts";
 import { client } from "@/utils/orpc";
 
 import { ContentListItemRow } from "./app-shell-rows";
@@ -30,12 +32,16 @@ import {
   contentScrollRegionClass,
   contentSearchInputId,
   contentSourceFilterId,
+  contentSourceFilterLocalStorageKey,
   contentViewModeAllId,
   contentViewModeFavoritesId,
   contentViewModeHistoryId,
   contentViewModePlayedId,
   contentViewModeSubscribedId,
+  contentViewModeLocalStorageKey,
+  createDesktopMediaQuerySignal,
   emptyAppendedPageState,
+  estimateContentItemRowHeight,
   formatError,
   formatContentDuration,
   formatContentPublishedAt,
@@ -44,10 +50,16 @@ import {
   pageHasMoreForKey,
   pageItemsForKey,
   persistHidePlayed,
+  persistLocalValue,
   readPersistedHidePlayed,
+  readPersistedLocalValue,
   showsCatalogFilters,
+  sourceTypeFilterValues,
   toContentListInput,
   toContentStatusFlags,
+  toPersistedContentViewMode,
+  toPersistedSourceTypeFilter,
+  toPlaybackPositionsByItemId,
   type AppendedPageState,
   type BrowsableCreator,
   type ContentListInput,
@@ -57,11 +69,15 @@ import {
   type ShellMode,
 } from "./app-shell.contract";
 
+// TO BE FIXED (disabled 2026-08-31): the virtualized list caused stale row
+// renders, scroll resets, and selection breakage (non-keyed <Show> over
+// reconciled virtual items + index-based rebuilds). The code is kept for a
+// proper rework; the plain list below is the live rendering path.
+const contentListVirtualizationEnabled = false;
+
 type ContentItemsResourceMode = "catalog" | "subscribed" | "favorites" | "history-opened" | "played";
 
 const allContentSourceFilterValue = "all";
-
-const sourceFilterOptions: readonly SourceType[] = ["youtube", "odysee", "peertube"];
 
 const emptyCatalogContentItems: readonly CatalogContentListItem[] = [];
 
@@ -70,7 +86,7 @@ const emptyPlaylists: readonly Playlist[] = [];
 const emptyCollectionMembers: readonly CollectionMemberWithCreator[] = [];
 
 function toSourceFilterValue(value: string): SourceType | null {
-  return sourceFilterOptions.find((sourceType) => sourceType === value) ?? null;
+  return sourceTypeFilterValues.find((sourceType) => sourceType === value) ?? null;
 }
 
 function toContentItemsResourceKey(mode: ContentItemsResourceMode, input: ContentListInput, reloadKey: number): string {
@@ -251,6 +267,18 @@ function ContentLoadMoreControl(props: ContentLoadMoreControlProps) {
   );
 }
 
+/**
+ * One keyboard-shortcut command issued by AppShell's single window keydown
+ * listener (qol-features-plan.md F3). AppShell sends a fresh object per
+ * keypress and the column executes it against its own active-row state —
+ * declarative prop data flow instead of an imperative handle, so the column
+ * keeps ownership of activeIndex and of the two scroll mechanisms.
+ */
+export type ContentShortcutCommand =
+  | { readonly kind: "move"; readonly delta: 1 | -1 }
+  | { readonly kind: "open" }
+  | { readonly kind: "toggle-favorite" };
+
 export interface ContentListColumnProps {
   readonly isAuthenticated: () => boolean;
   readonly mode: ShellMode;
@@ -269,6 +297,8 @@ export interface ContentListColumnProps {
   readonly contentStatuses: () => readonly UserContentStatus[];
   readonly listLiveReloadKey: () => number;
   readonly middlePanePanel: () => MiddlePanePanel | null;
+  readonly searchClearKey: () => number;
+  readonly contentShortcutCommand: () => ContentShortcutCommand | null;
   readonly onCloseMiddlePanePanel: () => void;
   readonly onAddSource: (value: AddSourceValue) => Promise<void>;
   readonly onSelectContent: (contentItem: CatalogContentListItem) => Promise<void>;
@@ -281,14 +311,29 @@ export interface ContentListColumnProps {
 
 export function ContentListColumn(props: ContentListColumnProps) {
   const [search, setSearch] = createSignal("");
-  const [sourceType, setSourceType] = createSignal<SourceType | null>(null);
-  const [viewMode, setViewMode] = createSignal<ContentViewMode>(props.mode === "library" ? "subscribed" : "catalog");
+  // The content source filter is device-persisted (F7, decision D9) and works
+  // for anonymous browsing too, so the seed needs no auth gate.
+  const [sourceType, setSourceType] = createSignal<SourceType | null>(
+    toPersistedSourceTypeFilter(readPersistedLocalValue(contentSourceFilterLocalStorageKey)),
+  );
+  // The persisted view mode is auth-gated at parse time (favorites/history/
+  // played coerce to the mode default when applied anonymously). While the
+  // session check is pending the anonymous reset effect below still enforces
+  // the mode default; the restore effect re-applies the persisted auth-only
+  // mode once a signed-in user's session resolves.
+  const [viewMode, setViewMode] = createSignal<ContentViewMode>(
+    toPersistedContentViewMode(readPersistedLocalValue(contentViewModeLocalStorageKey), props.isAuthenticated(), props.mode),
+  );
   const [hidePlayed, setHidePlayed] = createSignal<boolean>(readPersistedHidePlayed() ?? false);
   const [appendedContentPage, setAppendedContentPage] = createSignal<AppendedPageState<CatalogContentListItem>>(emptyAppendedPageState());
   const [contentOffset, setContentOffset] = createSignal<PaginationOffsetState>({ key: "", nextOffset: 0 });
   const [contentPageBusy, setContentPageBusy] = createSignal(false);
   const [contentPageError, setContentPageError] = createSignal<string | null>(null);
   const [controlsExpanded, setControlsExpanded] = createSignal(false);
+  // Failure surface for keyboard-shortcut commands (currently the f toggle):
+  // shortcut failures must be visible even though the row action cluster they
+  // normally report through is hover-only.
+  const [contentCommandError, setContentCommandError] = createSignal<string | null>(null);
 
   createEffect(() => {
     if (props.middlePanePanel() !== null) {
@@ -301,6 +346,29 @@ export function ContentListColumn(props: ContentListColumnProps) {
       setViewMode(props.mode === "library" ? "subscribed" : "catalog");
     }
   });
+
+  // The reset effect above runs while the session check is still pending (the
+  // auth state is unknown, hence "not authenticated"), which would keep a
+  // persisted auth-only view mode (favorites/history/played) lost for signed-in
+  // users; re-apply the persisted choice once the session resolves.
+  createEffect(on(props.isAuthenticated, (isAuthenticated) => {
+    if (isAuthenticated) {
+      setViewMode(toPersistedContentViewMode(readPersistedLocalValue(contentViewModeLocalStorageKey), true, props.mode));
+    }
+  }, { defer: true }));
+
+  // Single mutation for every view-mode button: renders the mode and persists it.
+  const changeViewMode = (nextViewMode: ContentViewMode) => {
+    setViewMode(nextViewMode);
+    persistLocalValue(contentViewModeLocalStorageKey, nextViewMode);
+  };
+
+  // The select's only mutation: renders the filter and persists it (the empty
+  // string encodes "All").
+  const changeSourceType = (nextSourceType: SourceType | null) => {
+    setSourceType(nextSourceType);
+    persistLocalValue(contentSourceFilterLocalStorageKey, nextSourceType ?? "");
+  };
 
   // Default "hide played" to on when the user connects, but only until they make
   // an explicit choice — once a preference is persisted it always wins.
@@ -463,6 +531,69 @@ export function ContentListColumn(props: ContentListColumnProps) {
       : visibleItems;
   });
   const contentCount = createMemo(() => displayedContentItems().length);
+  // Keyboard-active row for the j/k shortcuts (qol-features-plan.md F3). The
+  // raw index lives in the signal; the memo clamps it against the displayed
+  // list length so the active row can never point outside the rendered list
+  // even when local filters shrink it without a resource-key change.
+  const [requestedActiveIndex, setRequestedActiveIndex] = createSignal(0);
+  const activeIndex = createMemo(() => clampActiveIndex(requestedActiveIndex(), displayedContentItems().length));
+  const activeContentItemId = createMemo(() => displayedContentItems()[activeIndex()]?.id ?? null);
+  // j/k restart from the selected item's row whenever the list identity (mode,
+  // filters, reload tick) changes, per the F3 spec — index-based resets would
+  // silently move the cursor onto a different video after local filter shifts.
+  createEffect(on(contentItemsResourceKey, () => {
+    const selectedId = props.selectedContentItemId();
+    const selectedIndex = selectedId === null ? -1 : displayedContentItems().findIndex((item) => item.id === selectedId);
+    setRequestedActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
+  }, { defer: true }));
+  // The cursor follows the user's selections by identity: mouse-selecting a
+  // row (or a mirror in the viewer) moves the active index onto that video, so
+  // Enter re-opens the highlighted row instead of whatever index it used to
+  // point at. Identity-based, so local shifts (hide-played toggle, live-reload
+  // insertions) cannot desync it; ids absent from the displayed list leave the
+  // cursor untouched.
+  createEffect(on(() => props.selectedContentItemId(), (id) => {
+    const i = displayedContentItems().findIndex((item) => item.id === id);
+    if (i >= 0) setRequestedActiveIndex(i);
+  }, { defer: true }));
+  // Escape clears both column searches through the shared app-shell counter.
+  createEffect(on(() => props.searchClearKey(), () => setSearch(""), { defer: true }));
+  // List progress for opened rows: contentItemId -> the playback position
+  // parsed from the opened row's metadataJson. Played rows and unparseable
+  // metadata contribute nothing (toPlaybackPositionsByItemId).
+  const playbackPositionByItemId = createMemo(() => toPlaybackPositionsByItemId(props.contentStatuses()));
+
+  // Decision D10: virtualize the content list only from the lg breakpoint up.
+  // Below lg the plain <For> branch renders every row unchanged. The whole
+  // mechanism is disabled while the TO BE FIXED defects above stand, so the
+  // virtualizer stays inert (enabled=false) and its branch never renders.
+  const isDesktopViewport = createDesktopMediaQuerySignal();
+  let contentScrollRegionEl: HTMLDivElement | undefined;
+  // Option values that change over time are exposed as getters: the Solid
+  // adapter re-runs setOptions inside a tracked computation, so count and
+  // enabled stay live without recreating the virtualizer.
+  const contentVirtualizer = createVirtualizer({
+    get count() {
+      return displayedContentItems().length;
+    },
+    getScrollElement: () => contentScrollRegionEl ?? null,
+    estimateSize: () => estimateContentItemRowHeight(props.readerDensity()),
+    overscan: 5,
+    getItemKey: (index) => displayedContentItems()[index]?.id ?? index,
+    get enabled() {
+      return isDesktopViewport() && contentListVirtualizationEnabled;
+    },
+  });
+  // estimateSize is not part of the virtualizer's own change detection: after a
+  // density switch the cached row sizes must be dropped explicitly so rows fall
+  // back to the new estimates (measureElement then re-locks real heights).
+  // Gated with the virtualizer: no virtual rows are mounted while disabled, so
+  // the measure() call is a no-op anyway, but it stays short-circuited.
+  createEffect(on(() => props.readerDensity(), () => {
+    if (contentListVirtualizationEnabled) {
+      contentVirtualizer.measure();
+    }
+  }, { defer: true }));
 
   const visibleContentCollectionLabel = createMemo(() => {
     if (viewMode() === "favorites") {
@@ -494,6 +625,83 @@ export function ContentListColumn(props: ContentListColumnProps) {
     }
   };
 
+  // Scroll follow-up for j/k. With the virtualizer disabled (TO BE FIXED
+  // above), the below-lg row-lookup mechanism is the ONLY live path: the plain
+  // list is scanned by the data-content-item-id attribute its <li> renders.
+  // The row is always mounted here: the index was just clamped against this
+  // same array and the plain list renders from it, so a single immediate
+  // lookup is enough. The virtualizer.scrollToIndex path stays in the file,
+  // unreachable behind the disabled flag, for the rework.
+  const scrollActiveRowIntoView = (index: number): void => {
+    if (contentListVirtualizationEnabled && isDesktopViewport()) {
+      contentVirtualizer.scrollToIndex(index);
+      return;
+    }
+
+    const region = contentScrollRegionEl;
+    const activeItem = displayedContentItems()[index];
+    if (region === undefined || activeItem === undefined) {
+      return;
+    }
+
+    const rows = region.querySelectorAll<HTMLElement>("[data-content-item-id]");
+    for (const row of rows) {
+      if (row.dataset.contentItemId === activeItem.id) {
+        row.scrollIntoView({ block: "nearest" });
+        return;
+      }
+    }
+  };
+
+  // Executes one command sent by AppShell's keydown listener. on() keeps the
+  // effect's only dependency on the command itself, so the activeIndex and
+  // list reads below stay untracked. The written index is clamped so repeated
+  // boundary moves cannot walk the signal far out of range and leave the
+  // opposite-direction command unresponsive for several presses; the memo's
+  // clamp stays as display-side defense.
+  const executeContentShortcutCommand = async (command: ContentShortcutCommand) => {
+    if (command.kind === "move") {
+      setRequestedActiveIndex(clampActiveIndex(requestedActiveIndex() + command.delta, displayedContentItems().length));
+      scrollActiveRowIntoView(activeIndex());
+      return;
+    }
+
+    const activeItem = displayedContentItems()[activeIndex()];
+    if (activeItem === undefined) {
+      return;
+    }
+
+    if (command.kind === "open") {
+      await props.onSelectContent(activeItem);
+      return;
+    }
+
+    // The favorite overlay is authenticated-only (the row action cluster
+    // renders behind the same gate), so an anonymous f press stays a no-op.
+    if (!props.isAuthenticated()) {
+      return;
+    }
+
+    setContentCommandError(null);
+    try {
+      await toggleFavorite(activeItem.id);
+    } catch (error) {
+      setContentCommandError(formatError(error));
+    }
+  };
+
+  createEffect(
+    on(
+      () => props.contentShortcutCommand(),
+      (command) => {
+        if (command !== null) {
+          void executeContentShortcutCommand(command);
+        }
+      },
+      { defer: true },
+    ),
+  );
+
   const markOpened = async (contentItemId: string) => {
     await props.onMarkContentOpened(contentItemId);
   };
@@ -512,6 +720,31 @@ export function ContentListColumn(props: ContentListColumnProps) {
     props.onSelectPlaylist(playlistId);
     props.onPlaylistItemAdded();
   };
+
+  // One row renderer shared by both list branches (plain <For> below lg,
+  // virtualized rows on lg) so the two paths can never drift apart.
+  const renderContentItemRow = (contentItem: CatalogContentListItem) => (
+    <ContentListItemRow
+      contentItem={contentItem}
+      isAuthenticated={props.isAuthenticated}
+      isFavorite={() => favoriteContentItemIds().has(contentItem.id)}
+      status={() => toContentStatusFlags(props.contentStatuses(), contentItem.id)}
+      playbackPosition={() => playbackPositionByItemId().get(contentItem.id) ?? null}
+      selected={() => props.selectedContentItemId() === contentItem.id}
+      active={() => activeContentItemId() === contentItem.id}
+      favoritesView={() => viewMode() === "favorites"}
+      readerDensity={props.readerDensity}
+      targetPlaylistId={listTargetPlaylistId}
+      formatError={formatError}
+      formatPublishedAt={formatContentPublishedAt}
+      formatDuration={formatContentDuration}
+      onSelectContent={props.onSelectContent}
+      onMarkOpened={markOpened}
+      onMarkPlayed={markPlayed}
+      onToggleFavorite={toggleFavorite}
+      onAddToPlaylist={addContentToPlaylist}
+    />
+  );
 
   const loadMoreContentItems = async () => {
     const mode = contentItemsResourceMode();
@@ -640,6 +873,9 @@ export function ContentListColumn(props: ContentListColumnProps) {
             </div>
           )}
         </Show>
+        <Show when={contentCommandError()}>
+          {(message) => <p class="mt-2 text-xs text-destructive" data-content-command-error>{message()}</p>}
+        </Show>
         <Show when={controlsExpanded()}>
           <Show when={props.isAuthenticated()}>
             <div class="mt-2 grid grid-cols-4 gap-2" aria-label="Content view">
@@ -650,7 +886,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
                 aria-pressed={viewMode() === (props.mode === "library" ? "subscribed" : "catalog")}
                 aria-label="All"
                 title="All"
-                onClick={() => setViewMode(props.mode === "library" ? "subscribed" : "catalog")}
+                onClick={() => changeViewMode(props.mode === "library" ? "subscribed" : "catalog")}
               >
                 <LayoutGrid size={14} />
                 <span>All</span>
@@ -662,7 +898,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
                 aria-pressed={viewMode() === "favorites"}
                 aria-label="Favorites"
                 title="Favorites"
-                onClick={() => setViewMode("favorites")}
+                onClick={() => changeViewMode("favorites")}
               >
                 <Heart size={14} />
                 <span>Favs</span>
@@ -674,7 +910,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
                 aria-pressed={viewMode() === "history-opened"}
                 aria-label="History/Open"
                 title="History/Open"
-                onClick={() => setViewMode("history-opened")}
+                onClick={() => changeViewMode("history-opened")}
               >
                 <Clock size={14} />
                 <span>History</span>
@@ -686,7 +922,7 @@ export function ContentListColumn(props: ContentListColumnProps) {
                 aria-pressed={viewMode() === "played"}
                 aria-label="Played"
                 title="Played"
-                onClick={() => setViewMode("played")}
+                onClick={() => changeViewMode("played")}
               >
                 <CheckCircle size={14} />
                 <span>Played</span>
@@ -702,10 +938,10 @@ export function ContentListColumn(props: ContentListColumnProps) {
                 id={contentSourceFilterId}
                 class="rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
                 value={sourceType() ?? allContentSourceFilterValue}
-                onChange={(event) => setSourceType(toSourceFilterValue(event.currentTarget.value))}
+                onChange={(event) => changeSourceType(toSourceFilterValue(event.currentTarget.value))}
               >
                 <option value={allContentSourceFilterValue}>All</option>
-                <For each={sourceFilterOptions}>
+                <For each={sourceTypeFilterValues}>
                   {(source) => <option value={source}>{formatSourceLabel(source)}</option>}
                 </For>
               </select>
@@ -738,7 +974,13 @@ export function ContentListColumn(props: ContentListColumnProps) {
           />
         </div>
       </Show>
-      <div class={contentScrollRegionClass} data-content-scroll-region>
+      <div
+        class={contentScrollRegionClass}
+        data-content-scroll-region
+        ref={(el) => {
+          contentScrollRegionEl = el;
+        }}
+      >
         <Switch>
           <Match when={contentItems.loading && contentItemsValue() === undefined}>
             <p class="text-xs font-semibold text-card-foreground">Loading videos</p>
@@ -765,41 +1007,53 @@ export function ContentListColumn(props: ContentListColumnProps) {
             </p>
           </Match>
           <Match when={displayedContentItems().length > 0}>
-              <ol aria-label={`${visibleContentCollectionLabel()} videos, ${contentCount()} shown`}>
-                <For each={displayedContentItems()}>
-                  {(contentItem) => (
-                    <li>
-                      <ContentListItemRow
-                        contentItem={contentItem}
-                        isAuthenticated={props.isAuthenticated}
-                        isFavorite={() => favoriteContentItemIds().has(contentItem.id)}
-                        status={() => toContentStatusFlags(props.contentStatuses(), contentItem.id)}
-                        selected={() => props.selectedContentItemId() === contentItem.id}
-                        favoritesView={() => viewMode() === "favorites"}
-                        readerDensity={props.readerDensity}
-                        targetPlaylistId={listTargetPlaylistId}
-                        formatError={formatError}
-                        formatPublishedAt={formatContentPublishedAt}
-                        formatDuration={formatContentDuration}
-                        onSelectContent={props.onSelectContent}
-                        onMarkOpened={markOpened}
-                        onMarkPlayed={markPlayed}
-                        onToggleFavorite={toggleFavorite}
-                        onAddToPlaylist={addContentToPlaylist}
-                      />
+            <Show
+              when={contentListVirtualizationEnabled && isDesktopViewport()}
+              fallback={
+                <ol aria-label={`${visibleContentCollectionLabel()} videos, ${contentCount()} shown`}>
+                  <For each={displayedContentItems()}>
+                    {(contentItem) => (
+                      <li data-content-item-id={contentItem.id}>{renderContentItemRow(contentItem)}</li>
+                    )}
+                  </For>
+                </ol>
+              }
+            >
+              <ol
+                aria-label={`${visibleContentCollectionLabel()} videos, ${contentCount()} shown`}
+                style={{ position: "relative", height: `${contentVirtualizer.getTotalSize()}px` }}
+              >
+                <For each={contentVirtualizer.getVirtualItems()}>
+                  {(virtualItem) => (
+                    <li
+                      data-index={virtualItem.index}
+                      data-content-item-id={displayedContentItems()[virtualItem.index]?.id ?? ""}
+                      ref={(el) => contentVirtualizer.measureElement(el)}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${virtualItem.start}px)`,
+                      }}
+                    >
+                      <Show when={displayedContentItems()[virtualItem.index]} keyed>
+                        {(contentItem) => renderContentItemRow(contentItem)}
+                      </Show>
                     </li>
                   )}
                 </For>
               </ol>
-              <ContentLoadMoreControl
-                shownCount={contentCount()}
-                pageSize={contentListLimit}
-                hasMore={contentPageHasMore()}
-                busy={contentPageBusy()}
-                errorMessage={contentPageError()}
-                label="Load more videos"
-                onLoadMore={loadMoreContentItems}
-              />
+            </Show>
+            <ContentLoadMoreControl
+              shownCount={contentCount()}
+              pageSize={contentListLimit}
+              hasMore={contentPageHasMore()}
+              busy={contentPageBusy()}
+              errorMessage={contentPageError()}
+              label="Load more videos"
+              onLoadMore={loadMoreContentItems}
+            />
           </Match>
         </Switch>
       </div>

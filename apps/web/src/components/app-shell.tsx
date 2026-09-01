@@ -2,6 +2,7 @@ import type {
   CatalogContentListItem,
   CatalogCreatorSummary,
   CatalogFeed,
+  CreatorUnreadSummary,
   RefreshFeedResultWithFeed,
   RefreshRun,
   SourceType,
@@ -10,11 +11,14 @@ import type {
   UserSubscriptionWithCreator,
 } from "@FeedElity/api";
 import { For, Match, Show, Suspense, Switch, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
+import { useNavigate } from "@tanstack/solid-router";
+import Activity from "lucide-solid/icons/activity";
 import ArrowDownAZ from "lucide-solid/icons/arrow-down-a-z";
 import ClockArrowDown from "lucide-solid/icons/clock-arrow-down";
 import LayoutGrid from "lucide-solid/icons/layout-grid";
 import TriangleAlert from "lucide-solid/icons/triangle-alert";
 import ChevronDown from "lucide-solid/icons/chevron-down";
+import CircleCheck from "lucide-solid/icons/circle-check";
 import Plus from "lucide-solid/icons/plus";
 import RefreshCw from "lucide-solid/icons/refresh-cw";
 import Settings from "lucide-solid/icons/settings";
@@ -22,12 +26,20 @@ import X from "lucide-solid/icons/x";
 import Zap from "lucide-solid/icons/zap";
 
 import { authClient } from "@/lib/auth-client";
+import {
+  isActivationTarget,
+  isDialogOpen,
+  isShortcutTargetBlocked,
+  nextGoPrefixActive,
+  resolveShortcut,
+} from "@/lib/keyboard-shortcuts";
 import { createDebouncedValue } from "@/utils/debounce";
 import { client } from "@/utils/orpc";
 
-import { ContentListColumn } from "./app-shell-content-column";
+import { ContentListColumn, type ContentShortcutCommand } from "./app-shell-content-column";
 import { PaneResizer } from "./pane-resizer";
 import { CreatorSourceRow, FeedRow } from "./app-shell-rows";
+import { FeedHealthDialog } from "./feed-health-dialog";
 import { RefreshStatusDialog } from "./refresh-status-dialog";
 import {
   PlaylistColumnSection,
@@ -41,6 +53,7 @@ import {
   creatorListSortValues,
   creatorSearchInputId,
   creatorSourceFilterId,
+  creatorSourceFilterLocalStorageKey,
   defaultLeftFraction,
   defaultMiddleFraction,
   emptyAppendedPageState,
@@ -49,6 +62,7 @@ import {
   formatSourceLabel,
   joinFeedResultsWithFeeds,
   leftPaneTabLabels,
+  leftPaneTabLocalStorageKey,
   minLeftFraction,
   minMiddleFraction,
   minRightFraction,
@@ -57,18 +71,24 @@ import {
   pageHasMoreForKey,
   pageItemsForKey,
   paneWidthsLocalStorageKey,
+  persistLocalValue,
+  readPersistedLocalValue,
   shellGridClass,
   shellRootClass,
+  sortFeedHealthEntries,
   sourceActionsRegionClass,
   sourceCatalogRegionClass,
   sourceColumnClass,
   sourceCreatorListRegionClass,
   sourceFeedListRegionClass,
   sourceHeaderRegionClass,
+  sourceTypeFilterValues,
   toDesktopColumnTemplate,
   toFeedListInput,
   toCreatorListInput,
   toCreatorListSortFromSettings,
+  toPersistedLeftPaneTab,
+  toPersistedSourceTypeFilter,
   toReaderDensityFromSettings,
   type AppendedPageState,
   type BrowsableCreator,
@@ -161,8 +181,6 @@ export {
   type ViewerMode,
 } from "./app-shell.contract";
 
-const sourceFilterOptions: readonly SourceType[] = ["youtube", "odysee", "peertube"];
-
 type SubscriptionAction = "subscribe" | "unsubscribe";
 
 const emptyCatalogFeeds: readonly CatalogFeed[] = [];
@@ -174,6 +192,8 @@ const emptySubscriptions: readonly UserSubscriptionWithCreator[] = [];
 const emptyUserContentStatuses: readonly UserContentStatus[] = [];
 
 const emptyUserSettings: readonly UserSetting[] = [];
+
+const emptyCreatorUnreadSummaries: readonly CreatorUnreadSummary[] = [];
 
 function toCreatorListResourceKey(input: CreatorListInput, reloadKey: number): string {
   return [
@@ -248,6 +268,11 @@ interface CreatorSourceColumnProps {
   readonly setActiveTab: (tab: LeftPaneTab) => void;
   readonly readerDensity: () => ReaderDensity;
   readonly creatorSort: () => CreatorListSort;
+  // True while the persisted creator sort may still arrive (auth session
+  // undetermined, or authenticated settings not yet settled). The catalog
+  // creators fetch holds until this flips false so signed-in users fetch once
+  // with the final sort instead of a default-sort fetch followed by a refetch.
+  readonly creatorSortPending: () => boolean;
   readonly onCreatorSortChange: (sort: CreatorListSort) => Promise<void>;
   readonly selectedCreatorId: () => string | null;
   readonly selectedCreator: () => BrowsableCreator | null;
@@ -256,10 +281,14 @@ interface CreatorSourceColumnProps {
   readonly selectedCollectionId: () => string | null;
   readonly catalogReloadKey: () => number;
   readonly subscriptionsReloadKey: () => number;
+  // Per-creator unread summaries keyed by creatorId, loaded in AppShell behind
+  // the authenticated unreadCounts resource. Only consumed in library mode.
+  readonly unreadByCreatorId: () => ReadonlyMap<string, CreatorUnreadSummary>;
   readonly playlistItemsReloadKey: () => number;
   readonly collectionsReloadKey: () => number;
   readonly onCollectionsChanged: () => void;
   readonly middlePanePanel: () => MiddlePanePanel | null;
+  readonly searchClearKey: () => number;
   readonly onContentListLiveReload: () => void;
   readonly onSubscriptionsChanged: () => void;
   readonly onClearCreator: () => void;
@@ -323,13 +352,20 @@ function LoadMoreControl(props: LoadMoreControlProps) {
 
 function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [search, setSearch] = createSignal("");
+  // Escape (via the shared app-shell searchClearKey counter) resets the
+  // creator search alongside the content-column search.
+  createEffect(on(() => props.searchClearKey(), () => setSearch(""), { defer: true }));
   // User-typed input debounce: the creator list (the catalog fetch input and
   // the client-side library filter) follows the search field only after typing
   // has settled for 300 ms, so catalog search no longer refetches per
   // keystroke. The input itself stays controlled by the immediate signal. This
   // reacts only to typed input — it is not a background refresh.
   const debouncedSearch = createDebouncedValue(search, 300);
-  const [sourceType, setSourceType] = createSignal<SourceType | null>(null);
+  // The creator source filter is device-persisted (F7, decision D9) and
+  // applies to anonymous browsing too, so the seed needs no auth gate.
+  const [sourceType, setSourceType] = createSignal<SourceType | null>(
+    toPersistedSourceTypeFilter(readPersistedLocalValue(creatorSourceFilterLocalStorageKey)),
+  );
   const [appendedCatalogCreatorPage, setAppendedCatalogCreatorPage] = createSignal<AppendedPageState<BrowsableCreator>>(emptyAppendedPageState());
   const [catalogCreatorOffset, setCatalogCreatorOffset] = createSignal<PaginationOffsetState>({ key: "", nextOffset: 0 });
   const [creatorPageBusy, setCreatorPageBusy] = createSignal(false);
@@ -342,6 +378,9 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [scopedRefreshBusy, setScopedRefreshBusy] = createSignal<string | null>(null);
   const [refreshError, setRefreshError] = createSignal<string | null>(null);
   const [creatorSortError, setCreatorSortError] = createSignal<string | null>(null);
+  const [markReadBusyCreatorId, setMarkReadBusyCreatorId] = createSignal<string | null>(null);
+  const [markAllReadBusy, setMarkAllReadBusy] = createSignal(false);
+  const [markReadError, setMarkReadError] = createSignal<string | null>(null);
   const [activeRefreshRunId, setActiveRefreshRunId] = createSignal<string | null>(null);
   const [refreshPollKey, setRefreshPollKey] = createSignal(0);
   // High-water mark of CREATED items seen during the current run. The content
@@ -363,8 +402,19 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   const [libraryCreatorLimit, setLibraryCreatorLimit] = createSignal(creatorListLimit);
   const creatorListInput = createMemo(() => toCreatorListInput(debouncedSearch(), sourceType(), props.creatorSort()));
   const creatorListResourceKey = createMemo(() => toCreatorListResourceKey(creatorListInput(), props.catalogReloadKey()));
+  // D11 gate: while the persisted sort may still arrive the input is null so
+  // the resource does not fetch; when it flips to the real key the single
+  // catalog fetch runs with the persisted sort (or the default for anonymous
+  // users, whose pending window closes right after the session check).
+  const creatorsResourceInput = createMemo(() => {
+    if (props.creatorSortPending()) {
+      return null;
+    }
+
+    return creatorListResourceKey();
+  });
   const [creators] = createResource(
-    creatorListResourceKey,
+    creatorsResourceInput,
     () => client.catalog.creators(untrack(creatorListInput)),
   );
   const creatorsValue = createMemo(() => creators.latest);
@@ -379,6 +429,46 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     client.overlays.subscriptions(),
   );
   const subscriptionsValue = createMemo(() => subscriptions.latest);
+  // Feed health (Phase 8.2): fetched only while the health dialog is open, and
+  // refetched after a destructive unsubscribe via a dedicated reload key so the
+  // rows reflect the new failure/subscription reality without touching any
+  // other resource.
+  const [feedHealthOpen, setFeedHealthOpen] = createSignal(false);
+  const [feedHealthReloadKey, setFeedHealthReloadKey] = createSignal(0);
+  const [feedHealthUnsubscribeBusy, setFeedHealthUnsubscribeBusy] = createSignal(false);
+  const [feedHealthActionError, setFeedHealthActionError] = createSignal<string | null>(null);
+  const feedHealthResourceInput = createMemo(() => {
+    if (!props.isAuthenticated() || !feedHealthOpen()) {
+      return null;
+    }
+
+    return feedHealthReloadKey().toString();
+  });
+  const [feedHealth] = createResource(feedHealthResourceInput, () => client.overlays.feedHealth({}));
+  const feedHealthEntries = createMemo(() => sortFeedHealthEntries(feedHealth.latest ?? []));
+  const feedHealthLoadError = createMemo(() => (feedHealth.error !== undefined ? formatError(feedHealth.error) : null));
+  // Destructive path for the health dialog. The dialog only calls this after
+  // its confirm dialog was accepted; the procedure reports unsubscribed vs
+  // missing ids instead of failing, and both the subscriptions overlays (list +
+  // unread counts, keyed on subscriptionsReloadKey in AppShell) and the health
+  // rows refetch afterwards.
+  const unsubscribeHealthCreators = async (creatorIds: readonly string[]) => {
+    if (!props.isAuthenticated() || creatorIds.length === 0 || feedHealthUnsubscribeBusy()) {
+      return;
+    }
+
+    setFeedHealthUnsubscribeBusy(true);
+    setFeedHealthActionError(null);
+    try {
+      await client.overlays.bulkUnsubscribe({ creatorIds: [...creatorIds] });
+      props.onSubscriptionsChanged();
+      setFeedHealthReloadKey((key) => key + 1);
+    } catch (error) {
+      setFeedHealthActionError(formatError(error));
+    } finally {
+      setFeedHealthUnsubscribeBusy(false);
+    }
+  };
   const feedListInput = createMemo(() => toFeedListInput(props.selectedCreatorId()));
   // Surgical reload signal scoped to the selected creator's feed rows only.
   // Bumped after a single-creator refresh so the feed metadata
@@ -409,6 +499,20 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   });
   const activeRefreshStatusValue = createMemo(() => activeRefreshStatus.latest);
   const subscriptionCreatorIds = createMemo(() => new Set((subscriptionsValue() ?? emptySubscriptions).map((subscription) => subscription.creator.id)));
+  // Unread badges are a library-mode affordance for signed-in users: catalog
+  // rows and anonymous users always read a null count and render nothing.
+  const libraryUnreadEnabled = createMemo(() => props.mode === "library" && props.isAuthenticated());
+  const hasAnyUnread = createMemo(() => {
+    for (const summary of props.unreadByCreatorId().values()) {
+      if (summary.unreadCount > 0) {
+        return true;
+      }
+    }
+
+    return false;
+  });
+  const unreadCountForCreator = (creatorId: string): number | null =>
+    props.unreadByCreatorId().get(creatorId)?.unreadCount ?? null;
   const listedCreators = createMemo<readonly BrowsableCreator[]>(() => {
     if (props.mode === "library") {
       const trimmedSearch = debouncedSearch().trim().toLowerCase();
@@ -594,6 +698,45 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
     }
   };
 
+  // Per-creator mark-as-read (Phase 7.2). Marks every unopened/unplayed item of
+  // the creator opened, then bumps subscriptionsReloadKey so the unread counts
+  // resource (keyed on it in AppShell) refetches and the badges drop to zero.
+  const markCreatorRead = async (creatorId: string) => {
+    if (!props.isAuthenticated() || markReadBusyCreatorId() !== null || markAllReadBusy()) {
+      return;
+    }
+
+    setMarkReadBusyCreatorId(creatorId);
+    setMarkReadError(null);
+    try {
+      await client.overlays.markCreatorContentOpened({ creatorId });
+      props.onSubscriptionsChanged();
+    } catch (error) {
+      setMarkReadError(formatError(error));
+    } finally {
+      setMarkReadBusyCreatorId(null);
+    }
+  };
+
+  // Global mark-all-as-read. Additive and idempotent server-side, so no confirm
+  // dialog; the button only renders when at least one creator is unread.
+  const markAllRead = async () => {
+    if (!props.isAuthenticated() || markAllReadBusy() || markReadBusyCreatorId() !== null) {
+      return;
+    }
+
+    setMarkAllReadBusy(true);
+    setMarkReadError(null);
+    try {
+      await client.overlays.markAllContentOpened();
+      props.onSubscriptionsChanged();
+    } catch (error) {
+      setMarkReadError(formatError(error));
+    } finally {
+      setMarkAllReadBusy(false);
+    }
+  };
+
   let refreshPollTimer: ReturnType<typeof setTimeout> | null = null;
   onCleanup(() => {
     if (refreshPollTimer !== null) {
@@ -628,6 +771,12 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
       setRefreshBusy(null);
       setActiveRefreshRunId(null);
       props.onContentListLiveReload();
+      // The run may have ingested new items: bump the shared subscriptions
+      // channel once so the AppShell unreadCounts resource (keyed on
+      // subscriptionsReloadKey) refetches and badges stay current. The
+      // mid-poll path below deliberately does not bump it — no per-poll
+      // refetches.
+      props.onSubscriptionsChanged();
       return;
     }
 
@@ -693,6 +842,9 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
       // metadata refreshes. Never bump catalogReloadKey here — that would tear
       // down the creator list, content list, and video viewer.
       setFeedListReloadKey((key) => key + 1);
+      // Same subscriptions-channel bump as the polled run completion: this
+      // force refresh may have ingested new items, so unread badges refetch.
+      props.onSubscriptionsChanged();
     } catch (error) {
       setRefreshError(formatError(error));
     } finally {
@@ -722,10 +874,11 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
   });
 
   // Shared source-filter mutation for the popover options: every selection
-  // resets the library paging limit exactly like the previous select's
-  // onChange did.
+  // persists the filter (the empty string encodes "All") and resets the
+  // library paging limit exactly like the previous select's onChange did.
   const applyCreatorSourceType = (nextSourceType: SourceType | null) => {
     setSourceType(nextSourceType);
+    persistLocalValue(creatorSourceFilterLocalStorageKey, nextSourceType ?? "");
     setLibraryCreatorLimit(creatorListLimit);
   };
 
@@ -832,6 +985,21 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
                   {refreshProgressText()}
                 </span>
               </Show>
+            <Show when={props.mode === "library" && hasAnyUnread()}>
+              <button
+                type="button"
+                class="shrink-0 rounded-md border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                aria-label="Mark all sources as read"
+                title="Mark all sources as read"
+                data-mark-all-read
+                disabled={markAllReadBusy()}
+                onClick={async () => {
+                  await markAllRead();
+                }}
+              >
+                <CircleCheck size={14} aria-hidden="true" />
+              </button>
+            </Show>
             <button
               type="button"
               class="shrink-0 rounded-md border border-border bg-background p-1.5 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
@@ -917,7 +1085,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
               >
                 <LayoutGrid size={14} aria-hidden="true" /> All
               </button>
-              <For each={sourceFilterOptions}>
+              <For each={sourceTypeFilterValues}>
                 {(source) => {
                   const isActive = createMemo(() => sourceType() === source);
                   return (
@@ -941,6 +1109,9 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
         <Show when={creatorSortError()}>
           {(message) => <p class="mt-1 text-xs text-destructive" data-creator-sort-error>{message()}</p>}
         </Show>
+        <Show when={markReadError()}>
+          {(message) => <p class="mt-1 text-xs text-destructive" data-mark-read-error>{message()}</p>}
+        </Show>
       </div>
       <div class={sourceCatalogRegionClass} data-source-catalog-region>
         <Show when={props.activeTab() === "library"}>
@@ -950,7 +1121,7 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
               <p class="text-xs font-semibold text-foreground">Loading Library</p>
               <p class="mt-2 text-xs leading-5 text-muted-foreground">Loading your subscribed sources.</p>
             </Match>
-            <Match when={props.mode === "catalog" && creators.loading && creatorsValue() === undefined}>
+            <Match when={props.mode === "catalog" && (creators.loading || props.creatorSortPending()) && creatorsValue() === undefined}>
               <p class="text-xs font-semibold text-foreground">Loading sources</p>
               <p class="mt-2 text-xs leading-5 text-muted-foreground">Loading the public catalog.</p>
             </Match>
@@ -987,6 +1158,9 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
                           showSubscriptionControl={props.mode === "catalog"}
                           refreshBusy={scopedRefreshBusy() === creator.id || (scopedRefreshBusy() === null && refreshBusy() !== null)}
                           readerDensity={props.readerDensity()}
+                          unreadCount={() => (libraryUnreadEnabled() ? unreadCountForCreator(creator.id) : null)}
+                          markReadBusy={markReadBusyCreatorId() === creator.id || markAllReadBusy()}
+                          onMarkCreatorRead={markCreatorRead}
                           onSelectCreator={props.onSelectCreator}
                           onForceRefreshCreator={runCreatorRefresh}
                           subscriptionControl={
@@ -1126,6 +1300,31 @@ function CreatorSourceColumn(props: CreatorSourceColumnProps) {
           feedResults={lastCompletedStatus()?.results ?? []}
           onClose={() => setRefreshStatusOpen(false)}
         />
+        <Show when={props.isAuthenticated()}>
+          <div class="flex justify-end px-2 py-1">
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs font-semibold text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              aria-label="Feed health"
+              title="Feed health"
+              data-feed-health-trigger
+              onClick={() => setFeedHealthOpen(true)}
+            >
+              <Activity size={14} aria-hidden="true" />
+              Feed health
+            </button>
+          </div>
+        </Show>
+        <FeedHealthDialog
+          open={feedHealthOpen()}
+          entries={feedHealthEntries()}
+          loading={feedHealth.loading}
+          busy={feedHealthUnsubscribeBusy()}
+          loadErrorMessage={feedHealthLoadError()}
+          actionErrorMessage={feedHealthActionError()}
+          onClose={() => setFeedHealthOpen(false)}
+          onUnsubscribeCreators={unsubscribeHealthCreators}
+        />
       </div>
     </section>
   );
@@ -1137,10 +1336,13 @@ export interface AppShellProps {
 
 export default function AppShell(props: AppShellProps) {
   const mode = () => props.mode ?? "catalog";
+  const navigate = useNavigate();
   const session = authClient.useSession();
-  const appSessionResourceInput = createMemo(() => session().data?.user.id ?? null);
-  const [appSession] = createResource(appSessionResourceInput, () => client.session.current());
-  const isAuthenticated = createMemo(() => appSession.latest !== null && appSession.latest !== undefined);
+  // Single auth gate for every overlay resource below, derived straight from
+  // the better-auth session hook (the same source the header uses) so startup
+  // no longer issues a second dedicated session round trip. Not authenticated
+  // while the session check is pending.
+  const isAuthenticated = createMemo(() => !session().isPending && session().data !== null);
   const [selectedCreator, setSelectedCreator] = createSignal<BrowsableCreator | null>(null);
   const [selectedFeed, setSelectedFeed] = createSignal<CatalogFeed | null>(null);
   const [selectedContent, setSelectedContent] = createSignal<CatalogContentListItem | null>(null);
@@ -1152,8 +1354,44 @@ export default function AppShell(props: AppShellProps) {
   const [subscriptionsReloadKey, setSubscriptionsReloadKey] = createSignal(0);
   const [favoritesReloadKey, setFavoritesReloadKey] = createSignal(0);
   const [listLiveReloadKey, setListLiveReloadKey] = createSignal(0);
+  // Escape clears the creator/content column searches: bumping this counter is
+  // observed by both columns, which reset their local search signals.
+  const [searchClearKey, setSearchClearKey] = createSignal(0);
+  // Keyboard-shortcut commands for the content column (j/k/Enter/f). Each
+  // keypress sends a fresh command object the column executes against its own
+  // active-row state.
+  const [contentShortcutCommand, setContentShortcutCommand] = createSignal<ContentShortcutCommand | null>(null);
   const [statusSelectionError, setStatusSelectionError] = createSignal<string | null>(null);
-  const [activeTab, setActiveTab] = createSignal<LeftPaneTab>("library");
+  // The active tab is device-persisted (F7, decision D9). While the session
+  // check is still pending the auth gate is unknown, so the seed evaluates the
+  // persisted value against the current (unauthenticated) gate; the effect
+  // below re-applies it once a session resolves.
+  const [activeTab, setActiveTab] = createSignal<LeftPaneTab>(
+    toPersistedLeftPaneTab(readPersistedLocalValue(leftPaneTabLocalStorageKey), isAuthenticated()),
+  );
+
+  // Single mutation for every tab button: renders the tab and persists it.
+  const changeActiveTab = (tab: LeftPaneTab) => {
+    setActiveTab(tab);
+    persistLocalValue(leftPaneTabLocalStorageKey, tab);
+  };
+
+  // Once the session resolves, align the active tab with the resolved auth
+  // state: a signed-in user gets their persisted tab back (the seed may have
+  // coerced an auth-only tab to the default while the check was pending), and
+  // an anonymous visitor never keeps one (its button renders only signed-in).
+  createEffect(() => {
+    if (session().isPending) {
+      return;
+    }
+
+    if (isAuthenticated()) {
+      setActiveTab(toPersistedLeftPaneTab(readPersistedLocalValue(leftPaneTabLocalStorageKey), true));
+      return;
+    }
+
+    setActiveTab((current) => toPersistedLeftPaneTab(current, false));
+  });
   const [middlePanePanel, setMiddlePanePanel] = createSignal<MiddlePanePanel | null>(null);
   const [viewerMode, setViewerMode] = createSignal<ViewerMode>("content");
   const settingsResourceInput = createMemo(() => {
@@ -1176,6 +1414,23 @@ export default function AppShell(props: AppShellProps) {
     await client.overlays.saveSetting({ key: creatorListSortSettingKey, value: sort });
     await refetchSettings();
   };
+  // D11: the creator catalog must fetch ONCE with the persisted sort for
+  // signed-in users. While the session check is pending the auth state is
+  // undetermined, and once authenticated the persisted sort arrives with the
+  // settings fetch — fetching before settings settle produces a default-sort
+  // list that is immediately refetched (the double fetch this gate removes).
+  // Anonymous users (session resolved, no session data) fetch immediately.
+  const creatorListFetchPending = createMemo(() => {
+    if (session().isPending) {
+      return true;
+    }
+
+    if (!isAuthenticated()) {
+      return false;
+    }
+
+    return settings.state === "unresolved" || settings.state === "pending";
+  });
   const contentStatusesResourceInput = createMemo(() => {
     if (!isAuthenticated()) {
       return null;
@@ -1186,6 +1441,28 @@ export default function AppShell(props: AppShellProps) {
   const [contentStatuses, { mutate: mutateContentStatuses }] = createResource(contentStatusesResourceInput, () =>
     client.overlays.contentStatuses(),
   );
+  // Per-creator unread summaries (Phase 7.2). Same gating pattern as the other
+  // overlay resources: no fetch while anonymous, one fetch on initial mount
+  // once authenticated, and a refetch whenever subscriptionsReloadKey bumps
+  // (subscribe/unsubscribe/refresh/mark-as-read all bump it), so badge counts
+  // recompute without a dedicated reload channel.
+  const unreadCountsResourceInput = createMemo(() => {
+    if (!isAuthenticated()) {
+      return null;
+    }
+
+    return subscriptionsReloadKey().toString();
+  });
+  const [unreadCounts] = createResource(unreadCountsResourceInput, () => client.overlays.unreadCounts());
+  const unreadCountsValue = createMemo(() => unreadCounts.latest);
+  const unreadByCreatorId = createMemo(() => {
+    const unreadCountsByCreatorId = new Map<string, CreatorUnreadSummary>();
+    for (const summary of unreadCountsValue() ?? emptyCreatorUnreadSummaries) {
+      unreadCountsByCreatorId.set(summary.creatorId, summary);
+    }
+
+    return unreadCountsByCreatorId;
+  });
   const selectedCreatorId = createMemo(() => selectedCreator()?.id ?? null);
   const selectedContentItemId = createMemo(() => selectedContent()?.id ?? null);
 
@@ -1231,6 +1508,66 @@ export default function AppShell(props: AppShellProps) {
     setSelectedFeed(null);
     setSelectedContent(null);
   };
+
+  // F3 keyboard shortcuts: ONE window keydown listener for the whole shell,
+  // removed on dispose (the user-menu.tsx listener pattern). Text-entry
+  // targets and open dialogs never receive shell shortcuts, and they cancel a
+  // pending g prefix so it cannot leak across guard boundaries.
+  let goPrefixActive = false;
+  const handleShellKeyDown = (event: KeyboardEvent) => {
+    if (isShortcutTargetBlocked(event.target) || isDialogOpen()) {
+      goPrefixActive = false;
+      return;
+    }
+
+    const action = resolveShortcut(event, goPrefixActive);
+    goPrefixActive = nextGoPrefixActive(event, goPrefixActive);
+    if (action === null) {
+      return;
+    }
+
+    // Enter keeps its native activation on interactive elements (row buttons,
+    // tabs, resizer); only a passive target opens the active content row.
+    if (action === "open-active" && isActivationTarget(event.target)) {
+      return;
+    }
+
+    event.preventDefault();
+    switch (action) {
+      case "move-down":
+        setContentShortcutCommand({ kind: "move", delta: 1 });
+        return;
+      case "move-up":
+        setContentShortcutCommand({ kind: "move", delta: -1 });
+        return;
+      case "open-active":
+        setContentShortcutCommand({ kind: "open" });
+        return;
+      case "toggle-favorite":
+        setContentShortcutCommand({ kind: "toggle-favorite" });
+        return;
+      case "focus-creator-search":
+        document.getElementById(creatorSearchInputId)?.focus();
+        return;
+      case "clear-selection":
+        clearSelectedCreator();
+        setSearchClearKey((key) => key + 1);
+        return;
+      case "go-library":
+        // The dashboard route's beforeLoad auth-guard redirects anonymous
+        // users to login.
+        void navigate({ to: "/dashboard" });
+        return;
+      case "go-catalog":
+        void navigate({ to: "/" });
+        return;
+    }
+  };
+
+  onMount(() => {
+    window.addEventListener("keydown", handleShellKeyDown);
+    onCleanup(() => window.removeEventListener("keydown", handleShellKeyDown));
+  });
 
   const patchContentStatus = (status: UserContentStatus) => {
     mutateContentStatuses((currentStatuses = emptyUserContentStatuses) => [
@@ -1395,9 +1732,10 @@ export default function AppShell(props: AppShellProps) {
           isAuthenticated={isAuthenticated}
           mode={mode()}
           activeTab={activeTab}
-          setActiveTab={setActiveTab}
+          setActiveTab={changeActiveTab}
           readerDensity={readerDensity}
           creatorSort={creatorSort}
+          creatorSortPending={creatorListFetchPending}
           onCreatorSortChange={saveCreatorSortSetting}
           selectedCreatorId={selectedCreatorId}
           selectedCreator={selectedCreator}
@@ -1406,10 +1744,12 @@ export default function AppShell(props: AppShellProps) {
           selectedCollectionId={selectedCollectionId}
           catalogReloadKey={catalogReloadKey}
           subscriptionsReloadKey={subscriptionsReloadKey}
+          unreadByCreatorId={unreadByCreatorId}
           playlistItemsReloadKey={playlistItemsReloadKey}
           collectionsReloadKey={collectionsReloadKey}
           onCollectionsChanged={() => setCollectionsReloadKey((key) => key + 1)}
           middlePanePanel={middlePanePanel}
+          searchClearKey={searchClearKey}
           onContentListLiveReload={() => setListLiveReloadKey((key) => key + 1)}
           onSubscriptionsChanged={() => setSubscriptionsReloadKey((key) => key + 1)}
           onClearCreator={clearSelectedCreator}
@@ -1441,6 +1781,8 @@ export default function AppShell(props: AppShellProps) {
           contentStatuses={() => contentStatuses() ?? emptyUserContentStatuses}
           listLiveReloadKey={listLiveReloadKey}
           middlePanePanel={middlePanePanel}
+          searchClearKey={searchClearKey}
+          contentShortcutCommand={contentShortcutCommand}
           onCloseMiddlePanePanel={() => setMiddlePanePanel(null)}
           onAddSource={async (value) => {
             if (mode() === "library") {
@@ -1477,11 +1819,13 @@ export default function AppShell(props: AppShellProps) {
           onSelectPlaylist={setSelectedPlaylistId}
           onPlaylistItemAdded={() => setPlaylistItemsReloadKey((key) => key + 1)}
           onFavoriteChanged={() => setFavoritesReloadKey((key) => key + 1)}
+          favoritesReloadKey={favoritesReloadKey}
           onSelectCreator={selectCreatorFromViewer}
           onSelectContent={selectContent}
           onMarkContentOpened={markContentOpened}
           onMarkContentPlayed={markContentPlayed}
           onAutoMarkContentPlayed={autoMarkContentPlayed}
+          onPlaybackPositionSaved={patchContentStatus}
         />
         <Show when={isDesktop()}>
           <div

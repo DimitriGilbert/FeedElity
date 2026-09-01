@@ -1,8 +1,10 @@
+import { createSignal, onCleanup, onMount } from "solid-js";
 import type {
   CatalogContentListItem,
   CatalogContentSource,
   CatalogCreator,
   CatalogFeed,
+  FeedHealthEntry,
   RefreshFeedErrorSummary,
   RefreshFeedResult,
   RefreshFeedResultWithFeed,
@@ -238,6 +240,148 @@ export function persistHidePlayed(value: boolean): void {
   } catch {
     // localStorage may be unavailable; in-memory state is unaffected
   }
+}
+
+export const shellModeLocalStorageKey = "feedelity.shell.mode";
+
+export const leftPaneTabLocalStorageKey = "feedelity.shell.left-tab";
+
+export const creatorSourceFilterLocalStorageKey = "feedelity.creators.source-filter";
+
+export const contentViewModeLocalStorageKey = "feedelity.content.view-mode";
+
+export const contentSourceFilterLocalStorageKey = "feedelity.content.source-filter";
+
+/**
+ * Guarded localStorage read shared by the persisted-UI-state keys (F7).
+ * Returns `null` when no value is stored or when localStorage is unavailable
+ * (private mode, sandboxed iframe, non-browser runtime), so callers can treat
+ * "never chosen" and "cannot read" identically.
+ */
+export function readPersistedLocalValue(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Guarded localStorage write shared by the persisted-UI-state keys (F7).
+ * Failures are ignored: the UI state stays functional in-memory when
+ * localStorage is unavailable, exactly like `persistHidePlayed`.
+ */
+export function persistLocalValue(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // localStorage may be unavailable; in-memory state is unaffected
+  }
+}
+
+const shellModes: readonly ShellMode[] = ["catalog", "library"];
+
+/**
+ * Narrows a persisted shell mode. Anything missing or unrecognized (including
+ * values written by other app versions) falls back to "catalog", the mode "/"
+ * renders anyway without a redirect.
+ */
+export function toPersistedShellMode(value: string | null): ShellMode {
+  if (value === null) {
+    return "catalog";
+  }
+
+  return shellModes.find((mode) => mode === value) ?? "catalog";
+}
+
+const leftPaneTabs: readonly LeftPaneTab[] = ["library", "feeds", "playlists", "collections"];
+
+// Tabs whose buttons render only for signed-in users (app-shell.tsx tab bar),
+// matching the section-level `props.isAuthenticated()` gates.
+const authenticatedLeftPaneTabs: readonly LeftPaneTab[] = ["playlists", "collections"];
+
+/**
+ * Narrows a persisted left-pane tab. Unrecognized values fall back to
+ * "library" (the tab bar default); auth-only tabs fall back to "library" when
+ * the persisted choice is applied anonymously.
+ */
+export function toPersistedLeftPaneTab(value: string | null, isAuthenticated: boolean): LeftPaneTab {
+  if (value === null) {
+    return "library";
+  }
+
+  const tab = leftPaneTabs.find((candidate) => candidate === value);
+  if (tab === undefined) {
+    return "library";
+  }
+
+  if (!isAuthenticated && authenticatedLeftPaneTabs.includes(tab)) {
+    return "library";
+  }
+
+  return tab;
+}
+
+/**
+ * Source types offered by the creator and content source filters. Single list
+ * shared by both filter UIs and the persisted-filter parser below.
+ */
+export const sourceTypeFilterValues: readonly SourceType[] = ["youtube", "odysee", "peertube"];
+
+/**
+ * Narrows a persisted source-type filter. Anything missing or unrecognized
+ * (the empty string written for "All" included) means no filter.
+ */
+export function toPersistedSourceTypeFilter(value: string | null): SourceType | null {
+  if (value === null) {
+    return null;
+  }
+
+  return sourceTypeFilterValues.find((sourceType) => sourceType === value) ?? null;
+}
+
+const contentViewModes: readonly ContentViewMode[] = [
+  "catalog",
+  "subscribed",
+  "favorites",
+  "history-opened",
+  "played",
+];
+
+// Modes whose buttons render only for signed-in users (content-column view
+// switcher), matching the anonymous reset effect that enforces the default.
+const authenticatedContentViewModes: readonly ContentViewMode[] = ["favorites", "history-opened", "played"];
+
+/**
+ * The view mode a shell mode starts in: "subscribed" for the library,
+ * "catalog" for the catalog — the same default the content-column seed and
+ * anonymous reset effect apply.
+ */
+export function toContentViewModeDefault(mode: ShellMode): ContentViewMode {
+  return mode === "library" ? "subscribed" : "catalog";
+}
+
+/**
+ * Narrows a persisted content view mode for a shell mode. Unrecognized values
+ * fall back to the mode default; auth-only modes (favorites/history/played)
+ * fall back to the mode default when applied anonymously.
+ */
+export function toPersistedContentViewMode(value: string | null, isAuthenticated: boolean, mode: ShellMode): ContentViewMode {
+  const fallback = toContentViewModeDefault(mode);
+  if (value === null) {
+    return fallback;
+  }
+
+  const viewMode = contentViewModes.find((candidate) => candidate === value);
+  if (viewMode === undefined) {
+    return fallback;
+  }
+
+  if (!isAuthenticated && authenticatedContentViewModes.includes(viewMode)) {
+    return fallback;
+  }
+
+  return viewMode;
 }
 
 export function clampLeftFraction(left: number, middle: number): number {
@@ -480,6 +624,58 @@ export function formatRefreshErrorCodeLabel(code: string): string {
   return refreshErrorCodeLabels[code] ?? code;
 }
 
+/**
+ * Order the feed-health rows for the health dialog: most consecutive failures
+ * first, then the stalest successful refresh first (feeds that have never
+ * succeeded sort before feeds that succeeded at some point). Ties fall through
+ * to feed URL then feed id so the ordering is deterministic across refetches.
+ * The repository returns rows sorted by feed URL; this client-side sort is the
+ * presentation contract (see feed-health-dialog).
+ */
+export function sortFeedHealthEntries(entries: readonly FeedHealthEntry[]): readonly FeedHealthEntry[] {
+  return [...entries].sort((left, right) => {
+    if (left.consecutiveFailureCount !== right.consecutiveFailureCount) {
+      return right.consecutiveFailureCount - left.consecutiveFailureCount;
+    }
+
+    if (left.lastSuccessAt === null || right.lastSuccessAt === null) {
+      if (left.lastSuccessAt !== right.lastSuccessAt) {
+        // Never-succeeded feeds are the stalest possible, so they come first.
+        return left.lastSuccessAt === null ? -1 : 1;
+      }
+    } else if (left.lastSuccessAt.getTime() !== right.lastSuccessAt.getTime()) {
+      return left.lastSuccessAt.getTime() - right.lastSuccessAt.getTime();
+    }
+
+    if (left.feedUrl !== right.feedUrl) {
+      return left.feedUrl < right.feedUrl ? -1 : 1;
+    }
+
+    return left.feedId < right.feedId ? -1 : left.feedId > right.feedId ? 1 : 0;
+  });
+}
+
+const feedHealthDayMs = 86_400_000;
+
+/**
+ * Human "last success" age for a feed-health row. Never-succeeded feeds read
+ * "never"; successes within the current day read "today"; older ones read
+ * whole-day counts ("3d ago"). `now` is injected so callers (and tests) stay
+ * deterministic.
+ */
+export function formatFeedHealthLastSuccess(lastSuccessAt: Date | null, now: Date): string {
+  if (lastSuccessAt === null) {
+    return "never";
+  }
+
+  const dayDifference = Math.floor((now.getTime() - lastSuccessAt.getTime()) / feedHealthDayMs);
+  if (dayDifference < 1) {
+    return "today";
+  }
+
+  return `${dayDifference}d ago`;
+}
+
 export function formatContentPublishedAt(publishedAt: Date | null): string {
   if (publishedAt === null) {
     return "Undated";
@@ -601,6 +797,68 @@ export function toReaderDensityFromSettings(settings: readonly UserSetting[]): R
   return "comfortable";
 }
 
+export const desktopMediaQuery = "(min-width: 1024px)";
+
+/**
+ * Minimal structural view of a MediaQueryList so the change-listener wiring is
+ * testable without a DOM (tests pass a plain stub with matches + listeners).
+ */
+interface MediaQueryMatchesSource {
+  readonly matches: boolean;
+  addEventListener(type: "change", listener: (event: { readonly matches: boolean }) => void): void;
+  removeEventListener(type: "change", listener: (event: { readonly matches: boolean }) => void): void;
+}
+
+/**
+ * Subscribes to a media query on behalf of a setter: pushes the current
+ * matches state immediately, forwards every change event, and returns the
+ * unsubscribe function so callers can hook it into onCleanup.
+ */
+export function bindMediaQueryMatches(
+  query: MediaQueryMatchesSource,
+  onMatchesChange: (matches: boolean) => void,
+): () => void {
+  onMatchesChange(query.matches);
+  const handler = (event: { readonly matches: boolean }) => onMatchesChange(event.matches);
+  query.addEventListener("change", handler);
+  return () => query.removeEventListener("change", handler);
+}
+
+/**
+ * Reactive "(min-width: 1024px)" signal used to pick between the virtualized
+ * content list (lg and up) and the plain list below lg. Starts `false` so the
+ * first render matches the mobile layout, then syncs from the real query on
+ * mount; the change listener is removed when the owning scope is disposed.
+ *
+ * KEPT FOR THE VIRTUALIZATION REWORK: content-list virtualization is currently
+ * disabled (TO BE FIXED in app-shell-content-column.tsx) and the plain list is
+ * the live path, but this signal still feeds the (inert) virtualizer gate and
+ * is required again by the rework.
+ */
+export function createDesktopMediaQuerySignal(): () => boolean {
+  const [isDesktop, setIsDesktop] = createSignal(false);
+  onMount(() => {
+    onCleanup(bindMediaQueryMatches(window.matchMedia(desktopMediaQuery), setIsDesktop));
+  });
+  return isDesktop;
+}
+
+/**
+ * Initial row-height estimate for the virtualized content list, derived from
+ * the row layout: the 7rem aspect-video thumbnail column (63px) plus the
+ * density vertical padding (compact py-1 = 8px, comfortable py-1.5 = 12px)
+ * plus the 1px bottom border. measureElement replaces estimates with real
+ * heights as rows mount, so estimates only seed the scroll-thumb size and the
+ * first-pass window calculation.
+ *
+ * KEPT FOR THE VIRTUALIZATION REWORK: content-list virtualization is currently
+ * disabled (TO BE FIXED in app-shell-content-column.tsx); only the inert
+ * virtualizer still reads this, and the rework needs it again.
+ */
+export function estimateContentItemRowHeight(readerDensity: ReaderDensity): number {
+  return readerDensity === "compact" ? 72 : 76;
+}
+
 export function toCreatorListSortFromSettings(settings: readonly UserSetting[]): CreatorListSort {
   const setting = settings.find((candidate) => candidate.key === creatorListSortSettingKey);
   if (setting === undefined) {
@@ -651,6 +909,209 @@ export function toYoutubeNoCookieFromSettings(settings: readonly UserSetting[]):
   }
 
   return true;
+}
+
+/**
+ * Playback resume position for the selected content item, narrowed from the
+ * `playback` payload stored inside the item's `opened` row metadataJson
+ * (packages/api PlaybackPositionMetadata, qol-features-plan.md decision D1).
+ */
+export interface PlaybackPosition {
+  readonly positionSeconds: number;
+  readonly durationSeconds: number | null;
+}
+
+/**
+ * Embed hosts whose players are tracked through the YouTube IFrame API bridge.
+ * The single source of truth for the allowlist used by `toEmbedUrlWithApi`,
+ * `isYouTubeEmbedUrl`, and the viewer's tracked-source decision.
+ */
+const youTubeEmbedHosts: readonly string[] = ["www.youtube-nocookie.com", "www.youtube.com"];
+
+/**
+ * True when the URL is an https URL hosted on one of the YouTube embed hosts.
+ * Anything unparseable, non-https, or from another provider is not tracked.
+ */
+export function isYouTubeEmbedUrl(embedUrl: string): boolean {
+  try {
+    const url = new URL(embedUrl);
+    return url.protocol === "https:" && youTubeEmbedHosts.includes(url.host);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Parses the playback position stored under the `playback` key of an `opened`
+ * content status row's metadataJson. Requires `playback.positionSeconds` to be
+ * a finite number >= 0; `durationSeconds` may be absent or null (unknown) and
+ * otherwise must be a finite number >= 0. Returns null for null input,
+ * malformed JSON, or any shape violation. Never throws.
+ */
+export function toPlaybackPosition(metadataJson: string | null): PlaybackPosition | null {
+  if (metadataJson === null) {
+    return null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(metadataJson);
+  } catch {
+    return null;
+  }
+
+  if (typeof parsed !== "object" || parsed === null) {
+    return null;
+  }
+
+  const metadata = parsed as Record<string, unknown>;
+  const playback = metadata.playback;
+  if (typeof playback !== "object" || playback === null) {
+    return null;
+  }
+
+  const candidate = playback as Record<string, unknown>;
+  const positionSeconds = candidate.positionSeconds;
+  if (typeof positionSeconds !== "number" || !Number.isFinite(positionSeconds) || positionSeconds < 0) {
+    return null;
+  }
+
+  const durationSeconds = candidate.durationSeconds;
+  if (durationSeconds === undefined || durationSeconds === null) {
+    return { positionSeconds, durationSeconds: null };
+  }
+
+  if (typeof durationSeconds !== "number" || !Number.isFinite(durationSeconds) || durationSeconds < 0) {
+    return null;
+  }
+
+  return { positionSeconds, durationSeconds };
+}
+
+/**
+ * True when a saved resume position is worth restoring. Reopening a finished
+ * (or nearly finished) video must start fresh instead of jumping to the tail:
+ * when the saved duration is known and 10s or less remain, resume is
+ * suppressed — the same 10s tail rule the native surface applies against the
+ * live duration at seek time (`positionSeconds < duration - 10`). Positions
+ * with an unknown duration stay resumable; the surfaces' live-duration guards
+ * still apply when an actual player is involved.
+ */
+export function isResumablePlaybackPosition(position: PlaybackPosition): boolean {
+  return position.durationSeconds === null || position.durationSeconds - position.positionSeconds > 10;
+}
+
+/**
+ * Derives the list-progress lookup from the user's content statuses: only
+ * `opened` rows can carry a playback payload (decision D1), and rows whose
+ * metadataJson does not parse into a position are skipped. `played` rows are
+ * excluded even if a stale playback-shaped payload exists — a finished video
+ * has no resume progress to show.
+ */
+export function toPlaybackPositionsByItemId(statuses: readonly UserContentStatus[]): Map<string, PlaybackPosition> {
+  const positionByItemId = new Map<string, PlaybackPosition>();
+  for (const status of statuses) {
+    if (status.status !== "opened") {
+      continue;
+    }
+
+    const position = toPlaybackPosition(status.metadataJson);
+    if (position !== null) {
+      positionByItemId.set(status.contentItemId, position);
+    }
+  }
+
+  return positionByItemId;
+}
+
+/**
+ * Rewrites a YouTube embed URL for the IFrame API bridge: only https URLs on
+ * the allowlisted YouTube hosts are accepted; `enablejsapi=1` and
+ * `origin=<appOrigin>` are set (overwriting any previous values) while all
+ * other existing params are preserved. `start=<floor(startSeconds)>` is added
+ * only when `startSeconds` is provided and >= 10 (short leftovers are not
+ * worth a seek). Callers suppress near-finished positions through
+ * `isResumablePlaybackPosition` before passing a start. Returns null for any
+ * other host or unsafe URL.
+ */
+export function toEmbedUrlWithApi(embedUrl: string, appOrigin: string, startSeconds?: number): string | null {
+  if (startSeconds !== undefined && (!Number.isFinite(startSeconds) || startSeconds < 0)) {
+    return null;
+  }
+
+  let url: URL;
+  try {
+    url = new URL(embedUrl);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== "https:" || !youTubeEmbedHosts.includes(url.host)) {
+    return null;
+  }
+
+  url.searchParams.set("enablejsapi", "1");
+  url.searchParams.set("origin", appOrigin);
+  if (startSeconds !== undefined && startSeconds >= 10) {
+    url.searchParams.set("start", Math.floor(startSeconds).toString());
+  }
+
+  return url.toString();
+}
+
+/**
+ * Formats a playback position as "12:34 / 45:00" using the same clock rules as
+ * `formatContentDuration`. When no duration is known only the current position
+ * is rendered.
+ */
+export function formatPlaybackPosition(position: PlaybackPosition): string {
+  const current = formatContentDuration(position.positionSeconds);
+  if (position.durationSeconds === null) {
+    return current;
+  }
+
+  return `${current} / ${formatContentDuration(position.durationSeconds)}`;
+}
+
+/**
+ * Accessible label for the list progress badge, e.g. "Resume at 12:34 of
+ * 45:00". Without a known duration only the position is announced.
+ */
+export function formatPlaybackResumeLabel(position: PlaybackPosition): string {
+  if (position.durationSeconds === null) {
+    return `Resume at ${formatContentDuration(position.positionSeconds)}`;
+  }
+
+  return `Resume at ${formatContentDuration(position.positionSeconds)} of ${formatContentDuration(position.durationSeconds)}`;
+}
+
+export interface PlaybackPositionFlushInput {
+  readonly lastSavedSeconds: number | null;
+  readonly nextSeconds: number;
+  readonly lastSavedAtMs: number | null;
+  readonly nowMs: number;
+  readonly force: boolean;
+}
+
+/**
+ * Pure throttle decision for playback position saves: flush when never saved,
+ * when forced, when at least 10s have passed since the last save, or when the
+ * position moved by at least 5s since the last save.
+ */
+export function shouldFlushPlaybackPosition(input: PlaybackPositionFlushInput): boolean {
+  if (input.force) {
+    return true;
+  }
+
+  if (input.lastSavedSeconds === null || input.lastSavedAtMs === null) {
+    return true;
+  }
+
+  if (input.nowMs - input.lastSavedAtMs >= 10_000) {
+    return true;
+  }
+
+  return Math.abs(input.nextSeconds - input.lastSavedSeconds) >= 5;
 }
 
 export function toSafePlaybackUrl(value: string | null): string | null {
@@ -709,4 +1170,32 @@ export function toPlayableSources(sources: readonly CatalogContentSource[]): rea
     })
     .filter((source): source is PlayableSource => source !== null)
     .sort((left, right) => left.priority - right.priority);
+}
+
+/**
+ * The link the viewer's "copy stream URL" affordance places on the clipboard
+ * for the currently selected playable source. Native sources copy the direct
+ * media URL (playable by mpv/yt-dlp as-is); embed-only sources copy the
+ * canonical page URL, which yt-dlp (and mpv through it) resolves to a stream.
+ * The button text names which kind of link is copied.
+ */
+export interface CopyableStreamLink {
+  readonly label: string;
+  readonly url: string;
+}
+
+export function toCopyableStreamLink(source: PlayableSource | null): CopyableStreamLink | null {
+  if (source === null) {
+    return null;
+  }
+
+  if (source.kind === "native") {
+    return { label: "Copy stream URL", url: source.url };
+  }
+
+  if (source.canonicalUrl.length === 0) {
+    return null;
+  }
+
+  return { label: "Copy page link", url: source.canonicalUrl };
 }

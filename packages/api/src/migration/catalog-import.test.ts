@@ -56,8 +56,18 @@ describe("Strapi catalog import mapper", () => {
       sourceType: "youtube",
       sourceExternalId: "yt-fixture-video-1",
       title: "Fixture Video",
-      description: "Fixture description body.",
     });
+    // The imported description must be persisted on the item. The slim list
+    // projection does not carry it, so read it back through the detail shape.
+    const importedItem = contentItems[0];
+    if (importedItem === undefined) {
+      throw new Error("Expected the fixture content item to be listed.");
+    }
+    const importedDetail = await getCatalogContentDetail(testDatabase.db, importedItem.id);
+    if (importedDetail === null) {
+      throw new Error("Expected the imported content detail to be readable.");
+    }
+    expect(importedDetail.description).toBe("Fixture description body.");
     expect(mappings.map((mapping) => `${mapping.oldEntityType}:${mapping.oldEntityId}`).sort()).toEqual([
       "strapi-content-option:41",
       "strapi-content-option:42",

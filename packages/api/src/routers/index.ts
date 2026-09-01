@@ -8,6 +8,8 @@ import { z } from "zod";
 import type { AuthenticatedSession } from "../context";
 import { protectedProcedure, publicProcedure } from "../index";
 import { runImportMigration } from "../migration/run-migration";
+import { exportUserDataForUser } from "../migration/user-data-export";
+import { importUserDataForUser } from "../migration/user-data-import";
 import type { RepositoryDb } from "../repositories/catalog";
 import {
   getCatalogContentDetail,
@@ -18,6 +20,7 @@ import {
   listCatalogContentItems,
   listCatalogCreators,
   listCatalogFeedsForBrowsing,
+  listFeedHealth,
   listRefreshFeedResultsWithFeedsForRun,
   listRefreshRuns,
 } from "../repositories/catalog";
@@ -39,6 +42,7 @@ import {
   getSubscriptionWithCreatorForUser,
   listCollectionMembersWithCreatorsForUserCollection,
   listCollectionsForUser,
+  listCreatorUnreadForUser,
   listSubscribedContentItemsForUser,
   listContentStatusWithContentForUser,
   listContentStatusesForUser,
@@ -46,6 +50,8 @@ import {
   listPlaylistsForUser,
   listSubscriptionsWithCreatorsForUser,
   listUserSettingsForUser,
+  markAllCreatorsContentOpenedForUser,
+  markCreatorContentOpenedForUser,
   removeCollectionMemberForUser,
   removePlaylistItemForUser,
   reorderPlaylistItemsForUser,
@@ -54,6 +60,7 @@ import {
   unsubscribeFromCreatorForUser,
   updateCollectionForUser,
   updatePlaylistForUser,
+  upsertPlaybackPositionForUser,
 } from "../repositories/overlays";
 import {
   getCreatorMetadataRefreshStatus,
@@ -196,6 +203,14 @@ const contentStatusInput = z.object({
   contentItemId: z.string().min(1),
 });
 
+const playbackSecondsInput = z.number().int().min(0).max(86_400);
+
+const savePlaybackPositionInput = z.object({
+  contentItemId: z.string().min(1),
+  positionSeconds: playbackSecondsInput,
+  durationSeconds: playbackSecondsInput.optional(),
+});
+
 const contentHistoryInput = z.object({
   status: z.enum(["opened", "played"]),
   limit: catalogLimitInput,
@@ -203,6 +218,12 @@ const contentHistoryInput = z.object({
 
 const subscriptionCreatorInput = z.object({
   creatorId: z.string().min(1),
+});
+
+// Array bound mirrors batchAddSourcesInput: bulk overlay writes stay bounded
+// per call so one request cannot loop unbounded over the subscription table.
+const bulkUnsubscribeInput = z.object({
+  creatorIds: z.array(z.string().min(1)).min(1).max(100),
 });
 
 const settingKeyInput = z.string().trim().min(1).max(64).regex(/^[a-z][a-z0-9._-]*$/);
@@ -215,6 +236,14 @@ const saveSettingInput = z.object({
 });
 
 const migrationImportInput = z.object({
+  exportData: z.unknown(),
+  sourceFilename: z.string().trim().min(1).max(255).nullable().optional(),
+});
+
+// Same shape as migrationImportInput so the settings UI posts parsed user-data
+// files identically; sourceFilename is accepted for that shape parity, while
+// the import itself fingerprints and stores only the payload.
+const importUserDataInput = z.object({
   exportData: z.unknown(),
   sourceFilename: z.string().trim().min(1).max(255).nullable().optional(),
 });
@@ -248,6 +277,12 @@ const refreshStatusInput = z
     runId: z.string().min(1).optional(),
     limit: z.number().int().min(1).max(20).default(5),
     feedResultsLimit: z.number().int().min(1).max(50).default(3),
+  })
+  .optional();
+
+const feedHealthInput = z
+  .object({
+    limit: z.number().int().min(1).max(500).default(200),
   })
   .optional();
 
@@ -541,6 +576,61 @@ export const appRouter = {
         unsubscribed,
       };
     }),
+    // Bulk variant of unsubscribeFromCreator for the feed-health dialog. Unlike
+    // the single-id procedure it does NOT 404 on unknown creators: a health row
+    // is catalog-global while subscriptions are user-owned, so an unsubscribed
+    // creator is a normal outcome reported via missingCreatorIds. Duplicate ids
+    // collapse to one write (idempotent bulk semantics).
+    bulkUnsubscribe: protectedProcedure.input(bulkUnsubscribeInput).handler(async ({ input, context }) => {
+      const creatorIds = [...new Set(input.creatorIds)];
+      let unsubscribedCount = 0;
+      const missingCreatorIds: string[] = [];
+
+      for (const creatorId of creatorIds) {
+        const unsubscribed = await unsubscribeFromCreatorForUser(context.db, context.session.user.id, creatorId);
+        if (unsubscribed) {
+          unsubscribedCount += 1;
+        } else {
+          missingCreatorIds.push(creatorId);
+        }
+      }
+
+      return {
+        unsubscribedCount,
+        missingCreatorIds,
+      };
+    }),
+    unreadCounts: protectedProcedure.handler(({ context }) => {
+      return listCreatorUnreadForUser(context.db, context.session.user.id);
+    }),
+    // D7: feed health is a protected overlay-scope view even though the data is
+    // catalog-global (no user-owned rows are included). Public refresh.status
+    // is deliberately untouched.
+    feedHealth: protectedProcedure.input(feedHealthInput).handler(({ input, context }) => {
+      return listFeedHealth(context.db, { limit: input?.limit });
+    }),
+    markCreatorContentOpened: protectedProcedure.input(subscriptionCreatorInput).handler(async ({ input, context }) => {
+      if ((await getCatalogCreatorSummaryById(context.db, input.creatorId)) === null) {
+        throw new ORPCError("NOT_FOUND");
+      }
+      if (
+        (await getSubscriptionWithCreatorForUser(context.db, context.session.user.id, input.creatorId)) === null
+      ) {
+        throw new ORPCError("NOT_FOUND");
+      }
+
+      return markCreatorContentOpenedForUser(context.db, {
+        userId: context.session.user.id,
+        creatorId: input.creatorId,
+        markedBeforeMs: Date.now(),
+      });
+    }),
+    markAllContentOpened: protectedProcedure.handler(({ context }) => {
+      return markAllCreatorsContentOpenedForUser(context.db, {
+        userId: context.session.user.id,
+        markedBeforeMs: Date.now(),
+      });
+    }),
     contentStatuses: protectedProcedure.handler(({ context }) => {
       return listContentStatusesForUser(context.db, context.session.user.id);
     }),
@@ -566,6 +656,20 @@ export const appRouter = {
         userId: context.session.user.id,
         contentItemId: input.contentItemId,
         status: "played",
+      });
+
+      return { status };
+    }),
+    savePlaybackPosition: protectedProcedure.input(savePlaybackPositionInput).handler(async ({ input, context }) => {
+      if ((await getCatalogContentItemById(context.db, input.contentItemId)) === null) {
+        throw new ORPCError("NOT_FOUND");
+      }
+
+      const status = await upsertPlaybackPositionForUser(context.db, {
+        userId: context.session.user.id,
+        contentItemId: input.contentItemId,
+        positionSeconds: input.positionSeconds,
+        durationSeconds: input.durationSeconds,
       });
 
       return { status };
@@ -722,6 +826,18 @@ export const appRouter = {
     }),
     deleteSetting: protectedProcedure.input(deleteSettingInput).handler(async ({ input, context }) => {
       return { deleted: await deleteUserSettingForUser(context.db, context.session.user.id, input.key) };
+    }),
+    // User-data portability (qol plan F4): export reads only the signed-in
+    // user's overlays; import writes only into them (every write is scoped by
+    // context.session.user.id inside the migration services).
+    exportUserData: protectedProcedure.handler(({ context }) => {
+      return exportUserDataForUser(context.db, context.session.user.id);
+    }),
+    importUserData: protectedProcedure.input(importUserDataInput).handler(({ input, context }) => {
+      return importUserDataForUser(context.db, {
+        userId: context.session.user.id,
+        exportData: input.exportData,
+      });
     }),
     collections: protectedProcedure.handler(({ context }) => {
       return listCollectionsForUser(context.db, context.session.user.id);

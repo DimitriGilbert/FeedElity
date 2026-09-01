@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
-import type { CatalogContentSource, CatalogCreator, CatalogCreatorSummary, CatalogFeed, RefreshFeedResult, RefreshRun, RefreshRunReport, UserSetting } from "@FeedElity/api";
-import type { LeftPaneTab, MiddlePanePanel, ViewerMode } from "./app-shell.contract";
+import type { CatalogContentSource, CatalogCreator, CatalogCreatorSummary, CatalogFeed, FeedHealthEntry, RefreshFeedResult, RefreshRun, RefreshRunReport, UserContentStatus, UserSetting } from "@FeedElity/api";
+import type { LeftPaneTab, MiddlePanePanel, PlayableSource, ViewerMode } from "./app-shell.contract";
 
 import {
   addSourceHelpId,
   addSourceInputId,
+  bindMediaQueryMatches,
   contentCatalogFiltersLabel,
   contentColumnClass,
   contentHeaderRegionClass,
@@ -14,35 +15,46 @@ import {
   contentScrollRegionClass,
   contentSearchInputId,
   contentSourceFilterId,
+  contentSourceFilterLocalStorageKey,
   contentViewModeAllId,
   contentViewModeFavoritesId,
   contentViewModeHistoryId,
   contentViewModePlayedId,
   contentViewModeSubscribedId,
+  contentViewModeLocalStorageKey,
   creatorListLimit,
   creatorListSortInputId,
   creatorListSortSettingKey,
   creatorListSortValues,
   creatorSearchInputId,
   creatorSourceFilterId,
+  creatorSourceFilterLocalStorageKey,
   defaultLeftFraction,
   defaultMiddleFraction,
   desktopShellGridClass,
   feedListLimit,
   firstPageOffset,
+  formatFeedHealthLastSuccess,
+  formatPlaybackPosition,
+  formatPlaybackResumeLabel,
   formatRefreshReportSummary,
   formatRefreshRunSummary,
   formatSettingValue,
   hidePlayedLocalStorageKey,
+  isResumablePlaybackPosition,
+  isYouTubeEmbedUrl,
   parseRefreshErrorSummaries,
   getShellColumnCount,
   hasInternalAppHeader,
   joinFeedResultsWithFeeds,
   leftPaneTabLabels,
+  leftPaneTabLocalStorageKey,
   minLeftFraction,
   minMiddleFraction,
   minRightFraction,
   paneWidthsLocalStorageKey,
+  persistLocalValue,
+  readPersistedLocalValue,
   clampLeftFraction,
   clampMiddleFraction,
   playlistDescriptionInputId,
@@ -51,6 +63,8 @@ import {
   collectionNameInputId,
   collectionDescriptionInputId,
   collectionMemberSearchInputId,
+  desktopMediaQuery,
+  estimateContentItemRowHeight,
   readerDensityInputId,
   readerDensitySettingKey,
   readerDensityValues,
@@ -60,21 +74,34 @@ import {
   settingValueInputId,
   shellGridClass,
   shellColumns,
+  shellModeLocalStorageKey,
   shellPaneIds,
   shellRootClass,
   showsCatalogFilters,
+  shouldFlushPlaybackPosition,
+  sortFeedHealthEntries,
   sourceActionsRegionClass,
   sourceCatalogRegionClass,
   sourceColumnClass,
   sourceCreatorListRegionClass,
   sourceFeedListRegionClass,
   sourceHeaderRegionClass,
+  sourceTypeFilterValues,
   toContentListInput,
+  toCopyableStreamLink,
   toDesktopColumnTemplate,
+  toEmbedUrlWithApi,
   toFeedListInput,
+  toPlaybackPosition,
+  toPlaybackPositionsByItemId,
   toPlayableSources,
   toCreatorListSortFromSettings,
   toCreatorSourceTypes,
+  toContentViewModeDefault,
+  toPersistedContentViewMode,
+  toPersistedLeftPaneTab,
+  toPersistedShellMode,
+  toPersistedSourceTypeFilter,
   toReaderDensityFromSettings,
   toSafePlaybackUrl,
   toShellContentSelectionState,
@@ -85,6 +112,13 @@ import {
   viewerColumnClass,
   viewerScrollRegionClass,
 } from "./app-shell.contract";
+import {
+  maxUserDataImportFileBytes,
+  parseUserDataImportText,
+  toUserDataExportFilename,
+  toUserDataExportJson,
+  triggerUserDataDownload,
+} from "./app-shell-source-sections";
 
 const changedUiSourceFiles = [
   "./app-shell.contract.ts",
@@ -116,6 +150,35 @@ async function readAppShellSource() {
   );
 
   return sources.join("\n");
+}
+
+/**
+ * A complete Storage implementation backed by a Map so the guarded
+ * `readPersistedLocalValue`/`persistLocalValue` pair can be exercised through
+ * real localStorage semantics (bun:test has no Web Storage global).
+ */
+function toStorageStub(store: Map<string, string>): Storage {
+  return {
+    get length() {
+      return store.size;
+    },
+    clear: () => {
+      store.clear();
+    },
+    key: (index: number) => {
+      return [...store.keys()][index] ?? null;
+    },
+    getItem: (key: string) => {
+      const value = store.get(key);
+      return value === undefined ? null : value;
+    },
+    setItem: (key: string, value: string) => {
+      store.set(key, String(value));
+    },
+    removeItem: (key: string) => {
+      store.delete(key);
+    },
+  };
 }
 
 test("shell exposes the required three-pane RSS reader contract", () => {
@@ -230,9 +293,18 @@ test("primary navigation preserves anonymous catalog access and authenticated wo
 test("anonymous shell state gates protected overlays behind app session state", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("const [appSession] = createResource(appSessionResourceInput, () => client.session.current())");
-  expect(source).toContain("appSession.latest !== null && appSession.latest !== undefined");
+  expect(source).toContain("const isAuthenticated = createMemo(() => !session().isPending && session().data !== null);");
+  expect(source).not.toContain("client.session.current");
   expect(source).toContain('props.isAuthenticated() && props.mode === "library"');
+});
+
+test("creator catalog holds its first fetch until the persisted sort is known (D11)", async () => {
+  const source = await readAppShellSource();
+
+  expect(source).toContain("const creatorsResourceInput = createMemo(() => {\n    if (props.creatorSortPending()) {\n      return null;\n    }\n\n    return creatorListResourceKey();\n  });");
+  expect(source).toContain('return settings.state === "unresolved" || settings.state === "pending";');
+  expect(source).toContain("creatorSortPending={creatorListFetchPending}");
+  expect(source).toContain('props.mode === "catalog" && (creators.loading || props.creatorSortPending()) && creatorsValue() === undefined');
 });
 
 test("app shell keeps a single compact global header", () => {
@@ -343,7 +415,7 @@ test("creator pane is wired to anonymous catalog creators and feeds", async () =
 test("creator source-type filter scopes the creator list without changing playback source switching", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("const [sourceType, setSourceType] = createSignal<SourceType | null>(null)");
+  expect(source).toContain("toPersistedSourceTypeFilter(readPersistedLocalValue(creatorSourceFilterLocalStorageKey))");
   // Catalog search is debounced: the list input reads the 300 ms debounced
   // mirror of the search signal, not the raw keystroke value.
   expect(source).toContain("() => toCreatorListInput(debouncedSearch(), sourceType(), props.creatorSort())");
@@ -467,7 +539,7 @@ test("content pane is wired to anonymous catalog content items", async () => {
   expect(source).toContain("<Show when={showsCatalogFilters(viewMode()) || (props.isAuthenticated() && (viewMode() === \"favorites\" || viewMode() === \"history-opened\" || viewMode() === \"played\"))}>");
   expect(source).toContain("aria-label={visibleFiltersLabel()}");
   expect(source).toContain("onInput={(event) => setSearch(event.currentTarget.value)}");
-  expect(source).toContain("onChange={(event) => setSourceType(toSourceFilterValue(event.currentTarget.value))}");
+  expect(source).toContain("onChange={(event) => changeSourceType(toSourceFilterValue(event.currentTarget.value))}");
   expect(source).toContain("selected={() => props.selectedContentItemId() === contentItem.id}");
   expect(source).toContain("data-selected-content-item-id={selectedContentItemId() ?? \"\"}");
 });
@@ -488,7 +560,7 @@ test("content filters are Solid state backed and avoid class-name filtering", as
   ];
 
   expect(source).toContain("const [search, setSearch] = createSignal(\"\")");
-  expect(source).toContain("const [sourceType, setSourceType] = createSignal<SourceType | null>(null)");
+  expect(source).toContain("toPersistedSourceTypeFilter(readPersistedLocalValue(contentSourceFilterLocalStorageKey))");
   expect(source).toContain("props.selectedCollectionId(),");
 
   for (const snippet of forbiddenDomFilteringSnippets) {
@@ -707,6 +779,42 @@ test("refresh heartbeat refetches the content list only when new items are inges
   expect(source).toContain("setCatalogReloadKey((key) => key + 1);");
 });
 
+test("refresh completion bumps the subscriptions channel once so unread counts refetch", async () => {
+  const source = await readAppShellSource();
+
+  // Run-completion branch of the poll effect: a finished run reloads the
+  // content list AND bumps the shared subscriptions channel exactly once, so
+  // the unreadCounts resource (keyed on subscriptionsReloadKey in AppShell)
+  // refetches after manual/force refresh ingests new items.
+  const completionStart = source.indexOf('if (run.status !== "running") {');
+  const completionEnd = source.indexOf("const createdItems = run.itemsCreatedCount;");
+  expect(completionStart).toBeGreaterThan(-1);
+  expect(completionEnd).toBeGreaterThan(completionStart);
+  const completionBranch = source.slice(completionStart, completionEnd);
+  expect(completionBranch).toContain("props.onContentListLiveReload();");
+  expect(completionBranch).toContain("props.onSubscriptionsChanged();");
+
+  // The mid-poll items-created path stays content-only: no per-poll
+  // subscription refetches while the run is still going.
+  const midPollStart = completionEnd;
+  const midPollEnd = source.indexOf("refreshPollTimer = setTimeout(() => {", midPollStart);
+  expect(midPollEnd).toBeGreaterThan(midPollStart);
+  const midPollBranch = source.slice(midPollStart, midPollEnd);
+  expect(midPollBranch).toContain("props.onContentListLiveReload();");
+  expect(midPollBranch).not.toContain("props.onSubscriptionsChanged();");
+
+  // Scoped single-creator refresh success path: the same bump sits next to the
+  // surgical feed-list reload key so its run also refreshes unread badges.
+  const scopedStart = source.indexOf("const result = await client.refresh.runCreator({ creatorId, force: true });");
+  const scopedEnd = source.indexOf("} catch (error) {", scopedStart);
+  expect(scopedStart).toBeGreaterThan(-1);
+  expect(scopedEnd).toBeGreaterThan(scopedStart);
+  const scopedSuccess = source.slice(scopedStart, scopedEnd);
+  expect(scopedSuccess).toContain("props.onContentListLiveReload();");
+  expect(scopedSuccess).toContain("props.onSubscriptionsChanged();");
+  expect(scopedSuccess).toContain("setFeedListReloadKey((key) => key + 1);");
+});
+
 test("refresh run summary labels all supported refresh scopes", () => {
   const baseRun: RefreshRun = {
     id: "refresh-run-1",
@@ -803,6 +911,23 @@ test("selected viewer places playback before body in source order", async () => 
 
   expect(playbackIndex).toBeGreaterThan(-1);
   expect(bodyIndex).toBeGreaterThan(playbackIndex);
+});
+
+test("playback surface remounts players per source change via keyed matches", async () => {
+  const source = await Bun.file(new URL("./app-shell-viewer.tsx", import.meta.url)).text();
+
+  // Each playback-surface Match carries a per-video source object; non-keyed
+  // Matches only re-invoke children on truthiness flips, so a truthy-to-truthy
+  // source change would keep the previously mounted player (whose embed src
+  // and resume position are frozen at creation) rendering the old video.
+  for (const memoName of ["trackedEmbedSource()", "bareEmbedSource()", "nativeSource()"]) {
+    expect(source).toContain(`<Match when={${memoName}} keyed>`);
+  }
+  // Keyed function children receive the source value directly, not an accessor.
+  expect(source).not.toContain("source={source()}");
+  // The embed src stays frozen at mount (resume rides the start param), so a
+  // keyed remount is the only way a new selection picks up the new URL.
+  expect(source).toContain("const embedSrc = toEmbedUrlWithApi(");
 });
 
 test("selected viewer derives playable sources only from safe API source URLs", () => {
@@ -943,6 +1068,206 @@ test("odysee embed sources are playable while odysee sources without any URL sta
   expect(toPlayableSources(odyseeUnplayable)).toEqual([]);
 });
 
+test("toCopyableStreamLink picks the native media URL or the canonical page link", () => {
+  expect(toCopyableStreamLink(null)).toBeNull();
+
+  const nativeSource: PlayableSource = {
+    id: "native-1",
+    sourceType: "peertube",
+    label: "PeerTube media",
+    kind: "native",
+    url: "https://media.example.test/video-1.mp4",
+    canonicalUrl: "https://peertube.example.test/w/video-1",
+    priority: 1,
+  };
+  expect(toCopyableStreamLink(nativeSource)).toEqual({
+    label: "Copy stream URL",
+    url: "https://media.example.test/video-1.mp4",
+  });
+
+  const embedSource: PlayableSource = {
+    id: "embed-1",
+    sourceType: "odysee",
+    label: "Odysee embed",
+    kind: "embed",
+    url: "https://odysee.example.test/$/embed/video-1",
+    canonicalUrl: "https://odysee.example.test/video-1",
+    priority: 1,
+  };
+  expect(toCopyableStreamLink(embedSource)).toEqual({
+    label: "Copy page link",
+    url: "https://odysee.example.test/video-1",
+  });
+
+  // An embed-only source without any canonical URL has nothing safe to copy.
+  expect(toCopyableStreamLink({ ...embedSource, canonicalUrl: "" })).toBeNull();
+});
+
+test("toPlaybackPosition parses the opened-row playback metadata narrowly", () => {
+  expect(toPlaybackPosition(null)).toBeNull();
+  expect(toPlaybackPosition("not json")).toBeNull();
+  expect(toPlaybackPosition("{}")).toBeNull();
+  expect(toPlaybackPosition(JSON.stringify({ playback: null }))).toBeNull();
+  expect(toPlaybackPosition(JSON.stringify({ playback: "fast" }))).toBeNull();
+  expect(toPlaybackPosition(JSON.stringify({ playback: {} }))).toBeNull();
+  expect(toPlaybackPosition(JSON.stringify({ playback: { positionSeconds: "12" } }))).toBeNull();
+  expect(toPlaybackPosition(JSON.stringify({ playback: { positionSeconds: -1 } }))).toBeNull();
+  // 1e999 overflows to Infinity during JSON.parse and must be rejected.
+  expect(toPlaybackPosition('{"playback":{"positionSeconds":1e999}}')).toBeNull();
+  expect(toPlaybackPosition(JSON.stringify({ playback: { positionSeconds: 754, durationSeconds: -5 } }))).toBeNull();
+  expect(toPlaybackPosition(JSON.stringify({ playback: { positionSeconds: 754, durationSeconds: "45:00" } }))).toBeNull();
+  expect(toPlaybackPosition(JSON.stringify("754"))).toBeNull();
+
+  expect(
+    toPlaybackPosition(JSON.stringify({ playback: { positionSeconds: 754, durationSeconds: 2700, updatedAt: "2026-08-30T00:00:00.000Z" } })),
+  ).toEqual({ positionSeconds: 754, durationSeconds: 2700 });
+  // Phase 2 persists durationSeconds: null when the duration is unknown.
+  expect(
+    toPlaybackPosition(JSON.stringify({ playback: { positionSeconds: 754, durationSeconds: null, updatedAt: "2026-08-30T00:00:00.000Z" } })),
+  ).toEqual({ positionSeconds: 754, durationSeconds: null });
+  expect(toPlaybackPosition(JSON.stringify({ playback: { positionSeconds: 0, durationSeconds: 0 } }))).toEqual({
+    positionSeconds: 0,
+    durationSeconds: 0,
+  });
+});
+
+test("toEmbedUrlWithApi rewrites only allowlisted YouTube embed URLs", () => {
+  const appOrigin = "https://app.example.test";
+
+  // Existing params are preserved; enablejsapi and origin are set.
+  expect(toEmbedUrlWithApi("https://www.youtube-nocookie.com/embed/yt-video-1?rel=0", appOrigin)).toBe(
+    "https://www.youtube-nocookie.com/embed/yt-video-1?rel=0&enablejsapi=1&origin=https%3A%2F%2Fapp.example.test",
+  );
+  // The standard youtube.com host is allowlisted too (standard-embed mode).
+  expect(toEmbedUrlWithApi("https://www.youtube.com/embed/yt-video-1", appOrigin)).toBe(
+    "https://www.youtube.com/embed/yt-video-1?enablejsapi=1&origin=https%3A%2F%2Fapp.example.test",
+  );
+  // start is floored and only added for a resume position >= 10s.
+  expect(toEmbedUrlWithApi("https://www.youtube-nocookie.com/embed/v", appOrigin, 754.9)).toBe(
+    "https://www.youtube-nocookie.com/embed/v?enablejsapi=1&origin=https%3A%2F%2Fapp.example.test&start=754",
+  );
+  expect(toEmbedUrlWithApi("https://www.youtube-nocookie.com/embed/v", appOrigin, 9.9)).not.toContain("start=");
+  expect(toEmbedUrlWithApi("https://www.youtube-nocookie.com/embed/v", appOrigin, 0)).toBe(
+    "https://www.youtube-nocookie.com/embed/v?enablejsapi=1&origin=https%3A%2F%2Fapp.example.test",
+  );
+  // Negative or non-finite start values reject the whole rewrite.
+  expect(toEmbedUrlWithApi("https://www.youtube-nocookie.com/embed/v", appOrigin, -1)).toBeNull();
+  expect(toEmbedUrlWithApi("https://www.youtube-nocookie.com/embed/v", appOrigin, Number.NaN)).toBeNull();
+
+  // Non-YouTube embeds, insecure URLs, and garbage are rejected.
+  expect(toEmbedUrlWithApi("https://odysee.com/$/embed/@c/v", appOrigin)).toBeNull();
+  expect(toEmbedUrlWithApi("https://peertube.example.test/videos/embed/v", appOrigin)).toBeNull();
+  expect(toEmbedUrlWithApi("http://www.youtube-nocookie.com/embed/v", appOrigin)).toBeNull();
+  expect(toEmbedUrlWithApi("javascript:alert(1)", appOrigin)).toBeNull();
+  expect(toEmbedUrlWithApi("not a url", appOrigin)).toBeNull();
+});
+
+test("isYouTubeEmbedUrl gates the tracked-embed decision on the same allowlist", () => {
+  expect(isYouTubeEmbedUrl("https://www.youtube-nocookie.com/embed/v")).toBe(true);
+  expect(isYouTubeEmbedUrl("https://www.youtube.com/embed/v")).toBe(true);
+  expect(isYouTubeEmbedUrl("http://www.youtube-nocookie.com/embed/v")).toBe(false);
+  expect(isYouTubeEmbedUrl("https://odysee.com/$/embed/@c/v")).toBe(false);
+  expect(isYouTubeEmbedUrl("https://peertube.example.test/videos/embed/v")).toBe(false);
+  expect(isYouTubeEmbedUrl("not a url")).toBe(false);
+});
+
+test("formatPlaybackPosition renders a clock pair consistent with formatContentDuration", () => {
+  expect(formatPlaybackPosition({ positionSeconds: 754, durationSeconds: 2700 })).toBe("12:34 / 45:00");
+  expect(formatPlaybackPosition({ positionSeconds: 0, durationSeconds: 0 })).toBe("0:00 / 0:00");
+  // Hour-long formatting follows the same rules as the duration badge.
+  expect(formatPlaybackPosition({ positionSeconds: 3600, durationSeconds: 5400 })).toBe("1:00:00 / 1:30:00");
+  // Without a known duration only the current position is rendered.
+  expect(formatPlaybackPosition({ positionSeconds: 754, durationSeconds: null })).toBe("12:34");
+});
+
+test("formatPlaybackResumeLabel announces position and known duration", () => {
+  expect(formatPlaybackResumeLabel({ positionSeconds: 754, durationSeconds: 2700 })).toBe("Resume at 12:34 of 45:00");
+  expect(formatPlaybackResumeLabel({ positionSeconds: 754, durationSeconds: null })).toBe("Resume at 12:34");
+  expect(formatPlaybackResumeLabel({ positionSeconds: 3600, durationSeconds: 5400 })).toBe("Resume at 1:00:00 of 1:30:00");
+});
+
+test("isResumablePlaybackPosition suppresses resume near a known end", () => {
+  // Unknown saved duration stays resumable; the surfaces' live-duration guards
+  // still apply at seek time.
+  expect(isResumablePlaybackPosition({ positionSeconds: 754, durationSeconds: null })).toBe(true);
+  // More than 10s of video remains.
+  expect(isResumablePlaybackPosition({ positionSeconds: 754, durationSeconds: 2700 })).toBe(true);
+  // Exactly 10s remaining matches the native live guard: not resumable.
+  expect(isResumablePlaybackPosition({ positionSeconds: 2690, durationSeconds: 2700 })).toBe(false);
+  // Watched to (or past) the end.
+  expect(isResumablePlaybackPosition({ positionSeconds: 2700, durationSeconds: 2700 })).toBe(false);
+  expect(isResumablePlaybackPosition({ positionSeconds: 2710, durationSeconds: 2700 })).toBe(false);
+  // A short video entirely inside the tail window is never resumed.
+  expect(isResumablePlaybackPosition({ positionSeconds: 5, durationSeconds: 8 })).toBe(false);
+});
+
+test("toPlaybackPositionsByItemId derives list progress from opened rows only", () => {
+  const statuses: readonly UserContentStatus[] = [
+    {
+      id: "status-1",
+      userId: "user-1",
+      contentItemId: "content-1",
+      status: "opened",
+      metadataJson: JSON.stringify({ playback: { positionSeconds: 754, durationSeconds: 2700, updatedAt: "2026-08-30T00:00:00.000Z" } }),
+    },
+    {
+      id: "status-2",
+      userId: "user-1",
+      contentItemId: "content-2",
+      status: "opened",
+      metadataJson: JSON.stringify({ playback: { positionSeconds: 30, durationSeconds: null, updatedAt: "2026-08-30T00:00:00.000Z" } }),
+    },
+    // A played row carries no list progress even with a stale playback payload.
+    {
+      id: "status-3",
+      userId: "user-1",
+      contentItemId: "content-3",
+      status: "played",
+      metadataJson: JSON.stringify({ playback: { positionSeconds: 100, durationSeconds: 200, updatedAt: "2026-08-30T00:00:00.000Z" } }),
+    },
+    // Opened without playback metadata (opened before any playback) adds nothing.
+    {
+      id: "status-4",
+      userId: "user-1",
+      contentItemId: "content-4",
+      status: "opened",
+      metadataJson: null,
+    },
+    // Malformed playback metadata is skipped, never thrown.
+    {
+      id: "status-5",
+      userId: "user-1",
+      contentItemId: "content-5",
+      status: "opened",
+      metadataJson: "not json",
+    },
+  ];
+
+  const positions = toPlaybackPositionsByItemId(statuses);
+  expect(positions.size).toBe(2);
+  expect(positions.get("content-1")).toEqual({ positionSeconds: 754, durationSeconds: 2700 });
+  expect(positions.get("content-2")).toEqual({ positionSeconds: 30, durationSeconds: null });
+  expect(positions.has("content-3")).toBe(false);
+  expect(positions.has("content-4")).toBe(false);
+  expect(positions.has("content-5")).toBe(false);
+  expect(toPlaybackPositionsByItemId([]).size).toBe(0);
+});
+
+test("shouldFlushPlaybackPosition implements the pure save throttle", () => {
+  const base = { lastSavedSeconds: 100, nextSeconds: 102, lastSavedAtMs: 1_000, nowMs: 5_000, force: false };
+
+  // A fresh session (never saved) always flushes.
+  expect(shouldFlushPlaybackPosition({ ...base, lastSavedSeconds: null, lastSavedAtMs: null })).toBe(true);
+  // Forced flushes bypass the throttle.
+  expect(shouldFlushPlaybackPosition({ ...base, force: true })).toBe(true);
+  // >= 10s since the last save flushes; a younger save with a small delta does not.
+  expect(shouldFlushPlaybackPosition({ ...base, nowMs: 11_000 })).toBe(true);
+  expect(shouldFlushPlaybackPosition(base)).toBe(false);
+  // >= 5s position delta flushes even inside the time window.
+  expect(shouldFlushPlaybackPosition({ ...base, nextSeconds: 105 })).toBe(true);
+  expect(shouldFlushPlaybackPosition({ ...base, nextSeconds: 104.9 })).toBe(false);
+});
+
 test("creator source badges read sourceTypes from summaries and stay empty without them", () => {
   const summary: CatalogCreatorSummary = {
     id: "creator-1",
@@ -1020,19 +1345,48 @@ test("selected viewer supports source switching and real playback render contrac
 
   expect(source).toContain("id=\"viewer-source-switcher\"");
   expect(source).toContain("onClick={() => setSelectedSourceId(source.id)}");
+  // YouTube embeds render through the IFrame API URL builder; every other
+  // embed keeps its bare provider URL with no tracker.
   expect(source).toContain("<iframe");
-  expect(source).toContain("src={props.source?.url ?? \"\"}");
-  expect(source).toContain("<video class=\"h-full w-full\" src={props.source?.url ?? \"\"} controls preload=\"metadata\" onPlay={props.onNativePlay}>");
+  expect(source).toContain("src={embedSrc}");
+  expect(source).toContain("src={source.url}");
+  // Native video keeps real controls without any play-start auto-mark.
+  expect(source).toContain("src={props.source.url}\n      controls\n      preload=\"metadata\"");
 });
 
-test("native video playback marks selected content played after authenticated guard", async () => {
+test("near-end and ended playback auto-mark played exactly once per selection (D2)", async () => {
   const source = await readAppShellSource();
 
-  expect(source).toContain("onNativePlay={autoMarkSelectedContentPlayed}");
-  expect(source).toContain("readonly onNativePlay: () => Promise<void>;");
-  expect(source).toContain("onPlay={props.onNativePlay}");
+  // D2: the onPlay auto-mark is gone; near-end and ended playback trigger the
+  // existing auto-mark flow instead, for BOTH native and bridge surfaces.
+  expect(source).not.toContain("onNativePlay");
+  expect(source).not.toContain("onPlay=");
+  expect(source).toContain("onNearEnd={autoMarkSelectedContentPlayed}");
+  expect(source).toContain("onExplicitEnded={autoMarkSelectedContentPlayed}");
   expect(source).toContain("const autoMarkSelectedContentPlayed = async () => {");
-  expect(source).toContain("if (!props.isAuthenticated() || contentItemId === null) {\n      return;\n    }\n\n    setStatusActionError(null);\n    try {");
+  expect(source).toContain("if (autoMarkPlayedHandled) {\n      return;\n    }\n\n    autoMarkPlayedHandled = true;");
+  // The guard re-arms whenever the selection changes.
+  expect(source).toContain("on(selectedContentItemId, () => {\n      flushLastKnownPlaybackPosition();\n      autoMarkPlayedHandled = false;\n    }, { defer: true })");
+  // Native near-end detection: within 30s of the end or past 90% when the
+  // duration is known; the explicit ended event is guarded separately.
+  expect(source).toContain("!nearEndReported && (position >= duration - 30 || position >= duration * 0.9)");
+  expect(source).toContain("nearEndReported = true;\n          props.onNearEnd();");
+  expect(source).toContain("explicitEndedReported = true;\n        props.onExplicitEnded();");
+  // Bridge surface (tracked YouTube embed) carries the same contract: the
+  // tracked embed declares and receives the shared onNearEnd flow, and its
+  // IFrame-bridge position path runs the identical once-per-session check.
+  expect(source).toContain("interface TrackedEmbedPlayerProps {\n  readonly source: PlayableSource;\n  readonly title: string;\n  readonly contentItemId: string;\n  readonly resumePosition: () => PlaybackPosition | null;\n  readonly onPositionUpdate: (positionSeconds: number, durationSeconds: number | null) => void;\n  readonly onNearEnd: () => void;");
+  expect(source).toContain("<TrackedEmbedPlayer\n              source={source}\n              title={props.title}\n              contentItemId={props.contentItemId}\n              resumePosition={props.resumePosition}\n              onPositionUpdate={props.onPositionUpdate}\n              onNearEnd={props.onNearEnd}");
+  expect(source).toContain("!nearEndReported &&\n          (position.positionSeconds >= position.durationSeconds - 30 || position.positionSeconds >= position.durationSeconds * 0.9)\n        ) {\n          nearEndReported = true;\n          props.onNearEnd();\n        }");
+  // Bridge duration inputs require a positive value: YouTube reports 0 until
+  // the video's metadata loads, and a 0 duration would trivially satisfy the
+  // near-end check (position >= 0 - 30) and auto-mark the item on open.
+  const bridgeSource = await Bun.file(new URL("../lib/youtube-player-bridge.ts", import.meta.url)).text();
+  expect(bridgeSource).toContain("if (duration !== null && duration > 0) {");
+  expect(bridgeSource).toContain('command === "getDuration" && numericReply > 0');
+  expect(bridgeSource).not.toContain("duration !== null && duration >= 0");
+  expect(bridgeSource).not.toContain('command === "getDuration" && numericReply >= 0');
+  // The flow still lands on the real protected procedure with in-place patching.
   expect(source).toContain("await props.onAutoMarkContentPlayed(contentItemId);");
   expect(source).toContain("const autoMarkContentPlayed = async (contentItemId: string) => {");
   expect(source).toContain("const result = await client.overlays.markContentPlayed({ contentItemId });");
@@ -1047,6 +1401,183 @@ test("iframe playback has explicit real mark played workflow", async () => {
   expect(source).toContain("await props.onMarkContentPlayed(contentItemId);");
   expect(source).toContain("await client.overlays.toggleContentPlayed({ contentItemId });");
   expect(source).toContain("onClick={toggleSelectedContentPlayed}");
+});
+
+test("playback tracking wires the bridge, resume position, and saved-status patching", async () => {
+  const viewerSource = await Bun.file(new URL("./app-shell-viewer.tsx", import.meta.url)).text();
+  const shellSource = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  // The viewer creates the YouTube bridge tracker and disposes it per session.
+  expect(viewerSource).toContain('import { createYouTubePlaybackTracker, type YouTubePlaybackTracker } from "@/lib/youtube-player-bridge";');
+  expect(viewerSource).toContain("tracker = createYouTubePlaybackTracker({");
+  expect(viewerSource).toContain("tracker?.dispose();");
+  // Resume position derives from the opened row's playback metadata and feeds
+  // both the embed start param (frozen at mount) and the native metadata seek.
+  expect(viewerSource).toContain("const selectedResumePosition = createMemo(() => {");
+  expect(viewerSource).toContain("toPlaybackPosition(openedStatus.metadataJson)");
+  expect(viewerSource).toContain("resumePosition={selectedResumePosition}");
+  expect(viewerSource).toContain("contentItemId={selectedContentItemId() ?? \"\"}");
+  expect(viewerSource).toContain(
+    "toEmbedUrlWithApi(props.source.url, window.location.origin, props.resumePosition()?.positionSeconds) ?? props.source.url",
+  );
+  expect(viewerSource).toContain("if (duration !== null && resume.positionSeconds < duration - 10) {\n          video.currentTime = resume.positionSeconds;\n        }");
+  // Throttled position reports flow into the real protected save procedure and
+  // land as an in-place status patch in the shell (no refetch).
+  expect(viewerSource).toContain("shouldFlushPlaybackPosition({ lastSavedSeconds, nextSeconds: positionSeconds, lastSavedAtMs, nowMs: Date.now(), force: false })");
+  expect(viewerSource).toContain("shouldFlushPlaybackPosition({ lastSavedSeconds, nextSeconds: position, lastSavedAtMs, nowMs: Date.now(), force: false })");
+  expect(viewerSource).toContain("await client.overlays.savePlaybackPosition({");
+  expect(viewerSource).toContain("props.onPlaybackPositionSaved(result.status);");
+  expect(shellSource).toContain("onPlaybackPositionSaved={patchContentStatus}");
+  // Last-chance flushes on page hide and hidden tabs, listeners cleaned up.
+  expect(viewerSource).toContain('window.addEventListener("pagehide", handlePageHide);');
+  expect(viewerSource).toContain('document.addEventListener("visibilitychange", handleVisibilityChange);');
+  expect(viewerSource).toContain('if (document.visibilityState === "hidden") {');
+  expect(viewerSource).toContain('window.removeEventListener("pagehide", handlePageHide);');
+  expect(viewerSource).toContain('document.removeEventListener("visibilitychange", handleVisibilityChange);');
+  // Both tracked surfaces flush their session position on cleanup.
+  expect(viewerSource).toContain("props.onPositionUpdate(lastKnownPositionSeconds, lastKnownDurationSeconds);");
+  expect(viewerSource).toContain("props.onPositionUpdate(position, toNativeDuration(video));");
+});
+
+test("anonymous users never save playback positions", async () => {
+  const viewerSource = await Bun.file(new URL("./app-shell-viewer.tsx", import.meta.url)).text();
+
+  expect(viewerSource).toContain("if (!props.isAuthenticated() || contentItemId === null) {\n      return;\n    }\n\n    lastKnownPlayback = { contentItemId, positionSeconds, durationSeconds };");
+  expect(viewerSource).toContain("if (known === null || !props.isAuthenticated()) {\n      return;\n    }");
+});
+
+test("playback flushes are tagged by content id and never mis-attribute across switches", async () => {
+  const viewerSource = await Bun.file(new URL("./app-shell-viewer.tsx", import.meta.url)).text();
+
+  // The selection-change flush uses the tagged id, so the previous item's tail
+  // is saved for the item it belongs to.
+  expect(viewerSource).toContain("on(selectedContentItemId, () => {\n      flushLastKnownPlaybackPosition();\n      autoMarkPlayedHandled = false;\n    }, { defer: true })");
+  // Each surface captures its session content id once and skips its cleanup
+  // flush when the selection already moved on (avoids saving the old video's
+  // position under the new item's id).
+  expect(viewerSource).toContain("const sessionContentItemId = props.contentItemId;");
+  expect((viewerSource.match(/props\.contentItemId !== sessionContentItemId/g) ?? [])).toHaveLength(2);
+  // LIVE reports are session-guarded too: while the previous player is still
+  // mounted during the new selection's refetch window, its throttled reports,
+  // pause flushes, ended reports, and near-end auto-marks are all dropped so
+  // nothing from the old video is ever written under the new item's id. Both
+  // tracked surfaces expose the same guard helper.
+  expect((viewerSource.match(/const isLiveSession = \(\) => props\.contentItemId === sessionContentItemId;/g) ?? [])).toHaveLength(2);
+  // TrackedEmbedPlayer: throttle path, bridge position path (near-end + ended
+  // position), and the explicit ended callback all check the guard.
+  expect((viewerSource.match(/if \(!isLiveSession\(\)\) \{\n      return;\n    \}/g) ?? [])).toHaveLength(1);
+  expect((viewerSource.match(/if \(!isLiveSession\(\)\) \{\n          return;\n        \}/g) ?? [])).toHaveLength(4);
+  // NativeVideoPlayer: timeupdate, pause, and ended all check the guard.
+  expect(viewerSource).toContain("onTimeUpdate={(event) => {\n        if (!isLiveSession()) {\n          return;\n        }");
+  expect(viewerSource).toContain("onPause={(event) => {\n        if (!isLiveSession()) {\n          return;\n        }");
+  expect(viewerSource).toContain("onEnded={() => {\n        if (!isLiveSession() || explicitEndedReported) {");
+});
+
+test("viewer detail gates success on no error and reconciles favorites from shell toggles", async () => {
+  const viewerSource = await Bun.file(new URL("./app-shell-viewer.tsx", import.meta.url)).text();
+  const shellSource = await Bun.file(new URL("./app-shell.tsx", import.meta.url)).text();
+
+  // A1: the success render is gated on no detail error, so a FAILED refetch
+  // for a newly selected video can never keep the previous video's `.latest`
+  // detail (and its playing player) rendered under the new selection. The
+  // first-load error Match (error with no value yet) stays untouched ahead of
+  // it, and the loading skeleton still precedes the success Match.
+  expect(viewerSource).toContain("<Match when={contentDetail.error !== undefined && contentDetailValue() === undefined}>");
+  expect(viewerSource).toContain("<Match when={contentDetail.loading && contentDetailValue() === undefined}>");
+  expect(viewerSource).toContain("<Match when={contentDetail.error === undefined && contentDetailValue()}>");
+  // A failed refetch WITH a stale `.latest` value falls through the gated
+  // success Match to the final error fallback — never a silent blank viewer.
+  const successMatchIndex = viewerSource.indexOf("<Match when={contentDetail.error === undefined && contentDetailValue()}>");
+  const fallbackMatchIndex = viewerSource.indexOf("<Match when={contentDetail.error !== undefined}>");
+  const switchEndIndex = viewerSource.indexOf("</Switch>", successMatchIndex);
+  expect(successMatchIndex).toBeGreaterThan(-1);
+  expect(fallbackMatchIndex).toBeGreaterThan(successMatchIndex);
+  expect(switchEndIndex).toBeGreaterThan(fallbackMatchIndex);
+
+  // A4: shell-level favorite toggles (content-column f shortcut, row actions)
+  // reach the viewer through the favoritesReloadKey prop and refetch the
+  // viewer's favoriteItems overlay in place, so the heart reconciles without
+  // re-keying the resource (the source must stay free of the reload key).
+  expect(shellSource).toContain("favoritesReloadKey={favoritesReloadKey}");
+  expect(viewerSource).toContain("readonly favoritesReloadKey: () => number;");
+  expect(viewerSource).toContain("createEffect(on(() => props.favoritesReloadKey(), () => { void refetchFavoriteItems(); }, { defer: true }));");
+  expect(viewerSource).not.toContain("props.favoritesReloadKey().toString()");
+});
+
+test("content list rows surface resume progress in the duration slot (F1c)", async () => {
+  const source = await readAppShellSource();
+
+  // The column derives the per-item position map from the opened statuses and
+  // threads an accessor into every row.
+  expect(source).toContain("const playbackPositionByItemId = createMemo(() => toPlaybackPositionsByItemId(props.contentStatuses()));");
+  expect(source).toContain("playbackPosition={() => playbackPositionByItemId().get(contentItem.id) ?? null}");
+  expect(source).toContain("readonly playbackPosition: () => PlaybackPosition | null;");
+  // The row swaps the duration slot for the progress badge when a position
+  // exists, keeps the duration-only rendering as the fallback, and renders the
+  // pair with a resume label.
+  expect(source).toContain("when={playbackPosition()}");
+  expect(source).toContain("data-content-playback-progress");
+  expect(source).toContain("aria-label={formatPlaybackResumeLabel(position())}");
+  expect(source).toContain("{formatPlaybackPosition(position())}");
+});
+
+test("near-finished saved positions are not resumed on either surface", async () => {
+  const viewerSource = await Bun.file(new URL("./app-shell-viewer.tsx", import.meta.url)).text();
+
+  // The viewer-level gate feeds BOTH surfaces: a position within 10s of a
+  // known saved duration resolves to null, so the YouTube embed gets no start
+  // param and the native video never seeks (its own live-duration guard stays
+  // in place for saved durations that are unknown or stale).
+  expect(viewerSource).toContain("return position !== null && isResumablePlaybackPosition(position) ? position : null;");
+});
+
+test("viewer copy affordance copies the selected stream URL with feedback and visible failure (F5)", async () => {
+  const viewerSource = await Bun.file(new URL("./app-shell-viewer.tsx", import.meta.url)).text();
+
+  // The affordance derives from the same selected playable source the player
+  // uses: native copies the media URL, embed-only copies the canonical page
+  // link (labels come from toCopyableStreamLink, unit-tested above).
+  expect(viewerSource).toContain("const copyStreamLink = createMemo(() => toCopyableStreamLink(selectedPlayableSource()));");
+  expect(viewerSource).toContain("data-copy-stream-url");
+  expect(viewerSource).toContain("aria-label={copyControlTitle()}");
+  expect(viewerSource).toContain("title={copyControlTitle()}");
+  expect(viewerSource).toContain("Stream URL for mpv/yt-dlp");
+  expect(viewerSource).toContain("Page link for mpv/yt-dlp");
+  expect(viewerSource).toContain("onClick={copyStreamUrl}");
+  expect(viewerSource).toContain("{streamUrlCopied() ? \"Copied\" : link().label}");
+  expect(viewerSource).toContain("await navigator.clipboard.writeText(link.url);");
+  // Clipboard failure is surfaced as visible text, never swallowed.
+  expect(viewerSource).toContain("setCopyStreamError(`Copy failed: ${formatError(error)}`);");
+  expect(viewerSource).toContain("<Show when={copyStreamError()}>");
+  // The Copied flash resets after two seconds and the timer never leaks.
+  expect(viewerSource).toContain("copyFeedbackTimerId = setTimeout(() => {");
+  expect(viewerSource).toContain("clearTimeout(copyFeedbackTimerId);");
+  expect(viewerSource).toContain("onCleanup(clearCopyFeedbackTimer);");
+});
+
+test("postMessage and message listeners stay confined to the YouTube bridge module", async () => {
+  const componentFiles = [
+    "./app-shell.tsx",
+    "./app-shell-content-column.tsx",
+    "./app-shell-rows.tsx",
+    "./app-shell-source-sections.tsx",
+    "./app-shell-viewer.tsx",
+    "./app-shell.contract.ts",
+    "./refresh-status-dialog.tsx",
+    "./user-menu.tsx",
+  ];
+  const sources = await Promise.all(
+    componentFiles.map(async (filePath) => Bun.file(new URL(filePath, import.meta.url)).text()),
+  );
+  const combined = sources.join("\n");
+
+  expect(combined).not.toContain("postMessage");
+  expect(combined).not.toContain('addEventListener("message"');
+  expect(combined).not.toContain('removeEventListener("message"');
+
+  const bridgeSource = await Bun.file(new URL("../lib/youtube-player-bridge.ts", import.meta.url)).text();
+  expect(bridgeSource).toContain('window.addEventListener("message", handleMessage);');
+  expect(bridgeSource).toContain("contentWindow.postMessage(JSON.stringify(payload), targetOrigin);");
 });
 
 test("anonymous users never call protected played procedure from viewer or playback", async () => {
@@ -1066,7 +1597,7 @@ test("playlist controls are protected behind authenticated session state", async
   const source = await readAppShellSource();
 
   expect(source).toContain("const session = authClient.useSession()");
-  expect(source).toContain("appSession.latest !== null && appSession.latest !== undefined");
+  expect(source).toContain("const isAuthenticated = createMemo(() => !session().isPending && session().data !== null);");
   expect(source).toContain("<Show when={props.isAuthenticated()}>");
   expect(source).not.toContain("Sign in to create playlists");
   expect(source).not.toContain("Login to save playlists");
@@ -1310,6 +1841,147 @@ test("settings UI has no fake defaults and displays only stored API values", asy
   expect(source).not.toContain("defaultSettings");
 });
 
+test("user data export builds a dated filename and pretty-printed JSON with a trailing newline", () => {
+  expect(toUserDataExportFilename("2026-08-30T12:34:56.789Z")).toBe("feedelity-user-data-2026-08-30.json");
+
+  const exportJson = toUserDataExportJson({ format: "feedelity.user-data", version: 1 });
+  expect(exportJson.endsWith("\n")).toBe(true);
+  expect(exportJson).toContain('\n  "format": "feedelity.user-data"');
+  expect(JSON.parse(exportJson)).toEqual({ format: "feedelity.user-data", version: 1 });
+
+  // Mirrors the plan's ~8 MB client-side pre-check bound.
+  expect(maxUserDataImportFileBytes).toBe(8 * 1024 * 1024);
+});
+
+test("user data import parse guard rejects malformed files before any client call", () => {
+  const malformed = parseUserDataImportText("{ not-json");
+  expect(malformed.ok).toBe(false);
+  if (!malformed.ok) {
+    expect(malformed.message).toContain("not valid JSON");
+  }
+
+  const valid = parseUserDataImportText('{"format":"feedelity.user-data","version":1}');
+  expect(valid.ok).toBe(true);
+  if (valid.ok) {
+    expect(valid.exportData).toEqual({ format: "feedelity.user-data", version: 1 });
+  }
+});
+
+test("user data download helper names the file, triggers the anchor click, and revokes the object URL", () => {
+  const anchors: { href: string; download: string; clicks: number }[] = [];
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      createElement: (_tagName: string) => {
+        const anchor = {
+          href: "",
+          download: "",
+          clicks: 0,
+          click: () => {
+            anchor.clicks += 1;
+          },
+        };
+        anchors.push(anchor);
+        return anchor;
+      },
+    },
+  });
+  const createdObjectUrls: string[] = [];
+  const revokedObjectUrls: string[] = [];
+  const originalCreateObjectUrl = URL.createObjectURL;
+  const originalRevokeObjectUrl = URL.revokeObjectURL;
+  URL.createObjectURL = (blob: Blob) => {
+    const objectUrl = originalCreateObjectUrl(blob);
+    createdObjectUrls.push(objectUrl);
+    return objectUrl;
+  };
+  URL.revokeObjectURL = (objectUrl: string) => {
+    revokedObjectUrls.push(objectUrl);
+    originalRevokeObjectUrl(objectUrl);
+  };
+
+  try {
+    const blob = new Blob(['{"format":"feedelity.user-data"}'], { type: "application/json" });
+    triggerUserDataDownload(blob, "feedelity-user-data-2026-08-30.json");
+  } finally {
+    URL.createObjectURL = originalCreateObjectUrl;
+    URL.revokeObjectURL = originalRevokeObjectUrl;
+    Object.defineProperty(globalThis, "document", { configurable: true, value: undefined });
+  }
+
+  expect(anchors.length).toBe(1);
+  const anchor = anchors[0];
+  expect(anchor.href.startsWith("blob:")).toBe(true);
+  expect(anchor.download).toBe("feedelity-user-data-2026-08-30.json");
+  expect(anchor.clicks).toBe(1);
+  // The object URL is revoked exactly once, and for the URL that was handed
+  // to the anchor.
+  expect(revokedObjectUrls).toEqual(createdObjectUrls);
+  expect(revokedObjectUrls.length).toBe(1);
+});
+
+test("settings Data block wires export download and guarded import through protected procedures", async () => {
+  const source = await readChangedUiSource();
+
+  // JSON-only per decision D6: no OPML affordance in markup or code (the D6
+  // rationale comment itself is the only allowed mention, so line comments
+  // are stripped before this check).
+  const sourceWithoutComments = source.replace(/\/\/[^\n]*/g, "");
+  expect(sourceWithoutComments).not.toMatch(/opml/i);
+
+  // Export: pretty-printed blob, programmatic download through the protected
+  // procedure, busy state, and the object URL is always revoked.
+  expect(source).toContain("data-export-user-data");
+  expect(source).toContain("await client.overlays.exportUserData();");
+  expect(source).toContain("new Blob([toUserDataExportJson(exportData)], { type: \"application/json\" })");
+  expect(source).toContain("triggerUserDataDownload(blob, toUserDataExportFilename(exportData.exportedAt));");
+  expect(source).toContain("disabled={exportUserDataBusy()}");
+  const createObjectUrlIndex = source.indexOf("const objectUrl = URL.createObjectURL(blob);");
+  const anchorDownloadIndex = source.indexOf("anchor.download = filename;");
+  const anchorClickIndex = source.indexOf("anchor.click();");
+  const revokeObjectUrlIndex = source.indexOf("URL.revokeObjectURL(objectUrl);");
+  expect(createObjectUrlIndex).toBeGreaterThan(-1);
+  expect(anchorDownloadIndex).toBeGreaterThan(createObjectUrlIndex);
+  expect(anchorClickIndex).toBeGreaterThan(anchorDownloadIndex);
+  expect(revokeObjectUrlIndex).toBeGreaterThan(anchorClickIndex);
+
+  // Import: bounded JSON file input; the size pre-check and the JSON parse
+  // guard both early-return before the client call can fire, so a rejected
+  // file produces an error and no call.
+  expect(source).toContain("data-import-user-data-input");
+  expect(source).toContain('accept=".json,application/json"');
+  expect(source).toContain("disabled={importUserDataBusy()}");
+  // Two occurrences total: the outcome type alias and the single live call.
+  expect(source.split("client.overlays.importUserData")).toHaveLength(3);
+  const handlerStart = source.indexOf("const importUserDataFromFile = async (file: File) => {");
+  const handlerCallIndex = source.indexOf("client.overlays.importUserData({ exportData: parsed.exportData, sourceFilename: file.name });");
+  expect(handlerStart).toBeGreaterThan(-1);
+  expect(handlerCallIndex).toBeGreaterThan(handlerStart);
+  const handler = source.slice(handlerStart, handlerCallIndex);
+  const sizeGuardIndex = handler.indexOf("file.size > maxUserDataImportFileBytes");
+  const busyStartIndex = handler.indexOf("setImportUserDataBusy(true)");
+  const parseGuardIndex = handler.indexOf("if (!parsed.ok)");
+  expect(handler).toContain("parseUserDataImportText(await file.text())");
+  expect(sizeGuardIndex).toBeGreaterThan(-1);
+  expect(busyStartIndex).toBeGreaterThan(sizeGuardIndex);
+  expect(handler.slice(sizeGuardIndex, busyStartIndex)).toContain("return;");
+  expect(parseGuardIndex).toBeGreaterThan(busyStartIndex);
+  expect(handler.slice(parseGuardIndex)).toContain("return;");
+
+  // The report renders inline: skipped notice, per-entity counts, warnings,
+  // and failures in the destructive text style.
+  expect(source).toContain("data-import-user-data-report");
+  expect(source).toContain("data-import-user-data-skipped");
+  expect(source).toContain("data-import-user-data-count={entry.key}");
+  expect(source).toContain("{entry.label}: {result().report.counts[entry.key]}");
+  expect(source).toContain("<For each={result().report.warnings}>");
+  expect(source).toContain("data-import-user-data-warning");
+  expect(source).toContain("<For each={result().report.failures}>");
+  const failuresListStart = source.indexOf("<For each={result().report.failures}>");
+  expect(failuresListStart).toBeGreaterThan(-1);
+  expect(source.slice(failuresListStart, failuresListStart + 600)).toContain("text-destructive");
+});
+
 test("favorites view is an authenticated content-pane filter using protected procedures", async () => {
   const source = await readAppShellSource();
 
@@ -1317,12 +1989,14 @@ test("favorites view is an authenticated content-pane filter using protected pro
   expect(contentViewModeFavoritesId).toBe("content-view-favorites");
   expect(contentViewModeHistoryId).toBe("content-view-history");
   expect(contentViewModePlayedId).toBe("content-view-played");
-  expect(source).toContain("const [viewMode, setViewMode] = createSignal<ContentViewMode>(props.mode === \"library\" ? \"subscribed\" : \"catalog\")");
+  expect(source).toContain("toPersistedContentViewMode(readPersistedLocalValue(contentViewModeLocalStorageKey), props.isAuthenticated(), props.mode)");
+  // The anonymous reset effect stays the enforcer for the auth gate.
+  expect(source).toContain('setViewMode(props.mode === "library" ? "subscribed" : "catalog")');
   expect(source).toContain("<Show when={props.isAuthenticated()}>\n            <div class=\"mt-2 grid grid-cols-4 gap-2\" aria-label=\"Content view\">");  expect(source).toContain("return client.overlays.favoriteContentItems()");
   expect(source).toContain("return client.catalog.contentItems(input)");
-  expect(source).toContain("setViewMode(\"favorites\")");
-  expect(source).toContain("setViewMode(\"history-opened\")");
-  expect(source).toContain("setViewMode(\"played\")");
+  expect(source).toContain('changeViewMode("favorites")');
+  expect(source).toContain('changeViewMode("history-opened")');
+  expect(source).toContain('changeViewMode("played")');
   expect(source).not.toContain('data-shell-column="favorites"');
 });
 
@@ -1355,6 +2029,8 @@ test("hide played is state filtering and not DOM filtering", async () => {
 
   expect(source).toContain("const [hidePlayed, setHidePlayed] = createSignal<boolean>(readPersistedHidePlayed() ?? false)");
   expect(source).toContain("locallyFilteredItems.filter((contentItem) => !toContentStatusFlags(statuses, contentItem.id).played)");
+  // The plain <For> is the below-lg branch; the lg branch renders the same
+  // items through the virtualizer (asserted in the virtualization test).
   expect(source).toContain("<For each={displayedContentItems()}>");
   // The selected-creator scrollIntoView lookup reads the DOM with a static
   // [data-creator-id] query; hide-played itself never touches the DOM
@@ -1362,6 +2038,171 @@ test("hide played is state filtering and not DOM filtering", async () => {
   expect(source).not.toContain("getElementsByClassName");
   expect(source).not.toContain("classList");
   expect(source).not.toContain("hidden =");
+});
+
+test("content list virtualization is disabled and the plain list is the live path", async () => {
+  const source = await readAppShellSource();
+
+  // TO BE FIXED (disabled 2026-08-31): the virtualized list caused stale row
+  // renders, scroll resets, and selection breakage. The virtualization code is
+  // kept in the file for a proper rework, but the module-level flag turns the
+  // whole mechanism off and the plain <For> list is the only live path.
+  expect(source).toContain("const contentListVirtualizationEnabled = false;");
+  expect(source).toContain("TO BE FIXED (disabled 2026-08-31)");
+  expect(source).toContain("the plain list below is the live rendering path");
+  // The virtual branch is unreachable: the <Show> gate requires the flag.
+  expect(source).toContain("when={contentListVirtualizationEnabled && isDesktopViewport()}");
+  // The virtualizer itself stays inert while disabled (kept for the rework).
+  expect(source).toContain("const contentVirtualizer = createVirtualizer({");
+  expect(source).toContain("get enabled() {\n      return isDesktopViewport() && contentListVirtualizationEnabled;\n    }");
+  expect(source).toContain("if (contentListVirtualizationEnabled) {\n      contentVirtualizer.measure();\n    }");
+  // The plain list is the live rendering path: a single shared row renderer and
+  // the lookup attribute keyboard shortcuts depend on.
+  expect(source).toContain("const renderContentItemRow = (contentItem: CatalogContentListItem) => (");
+  expect(source).toContain("<li data-content-item-id={contentItem.id}>");
+  expect(source).toContain("<For each={displayedContentItems()}>");
+  // Pagination stays explicit and unchanged.
+  expect(source).toContain("<ContentLoadMoreControl");
+});
+
+test("keyboard shortcuts bind one guarded window keydown listener and route every action", async () => {
+  const source = await readAppShellSource();
+
+  // ONE listener for the whole shell, registered on mount and removed on
+  // dispose (the user-menu.tsx listener pattern).
+  expect(source).toContain("window.addEventListener(\"keydown\", handleShellKeyDown);");
+  expect(source).toContain("onCleanup(() => window.removeEventListener(\"keydown\", handleShellKeyDown));");
+  // Guards: text-entry targets and open native dialogs short-circuit first.
+  expect(source).toContain("if (isShortcutTargetBlocked(event.target) || isDialogOpen()) {");
+  // The g prefix resolves through the pure keymap and its lifecycle updates
+  // on every non-guarded keydown.
+  expect(source).toContain("const action = resolveShortcut(event, goPrefixActive);");
+  expect(source).toContain("goPrefixActive = nextGoPrefixActive(event, goPrefixActive);");
+  // Enter keeps native activation on interactive elements.
+  expect(source).toContain("if (action === \"open-active\" && isActivationTarget(event.target)) {");
+  // Action routing: "/" focuses the creator search, Escape clears the
+  // selection AND both column searches through the shared counter, g l / g c
+  // navigate through the router (the dashboard guard handles anonymous users).
+  expect(source).toContain("document.getElementById(creatorSearchInputId)?.focus();");
+  expect(source).toContain("const [searchClearKey, setSearchClearKey] = createSignal(0);");
+  expect(source).toContain("case \"clear-selection\":\n        clearSelectedCreator();\n        setSearchClearKey((key) => key + 1);");
+  expect(source).toContain("void navigate({ to: \"/dashboard\" });");
+  expect(source).toContain("void navigate({ to: \"/\" });");
+  // j/k/Enter/f are delegated to the content column as typed commands.
+  expect(source).toContain("const [contentShortcutCommand, setContentShortcutCommand] = createSignal<ContentShortcutCommand | null>(null);");
+  expect(source).toContain("setContentShortcutCommand({ kind: \"move\", delta: 1 });");
+  expect(source).toContain("setContentShortcutCommand({ kind: \"move\", delta: -1 });");
+  expect(source).toContain("setContentShortcutCommand({ kind: \"open\" });");
+  expect(source).toContain("setContentShortcutCommand({ kind: \"toggle-favorite\" });");
+  // Both columns observe the search-clear counter; the content column also
+  // receives the command stream.
+  expect((source.match(/searchClearKey=\{searchClearKey\}/g) ?? [])).toHaveLength(2);
+  expect(source).toContain("contentShortcutCommand={contentShortcutCommand}");
+  expect((source.match(/createEffect\(on\(\(\) => props\.searchClearKey\(\), \(\) => setSearch\(\"\"\), \{ defer: true \}\)\);/g) ?? [])).toHaveLength(2);
+});
+
+test("content column owns the keyboard-active row with clamped moves and both scroll paths", async () => {
+  const source = await Bun.file(new URL("./app-shell-content-column.tsx", import.meta.url)).text();
+
+  // The active row state lives in the column that renders the list: the raw
+  // signal is clamped through the pure keymap helper against the displayed
+  // list length, and resets when the list identity changes.
+  expect(source).toContain("const [requestedActiveIndex, setRequestedActiveIndex] = createSignal(0);");
+  expect(source).toContain("const activeIndex = createMemo(() => clampActiveIndex(requestedActiveIndex(), displayedContentItems().length));");
+  expect(source).toContain("const activeContentItemId = createMemo(() => displayedContentItems()[activeIndex()]?.id ?? null);");
+  // The resource-key reset is identity-based: it lands on the selected item's
+  // row when it is still visible (a hide-played toggle or live-reload shift
+  // must not move the highlight onto a different video), else back to 0.
+  expect(source).toContain("const selectedIndex = selectedId === null ? -1 : displayedContentItems().findIndex((item) => item.id === selectedId);");
+  expect(source).toContain("setRequestedActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);");
+  // Mouse selections move the cursor by identity: the active row follows the
+  // selected content id, so Enter re-opens the highlighted row after any
+  // index-shifting filter change.
+  expect(source).toContain("createEffect(on(() => props.selectedContentItemId(), (id) => {\n    const i = displayedContentItems().findIndex((item) => item.id === id);\n    if (i >= 0) setRequestedActiveIndex(i);\n  }, { defer: true }));");
+  // Commands execute against the active row: moves clamp the WRITTEN index (so
+  // repeated boundary moves cannot walk the raw signal out of range and leave
+  // the opposite-direction command unresponsive) then scroll, Enter opens
+  // through onSelectContent, f reuses the column's toggleFavorite path.
+  expect(source).toContain("if (command.kind === \"move\") {");
+  expect(source).toContain("setRequestedActiveIndex(clampActiveIndex(requestedActiveIndex() + command.delta, displayedContentItems().length));");
+  expect(source).not.toContain("setRequestedActiveIndex(requestedActiveIndex() + command.delta);");
+  expect(source).toContain("scrollActiveRowIntoView(activeIndex());");
+  expect(source).toContain("await props.onSelectContent(activeItem);");
+  expect(source).toContain("await toggleFavorite(activeItem.id);");
+  // f is an authenticated overlay action: anonymous presses stay no-ops.
+  expect(source).toContain("if (!props.isAuthenticated()) {\n      return;\n    }");
+  // Scroll: with virtualization disabled, j/k ALWAYS uses the below-lg
+  // row-lookup path (scrollIntoView on the queried row). The
+  // contentVirtualizer.scrollToIndex call stays in the file but is
+  // unreachable behind the disabled flag.
+  expect(source).toContain("if (contentListVirtualizationEnabled && isDesktopViewport()) {\n      contentVirtualizer.scrollToIndex(index);");
+  expect(source).toContain("const rows = region.querySelectorAll<HTMLElement>(\"[data-content-item-id]\");");
+  expect(source).toContain("row.scrollIntoView({ block: \"nearest\" });");
+  expect(source).toContain("<li data-content-item-id={contentItem.id}>");
+  // The active row is highlighted through the shared row renderer.
+  expect(source).toContain("active={() => activeContentItemId() === contentItem.id}");
+  // Shortcut failures surface in the column instead of being swallowed.
+  expect(source).toContain("data-content-command-error");
+  expect(source).toContain("setContentCommandError(formatError(error));");
+});
+
+test("content rows expose keyboard-active state without claiming selection semantics", async () => {
+  const source = await readAppShellSource();
+
+  expect(source).toContain("readonly active: () => boolean;");
+  // bg-selected stays STRICTLY for selected(); active-only rows get a
+  // distinct weaker bg-accent highlight so an index shift after a list
+  // change can never dress the next row in the selection highlight.
+  expect(source).toContain("selected() ? \"bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground\" : active() ? \"bg-accent text-accent-foreground\"");
+  expect(source).not.toContain("selected() || active() ? \"bg-selected");
+  // ...but is marked data-active; aria-current stays reserved for selection.
+  expect(source).toContain("data-active={active() ? \"true\" : \"false\"}");
+  expect(source).toContain("data-selected={selected() ? \"true\" : \"false\"}");
+  expect((source.match(/aria-current=/g) ?? [])).toHaveLength(1);
+});
+
+test("desktop media query binding pushes current state forwards changes and unsubscribes", () => {
+  expect(desktopMediaQuery).toBe("(min-width: 1024px)");
+
+  const listeners: Array<(event: { readonly matches: boolean }) => void> = [];
+  let matches = false;
+  const query = {
+    get matches() {
+      return matches;
+    },
+    addEventListener: (_type: "change", listener: (event: { readonly matches: boolean }) => void) => {
+      listeners.push(listener);
+    },
+    removeEventListener: (_type: "change", listener: (event: { readonly matches: boolean }) => void) => {
+      const index = listeners.indexOf(listener);
+      if (index >= 0) {
+        listeners.splice(index, 1);
+      }
+    },
+  };
+
+  const updates: boolean[] = [];
+  const unsubscribe = bindMediaQueryMatches(query, (next) => updates.push(next));
+
+  // Current state is pushed immediately on bind, matching the initial sync in
+  // createDesktopMediaQuerySignal's mount step.
+  expect(updates).toEqual([false]);
+
+  matches = true;
+  for (const listener of listeners) {
+    listener({ matches });
+  }
+  expect(updates).toEqual([false, true]);
+
+  unsubscribe();
+  expect(listeners).toHaveLength(0);
+});
+
+test("content list row height estimates are density-aware", () => {
+  expect(readerDensityValues).toEqual(["comfortable", "compact"]);
+  expect(estimateContentItemRowHeight("compact")).toBe(72);
+  expect(estimateContentItemRowHeight("comfortable")).toBe(76);
+  expect(estimateContentItemRowHeight("compact")).toBeLessThan(estimateContentItemRowHeight("comfortable"));
 });
 
 test("hide played defaults to on when connected unless an explicit preference exists", async () => {
@@ -1377,6 +2218,90 @@ test("hide played defaults to on when connected unless an explicit preference ex
 
 test("hide played preference is persisted via localStorage helpers", () => {
   expect(hidePlayedLocalStorageKey).toBe("feedelity.hide-played");
+});
+
+test("persisted UI state keys use stable localStorage names (F7)", () => {
+  expect(shellModeLocalStorageKey).toBe("feedelity.shell.mode");
+  expect(leftPaneTabLocalStorageKey).toBe("feedelity.shell.left-tab");
+  expect(creatorSourceFilterLocalStorageKey).toBe("feedelity.creators.source-filter");
+  expect(contentViewModeLocalStorageKey).toBe("feedelity.content.view-mode");
+  expect(contentSourceFilterLocalStorageKey).toBe("feedelity.content.source-filter");
+});
+
+test("persistLocalValue and readPersistedLocalValue round-trip through localStorage", () => {
+  const store = new Map<string, string>();
+  const originalStorage = globalThis.localStorage;
+  globalThis.localStorage = toStorageStub(store);
+  try {
+    expect(readPersistedLocalValue(shellModeLocalStorageKey)).toBeNull();
+
+    persistLocalValue(shellModeLocalStorageKey, "library");
+    expect(readPersistedLocalValue(shellModeLocalStorageKey)).toBe("library");
+    expect(store.get(shellModeLocalStorageKey)).toBe("library");
+  } finally {
+    globalThis.localStorage = originalStorage;
+  }
+});
+
+test("persisted shell mode narrows to catalog for missing or invalid values", () => {
+  expect(toPersistedShellMode(null)).toBe("catalog");
+  expect(toPersistedShellMode("")).toBe("catalog");
+  expect(toPersistedShellMode("bogus")).toBe("catalog");
+  expect(toPersistedShellMode("catalog")).toBe("catalog");
+  expect(toPersistedShellMode("library")).toBe("library");
+});
+
+test("persisted left-pane tab coerces auth-only tabs for anonymous users", () => {
+  expect(toPersistedLeftPaneTab(null, false)).toBe("library");
+  expect(toPersistedLeftPaneTab(null, true)).toBe("library");
+  expect(toPersistedLeftPaneTab("bogus", true)).toBe("library");
+  expect(toPersistedLeftPaneTab("library", false)).toBe("library");
+  // Feeds works for anonymous browsing, so it applies as-is either way.
+  expect(toPersistedLeftPaneTab("feeds", false)).toBe("feeds");
+  expect(toPersistedLeftPaneTab("feeds", true)).toBe("feeds");
+  // Playlists and collections render only for signed-in users (the app-shell
+  // tab bar gates them behind isAuthenticated), so an anonymous application of
+  // the persisted tab falls back to the default.
+  expect(toPersistedLeftPaneTab("playlists", false)).toBe("library");
+  expect(toPersistedLeftPaneTab("collections", false)).toBe("library");
+  expect(toPersistedLeftPaneTab("playlists", true)).toBe("playlists");
+  expect(toPersistedLeftPaneTab("collections", true)).toBe("collections");
+});
+
+test("persisted source-type filter narrows to null (All) for missing or invalid values", () => {
+  expect(toPersistedSourceTypeFilter(null)).toBeNull();
+  expect(toPersistedSourceTypeFilter("")).toBeNull();
+  expect(toPersistedSourceTypeFilter("all")).toBeNull();
+  expect(toPersistedSourceTypeFilter("bogus")).toBeNull();
+  expect(sourceTypeFilterValues).toEqual(["youtube", "odysee", "peertube"]);
+  for (const sourceType of sourceTypeFilterValues) {
+    expect(toPersistedSourceTypeFilter(sourceType)).toBe(sourceType);
+  }
+});
+
+test("persisted content view mode coerces auth-only modes to the shell-mode default", () => {
+  expect(toContentViewModeDefault("library")).toBe("subscribed");
+  expect(toContentViewModeDefault("catalog")).toBe("catalog");
+
+  // Missing or invalid values fall back to the mode default.
+  expect(toPersistedContentViewMode(null, true, "library")).toBe("subscribed");
+  expect(toPersistedContentViewMode(null, true, "catalog")).toBe("catalog");
+  expect(toPersistedContentViewMode("bogus", true, "library")).toBe("subscribed");
+
+  // Auth-only modes (their buttons render only for signed-in users) fall back
+  // to the mode default when applied anonymously...
+  expect(toPersistedContentViewMode("favorites", false, "library")).toBe("subscribed");
+  expect(toPersistedContentViewMode("history-opened", false, "library")).toBe("subscribed");
+  expect(toPersistedContentViewMode("played", false, "catalog")).toBe("catalog");
+
+  // ...and apply as-is for signed-in users.
+  expect(toPersistedContentViewMode("favorites", true, "library")).toBe("favorites");
+  expect(toPersistedContentViewMode("history-opened", true, "catalog")).toBe("history-opened");
+  expect(toPersistedContentViewMode("played", true, "library")).toBe("played");
+
+  // Non-gated modes apply regardless of the auth state.
+  expect(toPersistedContentViewMode("catalog", false, "catalog")).toBe("catalog");
+  expect(toPersistedContentViewMode("subscribed", false, "library")).toBe("subscribed");
 });
 
 test("favorite toggles are real authenticated actions in list rows and viewer", async () => {
@@ -1467,6 +2392,9 @@ test("mobile navigation adds no timers observers or unstable resource source obj
   const source = await readAppShellSource();
 
   expect(source).not.toContain("IntersectionObserver");
+  // The content-list virtualizer is disabled (TO BE FIXED) and keeps its
+  // ResizeObserver encapsulated inside @tanstack/solid-virtual; the shell
+  // source itself never touches observer APIs.
   expect(source).not.toContain("ResizeObserver");
   expect(source).not.toContain("MutationObserver");
   expect(source).not.toContain("setInterval");
@@ -1617,8 +2545,12 @@ test("content rows expose concise icon source indicators and avoid fake thumbnai
   expect(source).toContain("Playback source");
   expect(source).not.toContain("Listed from");
   expect(source).not.toContain("listed from");
-  expect(source).not.toContain(" exists");
-  expect(source).not.toContain("exists ");
+  // Ban verbose "exists" copy in rendered UI text. The only allowed
+  // occurrence is the structured playlist/collection removal error message
+  // ("This ... no longer exists."); every other "exists" phrasing is banned.
+  const existsCopyMatches = source.match(/\bexists\b/g) ?? [];
+  const allowedExistsCopies = source.match(/no longer exists\./g) ?? [];
+  expect(existsCopyMatches).toHaveLength(allowedExistsCopies.length);
   expect(source).not.toContain("blablabla");
   expect(source).not.toContain("playback source switching is in the viewer");
   expect(source).not.toContain("fake thumbnail");
@@ -1950,6 +2882,98 @@ test("pane widths are persisted to localStorage with stable key", () => {
   expect(paneWidthsLocalStorageKey).toBe("feedelity.pane-widths");
 });
 
+test("shell layout persists the last mode and reopens it once on mount without trapping the catalog (F7)", async () => {
+  const shellRouteSource = await Bun.file(new URL("../routes/_shell.tsx", import.meta.url)).text();
+  const indexRouteSource = await Bun.file(new URL("../routes/_shell.index.tsx", import.meta.url)).text();
+  const dashboardRouteSource = await Bun.file(new URL("../routes/_shell.dashboard.tsx", import.meta.url)).text();
+
+  // The layout records the pathname-derived mode on every change.
+  expect(shellRouteSource).toContain("createEffect(() => {");
+  expect(shellRouteSource).toContain("persistLocalValue(shellModeLocalStorageKey, mode());");
+  // "/" is the catalog and must always be reachable (header Catalog link,
+  // logo, `g c` shortcut): the index route carries no redirect of its own.
+  expect(indexRouteSource).toContain('createFileRoute("/_shell/")');
+  expect(indexRouteSource).not.toContain("beforeLoad");
+  // The one-time "reopen the last section" redirect lives in the shell layout,
+  // which stays mounted across child navigations, and runs at most once per
+  // app mount: gated on a resolved session AND a persisted library mode AND
+  // not already being on a /dashboard route, with replace so Back leaves the
+  // pre-redirect history entry instead of re-entering the redirect.
+  expect(shellRouteSource).toContain("let didInitialSectionRedirect = false;");
+  expect(shellRouteSource).toContain("const session = await authClient.getSession();");
+  // The redirect reads a synchronous setup-time snapshot of the persisted
+  // mode, not storage: the persistence effect writes the pathname-derived
+  // mode (at "/" that is "catalog") at mount, long before the redirect's
+  // async session check resolves, so re-reading storage inside the redirect
+  // would always observe the clobbered value and reopen-last-section would
+  // never fire for users who open the app on "/".
+  const snapshotDeclaration = 'const persistedInitialMode = toPersistedShellMode(readPersistedLocalValue(shellModeLocalStorageKey));';
+  expect(shellRouteSource).toContain(snapshotDeclaration);
+  expect(shellRouteSource).toContain('persistedInitialMode === "library"');
+  const snapshotIndex = shellRouteSource.indexOf(snapshotDeclaration);
+  const persistenceEffectIndex = shellRouteSource.indexOf("createEffect(() => {");
+  expect(snapshotIndex).toBeGreaterThanOrEqual(0);
+  expect(persistenceEffectIndex).toBeGreaterThan(snapshotIndex);
+  // The guard tolerates any /dashboard route (not just the exact path) so
+  // future nested dashboard routes stay intact.
+  expect(shellRouteSource).toContain('!location().pathname.startsWith("/dashboard")');
+  expect(shellRouteSource).toContain('navigate({ to: "/dashboard", replace: true });');
+  // The dashboard guard is unchanged: anonymous users go to login.
+  expect(dashboardRouteSource).toContain('to: "/login",');
+});
+
+test("left-pane tab and creator source filter persist through single mutations (F7)", async () => {
+  const source = await readAppShellSource();
+
+  // Tab: the seed evaluates the persisted value against the current auth gate,
+  // every tab button routes through the persisting changeActiveTab helper, and
+  // a session-resolve effect realigns the tab with the resolved auth state.
+  expect(source).toContain("toPersistedLeftPaneTab(readPersistedLocalValue(leftPaneTabLocalStorageKey), isAuthenticated())");
+  expect(source).toContain("setActiveTab={changeActiveTab}");
+  expect(source).not.toContain("setActiveTab={setActiveTab}");
+  expect(source).toContain("setActiveTab(toPersistedLeftPaneTab(readPersistedLocalValue(leftPaneTabLocalStorageKey), true));");
+  expect(source).toContain("setActiveTab((current) => toPersistedLeftPaneTab(current, false));");
+  // Creator filter: persisted seed and persisted shared mutation (the empty
+  // string encodes "All").
+  expect(source).toContain("toPersistedSourceTypeFilter(readPersistedLocalValue(creatorSourceFilterLocalStorageKey))");
+  const applyFilterStart = source.indexOf("const applyCreatorSourceType = (nextSourceType: SourceType | null) => {");
+  expect(applyFilterStart).toBeGreaterThanOrEqual(0);
+  expect(source.slice(applyFilterStart, applyFilterStart + 300)).toContain('persistLocalValue(creatorSourceFilterLocalStorageKey, nextSourceType ?? "");');
+});
+
+test("content view mode and source filter persist through single mutations (F7)", async () => {
+  const source = await readAppShellSource();
+
+  // Persisted seeds with the auth gate applied by the parser.
+  expect(source).toContain("toPersistedSourceTypeFilter(readPersistedLocalValue(contentSourceFilterLocalStorageKey))");
+  expect(source).toContain("toPersistedContentViewMode(readPersistedLocalValue(contentViewModeLocalStorageKey), props.isAuthenticated(), props.mode)");
+  // Persist-on-change helpers used by the view-mode buttons and the filter select.
+  expect(source).toContain("persistLocalValue(contentViewModeLocalStorageKey, nextViewMode);");
+  expect(source).toContain('persistLocalValue(contentSourceFilterLocalStorageKey, nextSourceType ?? "");');
+  expect(source).toContain("onChange={(event) => changeSourceType(toSourceFilterValue(event.currentTarget.value))}");
+  // The restore effect re-applies the persisted view mode once the session
+  // resolves as authenticated; the anonymous reset stays the enforcer.
+  expect(source).toContain("createEffect(on(props.isAuthenticated, (isAuthenticated) => {");
+  expect(source).toContain('setViewMode(props.mode === "library" ? "subscribed" : "catalog")');
+});
+
+test("persisted UI state stays limited to the five F7 keys and search text stays ephemeral", async () => {
+  const combined = await readChangedUiSource();
+  const persistedKeyMatches = combined.match(/"feedelity\.[a-z.-]+"/g) ?? [];
+
+  expect([...new Set(persistedKeyMatches)].sort()).toEqual(
+    [
+      "feedelity.content.source-filter",
+      "feedelity.content.view-mode",
+      "feedelity.creators.source-filter",
+      "feedelity.hide-played",
+      "feedelity.pane-widths",
+      "feedelity.shell.left-tab",
+      "feedelity.shell.mode",
+    ].map((key) => `"${key}"`).sort(),
+  );
+});
+
 test("viewer source switcher uses button group with SourceTypeIcon instead of select", async () => {
   const source = await readAppShellSource();
   const sourceIndicator = await Bun.file(new URL("./source-indicator.tsx", import.meta.url)).text();
@@ -2027,4 +3051,303 @@ test("creator rows render an initials fallback avatar when no icon exists", asyn
   expect(source).toContain("function creatorInitials(displayName: string): string");
   expect(source).toContain("data-creator-avatar-fallback");
   expect(source).toContain("flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-muted");
+});
+
+test("unread counts load behind an authenticated reload-keyed resource and map by creator", async () => {
+  const source = await readAppShellSource();
+  const unreadStart = source.indexOf("const unreadCountsResourceInput = createMemo(() => {");
+  const unreadEnd = source.indexOf("const selectedCreatorId = createMemo(() => selectedCreator()?.id ?? null);");
+  const unreadWiring = source.slice(unreadStart, unreadEnd);
+
+  expect(source).toContain("client.overlays.unreadCounts()");
+  // Same gating as the other overlay resources: anonymous users never fetch.
+  expect(unreadWiring).toContain("if (!isAuthenticated()) {\n      return null;\n    }");
+  // Keyed by subscriptionsReloadKey so subscribe/unsubscribe/refresh and both
+  // mark-as-read actions (which bump it) refetch the counts.
+  expect(unreadWiring).toContain("return subscriptionsReloadKey().toString();");
+  expect(unreadWiring).toContain("createResource(unreadCountsResourceInput, () => client.overlays.unreadCounts())");
+  // No plain resource reads on render paths: the shell only exposes a
+  // .latest-backed memo and a creatorId-keyed map.
+  expect(unreadWiring).toContain("const unreadCountsValue = createMemo(() => unreadCounts.latest);");
+  expect(unreadWiring).toContain("unreadCountsByCreatorId.set(summary.creatorId, summary);");
+  expect(unreadWiring).toContain("unreadCountsValue() ?? emptyCreatorUnreadSummaries");
+  expect(source).toContain("const emptyCreatorUnreadSummaries: readonly CreatorUnreadSummary[] = [];");
+  expect(source).toContain("unreadByCreatorId={unreadByCreatorId}");
+});
+
+test("creator rows show a compact unread badge only with a positive library count", async () => {
+  const source = await readAppShellSource();
+
+  expect(source).toContain("readonly unreadCount?: () => number | null;");
+  expect(source).toContain("const unreadCount = createMemo(() => props.unreadCount?.() ?? null);");
+  // Hidden when 0 or null: the badge render is gated on the positive-count memo.
+  expect(source).toContain("const showUnreadBadge = createMemo(() => {");
+  expect(source).toContain("return count !== null && count > 0;");
+  expect(source).toContain("<Show when={showUnreadBadge()}>");
+  expect(source).toContain("data-creator-unread-count");
+  expect(source).toContain("rounded-full border border-border bg-muted px-1.5 py-0.5 text-[0.62rem] font-semibold tabular-nums text-muted-foreground");
+  // The badge sits after the display name and before the source icons row.
+  const badgeIndex = source.indexOf("data-creator-unread-count");
+  const nameIndex = source.indexOf('{props.creator.displayName}');
+  const iconsIndex = source.indexOf('data-creator-source-badges');
+  expect(badgeIndex).toBeGreaterThan(nameIndex);
+  expect(badgeIndex).toBeLessThan(iconsIndex);
+  // The column passes a live accessor only in library mode for authenticated
+  // users; catalog and anonymous rows always read a null count.
+  expect(source).toContain('const libraryUnreadEnabled = createMemo(() => props.mode === "library" && props.isAuthenticated());');
+  expect(source).toContain("unreadCount={() => (libraryUnreadEnabled() ? unreadCountForCreator(creator.id) : null)}");
+});
+
+test("mark-as-read affordances call protected overlay procedures and reload counts", async () => {
+  const source = await readAppShellSource();
+  const markCreatorStart = source.indexOf("const markCreatorRead = async (creatorId: string) => {");
+  const markAllEnd = source.indexOf("const refreshProgressText = createMemo(() => {");
+  const markActions = source.slice(markCreatorStart, markAllEnd);
+
+  expect(markActions).toContain("await client.overlays.markCreatorContentOpened({ creatorId });");
+  expect(markActions).toContain("await client.overlays.markAllContentOpened();");
+  // Both actions refetch counts through the shared reload-key bump (the same
+  // onSubscriptionsChanged channel the subscription actions use).
+  expect(markActions).toContain("props.onSubscriptionsChanged();");
+  expect(markActions).toContain("setMarkReadError(formatError(error));");
+  expect(markActions).toContain("if (!props.isAuthenticated() || markReadBusyCreatorId() !== null || markAllReadBusy()) {");
+  expect(markActions).toContain("if (!props.isAuthenticated() || markAllReadBusy() || markReadBusyCreatorId() !== null) {");
+  // Per-creator hover action: rendered only for unread rows, disabled in flight.
+  expect(source).toContain('<Show when={showUnreadBadge() && props.onMarkCreatorRead !== undefined}>');
+  expect(source).toContain("data-mark-creator-read={props.creator.id}");
+  expect(source).toContain('aria-label={`Mark ${props.creator.displayName} as read`}');
+  expect(source).toContain("disabled={props.markReadBusy}");
+  expect(source).toContain("markReadBusy={markReadBusyCreatorId() === creator.id || markAllReadBusy()}");
+  // Global control: authenticated + library + any-unread gated, disabled in flight.
+  expect(source).toContain('<Show when={props.mode === "library" && hasAnyUnread()}>');
+  expect(source).toContain("data-mark-all-read");
+  expect(source).toContain('aria-label="Mark all sources as read"');
+  expect(source).toContain("disabled={markAllReadBusy()}");
+  // Errors surface through the column's destructive text pattern, not swallowed.
+  expect(source).toContain('data-mark-read-error');
+});
+
+test("anonymous users and catalog mode render no unread badge or mark-all control", async () => {
+  const source = await readAppShellSource();
+
+  // Anonymous: the unread resource never fetches, so the row accessor reads a
+  // null count and neither the badge nor the hover mark button can mount.
+  expect(source).toContain("if (!isAuthenticated()) {\n      return null;\n    }\n\n    return subscriptionsReloadKey().toString();");
+  // Catalog mode never receives a non-null unread accessor even when signed in.
+  expect(source).toContain("unreadCount={() => (libraryUnreadEnabled() ? unreadCountForCreator(creator.id) : null)}");
+  expect(source).toContain('props.mode === "library" && props.isAuthenticated()');
+  // The global control additionally requires at least one positive count.
+  expect(source).toContain('props.mode === "library" && hasAnyUnread()');
+  expect(source).toContain('<Show when={showUnreadBadge() && props.onMarkCreatorRead !== undefined}>');
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8.2: feed health dashboard, confirm dialog, bulk unsubscribe
+// ---------------------------------------------------------------------------
+
+function healthEntry(feedId: string, overrides: Partial<FeedHealthEntry> = {}): FeedHealthEntry {
+  return {
+    feedId,
+    feedTitle: `Feed ${feedId}`,
+    feedUrl: `https://example.test/${feedId}`,
+    sourceType: "youtube",
+    creatorId: `creator-${feedId}`,
+    creatorDisplayName: `Creator ${feedId}`,
+    nextRefreshAfter: null,
+    lastAttemptAt: null,
+    lastSuccessAt: null,
+    consecutiveFailureCount: 0,
+    lastErrorSummaryJson: null,
+    itemsCreatedTotal: 0,
+    ...overrides,
+  };
+}
+
+async function readFeedHealthDialogSource() {
+  return Bun.file(new URL("./feed-health-dialog.tsx", import.meta.url)).text();
+}
+
+async function readConfirmDialogSource() {
+  return Bun.file(new URL("./confirm-dialog.tsx", import.meta.url)).text();
+}
+
+test("feed health rows sort by failure streak then stalest last success (never first)", () => {
+  const entries = [
+    healthEntry("one-blip", { consecutiveFailureCount: 1, lastSuccessAt: new Date("2026-01-04T00:00:00.000Z") }),
+    healthEntry("healthy", { consecutiveFailureCount: 0, lastSuccessAt: new Date("2026-01-04T00:00:00.000Z") }),
+    healthEntry("fresh-success", { consecutiveFailureCount: 2, lastSuccessAt: new Date("2026-01-04T00:00:00.000Z") }),
+    healthEntry("never-succeeded", { consecutiveFailureCount: 2 }),
+    healthEntry("stale-success", { consecutiveFailureCount: 2, lastSuccessAt: new Date("2025-12-01T00:00:00.000Z") }),
+  ];
+
+  const sorted = sortFeedHealthEntries(entries);
+
+  expect(sorted.map((entry) => entry.feedId)).toEqual([
+    // 2 failures: never succeeded is the stalest, then oldest success first.
+    "never-succeeded",
+    "stale-success",
+    "fresh-success",
+    // Fewer failures rank later.
+    "one-blip",
+    "healthy",
+  ]);
+});
+
+test("sortFeedHealthEntries breaks ties deterministically and never mutates its input", () => {
+  const sameMoment = new Date("2026-01-04T00:00:00.000Z");
+  const entries = [
+    healthEntry("zeta", { consecutiveFailureCount: 3, lastSuccessAt: sameMoment }),
+    healthEntry("alpha", { consecutiveFailureCount: 3, lastSuccessAt: sameMoment }),
+  ];
+
+  const sorted = sortFeedHealthEntries(entries);
+
+  // Equal failure count and equal last success falls back to feed URL order.
+  expect(sorted.map((entry) => entry.feedId)).toEqual(["alpha", "zeta"]);
+  expect(sortFeedHealthEntries([])).toEqual([]);
+
+  const inputOrder = ["zeta", "alpha"];
+  expect(entries.map((entry) => entry.feedId)).toEqual(inputOrder);
+});
+
+test("formatFeedHealthLastSuccess reads never, today, and whole-day ages", () => {
+  const now = new Date("2026-08-30T12:00:00.000Z");
+
+  expect(formatFeedHealthLastSuccess(null, now)).toBe("never");
+  expect(formatFeedHealthLastSuccess(new Date("2026-08-30T06:00:00.000Z"), now)).toBe("today");
+  expect(formatFeedHealthLastSuccess(new Date("2026-08-28T12:00:00.000Z"), now)).toBe("2d ago");
+  expect(formatFeedHealthLastSuccess(new Date("2026-08-23T00:00:00.000Z"), now)).toBe("7d ago");
+});
+
+test("feed health dialog renders sorted rows from the fetched health payload", async () => {
+  const source = await readFeedHealthDialogSource();
+  const shellSource = await readAppShellSource();
+
+  // Data arrives via props from the parent resource and is sorted in-dialog.
+  expect(source).toContain("const sortedEntries = createMemo(() => sortFeedHealthEntries(props.entries));");
+  expect(source).toContain("<For each={sortedEntries()}>");
+  // Row contract: identity, creator, feed link, source chip, status pill.
+  expect(source).toContain('data-feed-health-row={entry.feedId}');
+  expect(source).toContain('data-feed-health-row-state={isFailing ? "failing" : "healthy"}');
+  expect(source).toContain('data-feed-health-row-creator');
+  expect(source).toContain('<SourceIconBadge sourceType={entry.sourceType} context="feed" />');
+  expect(source).toContain('data-feed-health-row-title');
+  expect(source).toContain('data-feed-health-row-url');
+  expect(source).toContain('target="_blank"');
+  // Health facts: last-success age, failure streak, parsed last error.
+  expect(source).toContain("formatFeedHealthLastSuccess(entry.lastSuccessAt, healthNow())");
+  expect(source).toContain('data-feed-health-row-last-success');
+  expect(source).toContain('data-feed-health-row-failure-count');
+  expect(source).toContain("<TriangleAlert");
+  expect(source).toContain("parseRefreshErrorSummaries(entry.lastErrorSummaryJson)");
+  expect(source).toContain('data-feed-health-row-error');
+  expect(source).toContain("{formatRefreshErrorCodeLabel(error.code)}.");
+  // Native dialog modeled on RefreshStatusDialog.
+  expect(source).toContain("<dialog");
+  expect(source).toContain('aria-label="Feed health"');
+
+  // The shell fetches health only while the dialog is open, authenticated.
+  expect(shellSource).toContain("const [feedHealth] = createResource(feedHealthResourceInput, () => client.overlays.feedHealth({}));");
+  expect(shellSource).toContain("if (!props.isAuthenticated() || !feedHealthOpen()) {");
+  expect(shellSource).toContain("entries={feedHealthEntries()}");
+  expect(shellSource).toContain("loading={feedHealth.loading}");
+  expect(shellSource).toContain("onClose={() => setFeedHealthOpen(false)}");
+});
+
+test("destructive unsubscribe actions require the confirm dialog before any client call", async () => {
+  const source = await readFeedHealthDialogSource();
+  const confirmSource = await readConfirmDialogSource();
+  const shellSource = await readAppShellSource();
+
+  // Confirm dialog contract: open/onConfirm/onCancel props, destructive confirm
+  // button, cancel button, data attributes.
+  expect(confirmSource).toContain("data-confirm-dialog");
+  expect(confirmSource).toContain('data-confirm-dialog-title');
+  expect(confirmSource).toContain('data-confirm-dialog-body');
+  expect(confirmSource).toContain("data-confirm-dialog-cancel");
+  expect(confirmSource).toContain("data-confirm-dialog-confirm");
+  expect(confirmSource).toContain("onClick={() => props.onCancel()}");
+  // The confirm button arms the confirmed guard before firing the destructive
+  // callback so the native close event does not double-fire onCancel.
+  expect(confirmSource).toContain("onClick={() => {\n            setConfirmed(true);\n            props.onConfirm();\n          }}");
+  // Close path skips onCancel when the close was caused by a confirm...
+  expect(confirmSource).toContain("if (confirmed()) {\n          return;\n        }\n        props.onCancel();");
+  // ...and the guard resets at the start of every new open session.
+  expect(confirmSource).toContain("if (props.open) {\n      setConfirmed(false);\n    }");
+  expect(confirmSource).toContain("bg-destructive");
+
+  // Row + bulk buttons only STAGE the confirm intent.
+  expect(source).toContain("onClick={() => stageCreatorUnsubscribe(entry)}");
+  expect(source).toContain("onClick={() => stageFailedCreatorsUnsubscribe()}");
+  const stageCreatorStart = source.indexOf("const stageCreatorUnsubscribe =");
+  const stageBulkStart = source.indexOf("const stageFailedCreatorsUnsubscribe =");
+  const confirmHandlerStart = source.indexOf("const confirmPendingUnsubscribe =");
+  expect(source.slice(stageCreatorStart, stageBulkStart)).not.toContain("props.onUnsubscribeCreators");
+  expect(source.slice(stageBulkStart, confirmHandlerStart)).not.toContain("props.onUnsubscribeCreators");
+
+  // The ONLY path to the destructive call consumes the pending intent first.
+  const forwardCallIndex = source.indexOf("props.onUnsubscribeCreators(pending.creatorIds);");
+  const pendingClearIndex = source.indexOf("setPendingUnsubscribe(null);", confirmHandlerStart);
+  expect(confirmHandlerStart).toBeGreaterThan(-1);
+  expect(pendingClearIndex).toBeGreaterThan(-1);
+  expect(forwardCallIndex).toBeGreaterThan(pendingClearIndex);
+
+  // Cancel fires nothing: it only clears the pending intent.
+  expect(source).toContain("onCancel={() => setPendingUnsubscribe(null)}");
+  expect(source).toContain("open={pendingUnsubscribe() !== null}");
+
+  // The shell performs the bulkUnsubscribe call exactly once, inside the
+  // handler the dialog can only reach post-confirm, and reloads overlays plus
+  // health rows on success.
+  expect(shellSource.split("client.overlays.bulkUnsubscribe")).toHaveLength(2);
+  const shellHandlerStart = shellSource.indexOf("const unsubscribeHealthCreators = async (creatorIds: readonly string[]) => {");
+  const shellHandlerEnd = shellSource.indexOf("const feedListInput = createMemo", shellHandlerStart);
+  const shellHandler = shellSource.slice(shellHandlerStart, shellHandlerEnd);
+  expect(shellHandler).toContain("await client.overlays.bulkUnsubscribe({ creatorIds: [...creatorIds] });");
+  expect(shellHandler).toContain("props.onSubscriptionsChanged();");
+  expect(shellHandler).toContain("setFeedHealthReloadKey((key) => key + 1);");
+  expect(shellHandler).toContain("setFeedHealthActionError(formatError(error));");
+  expect(shellSource).toContain("onUnsubscribeCreators={unsubscribeHealthCreators}");
+
+  // No native window.confirm escape hatch anywhere in the UI sources.
+  const uiSources = await readChangedUiSource();
+  expect(uiSources).not.toContain("window.confirm");
+});
+
+test("feed health trigger is authenticated-only beside the refresh status dialog mount", async () => {
+  const source = await readAppShellSource();
+
+  const regionStart = source.indexOf('class={sourceActionsRegionClass} data-source-actions-region');
+  const regionEnd = source.indexOf("</section>", regionStart);
+  expect(regionStart).toBeGreaterThan(-1);
+  const actionsRegion = source.slice(regionStart, regionEnd);
+
+  expect(actionsRegion).toContain("<RefreshStatusDialog");
+  expect(source.indexOf("<FeedHealthDialog")).toBeGreaterThan(source.indexOf("<RefreshStatusDialog"));
+  // Trigger: authenticated-only, opens the health dialog.
+  expect(actionsRegion).toContain("<Show when={props.isAuthenticated()}>");
+  expect(actionsRegion).toContain("data-feed-health-trigger");
+  expect(actionsRegion).toContain("onClick={() => setFeedHealthOpen(true)}");
+  expect(actionsRegion).toContain("<FeedHealthDialog");
+});
+
+test("every bridge postMessage call site is throw-guarded so playback tracking can never break rendering", async () => {
+  const bridgeSource = await Bun.file(new URL("../lib/youtube-player-bridge.ts", import.meta.url)).text();
+
+  // The bridge's single outbound post site must sit inside a try/catch: a
+  // failed post (origin mismatch while the frame is still about:blank) is a
+  // silent no-op — the poll/handshake retry recovers.
+  const postSite = bridgeSource.indexOf("contentWindow.postMessage(");
+  expect(postSite).toBeGreaterThan(-1);
+  expect(bridgeSource.split("contentWindow.postMessage(")).toHaveLength(2);
+  const tryStart = bridgeSource.lastIndexOf("try {", postSite);
+  expect(tryStart).toBeGreaterThan(-1);
+  const catchStart = bridgeSource.indexOf("} catch {", tryStart);
+  expect(catchStart).toBeGreaterThan(postSite);
+  const closeStart = bridgeSource.indexOf("};", catchStart);
+  expect(closeStart).toBeGreaterThan(catchStart);
+
+  // The window `message` listener must swallow handler errors instead of
+  // propagating them into Solid's render/effect flush.
+  expect(bridgeSource).toContain("// silent — the bridge degrades to untracked playback");
 });

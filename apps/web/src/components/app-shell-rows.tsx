@@ -14,10 +14,13 @@ import Target from "lucide-solid/icons/target";
 import X from "lucide-solid/icons/x";
 
 import {
+  formatPlaybackPosition,
+  formatPlaybackResumeLabel,
   formatSourceLabel,
   toCreatorSourceTypes,
   type BrowsableCreator,
   type ContentStatusFlags,
+  type PlaybackPosition,
   type ReaderDensity,
 } from "./app-shell.contract";
 import { SourceIconBadge, SourceTypeIcon } from "./source-indicator";
@@ -82,6 +85,13 @@ export interface CreatorSourceRowProps {
   readonly showSubscriptionControl: boolean;
   readonly refreshBusy: boolean;
   readonly readerDensity: ReaderDensity;
+  // Unread count accessor for the library-mode badge; null (or an omitted
+  // accessor) means not applicable (anonymous user, catalog mode, or no data
+  // yet) and renders nothing. The column only passes a live accessor when the
+  // mode is "library" and the user is authenticated.
+  readonly unreadCount?: () => number | null;
+  readonly markReadBusy?: boolean;
+  readonly onMarkCreatorRead?: (creatorId: string) => Promise<void>;
   readonly subscriptionControl: JSX.Element;
   readonly onSelectCreator: (creator: BrowsableCreator) => void;
   readonly onForceRefreshCreator: (creatorId: string) => Promise<void>;
@@ -95,6 +105,12 @@ export function CreatorSourceRow(props: CreatorSourceRowProps) {
   const sourceBadgesLabel = createMemo(() =>
     `Sources: ${sourceTypes().map((sourceType) => formatSourceLabel(sourceType)).join(" + ")}`,
   );
+  const unreadCount = createMemo(() => props.unreadCount?.() ?? null);
+  const showUnreadBadge = createMemo(() => {
+    const count = unreadCount();
+    return count !== null && count > 0;
+  });
+  const unreadBadgeLabel = createMemo(() => `${unreadCount() ?? 0} unread video${unreadCount() === 1 ? "" : "s"}`);
 
   return (
     <div
@@ -131,6 +147,16 @@ export function CreatorSourceRow(props: CreatorSourceRowProps) {
             )}
           </Show>
           <span class="block truncate text-sm font-semibold">{props.creator.displayName}</span>
+          <Show when={showUnreadBadge()}>
+            <span
+              class="shrink-0 rounded-full border border-border bg-muted px-1.5 py-0.5 text-[0.62rem] font-semibold tabular-nums text-muted-foreground"
+              aria-label={unreadBadgeLabel()}
+              title={unreadBadgeLabel()}
+              data-creator-unread-count
+            >
+              {unreadCount() ?? 0}
+            </span>
+          </Show>
           <Show when={sourceTypes().length > 0}>
             <span
               class="flex shrink-0 items-center gap-0.5 text-muted-foreground"
@@ -159,6 +185,22 @@ export function CreatorSourceRow(props: CreatorSourceRowProps) {
             >
               <RefreshCw size={13} class={props.refreshBusy ? "animate-spin" : ""} />
             </button>
+            <Show when={showUnreadBadge() && props.onMarkCreatorRead !== undefined}>
+              <button
+                type="button"
+                class="shrink-0 rounded-md border border-border bg-background p-1 text-muted-foreground transition hover:bg-accent hover:text-accent-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-60"
+                aria-label={`Mark ${props.creator.displayName} as read`}
+                title={`Mark ${props.creator.displayName} as read`}
+                data-mark-creator-read={props.creator.id}
+                disabled={props.markReadBusy}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void props.onMarkCreatorRead?.(props.creator.id);
+                }}
+              >
+                <CircleCheck size={13} aria-hidden="true" />
+              </button>
+            </Show>
             <Show when={props.showSubscriptionControl}>
               <span class="flex items-center">{props.subscriptionControl}</span>
             </Show>
@@ -324,7 +366,14 @@ export interface ContentListItemRowProps {
   readonly isAuthenticated: () => boolean;
   readonly isFavorite: () => boolean;
   readonly status: () => ContentStatusFlags;
+  readonly playbackPosition: () => PlaybackPosition | null;
   readonly selected: () => boolean;
+  // Keyboard-active row (j/k): renders a distinct, weaker highlight
+  // (bg-accent) so an index shift after a list change can never make a
+  // non-selected row claim selection visuals — data-active marks it,
+  // aria-current and the bg-selected highlight stay reserved for the
+  // actually-selected row.
+  readonly active: () => boolean;
   readonly favoritesView: () => boolean;
   readonly readerDensity: () => ReaderDensity;
   readonly targetPlaylistId: () => string | null;
@@ -355,7 +404,9 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
   const isAuthenticated = createMemo(() => props.isAuthenticated());
   const isFavorite = createMemo(() => props.isFavorite());
   const status = createMemo(() => props.status());
+  const playbackPosition = createMemo(() => props.playbackPosition());
   const selected = createMemo(() => props.selected());
+  const active = createMemo(() => props.active());
   const favoritesView = createMemo(() => props.favoritesView());
   const readerDensity = createMemo(() => props.readerDensity());
   const targetPlaylistId = createMemo(() => props.targetPlaylistId());
@@ -419,8 +470,9 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
 
   return (
     <div
-      class={`group relative border-b border-border ${readerDensityPaddingClass(readerDensity())} transition hover:bg-accent hover:text-accent-foreground ${selected() ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : status().played ? "bg-muted" : status().opened ? "bg-card" : "bg-background"}`}
+      class={`group relative border-b border-border ${readerDensityPaddingClass(readerDensity())} transition hover:bg-accent hover:text-accent-foreground ${selected() ? "bg-selected text-selected-foreground hover:bg-selected hover:text-selected-foreground" : active() ? "bg-accent text-accent-foreground" : status().played ? "bg-muted" : status().opened ? "bg-card" : "bg-background"}`}
       data-selected={selected() ? "true" : "false"}
+      data-active={active() ? "true" : "false"}
       data-opened={status().opened ? "true" : "false"}
       data-played={status().played ? "true" : "false"}
       data-favorite={isFavorite() ? "true" : "false"}
@@ -456,8 +508,23 @@ export function ContentListItemRow(props: ContentListItemRowProps) {
           </span>
           <span class="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
             <span class="truncate">{props.formatPublishedAt(props.contentItem.publishedAt)}</span>
-            <Show when={props.contentItem.durationSeconds !== null}>
-              <span class="shrink-0 tabular-nums">{props.formatDuration(props.contentItem.durationSeconds)}</span>
+            <Show
+              when={playbackPosition()}
+              fallback={
+                <Show when={props.contentItem.durationSeconds !== null}>
+                  <span class="shrink-0 tabular-nums">{props.formatDuration(props.contentItem.durationSeconds)}</span>
+                </Show>
+              }
+            >
+              {(position) => (
+                <span
+                  class="shrink-0 tabular-nums"
+                  data-content-playback-progress
+                  aria-label={formatPlaybackResumeLabel(position())}
+                >
+                  {formatPlaybackPosition(position())}
+                </span>
+              )}
             </Show>
             <Show when={selected()}>
               <Target size={12} class="text-selected-foreground" data-content-status="selected" aria-label="Selected" />

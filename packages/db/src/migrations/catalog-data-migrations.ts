@@ -57,6 +57,46 @@ const CREATOR_INDEXES = Object.keys(CREATOR_INDEX_DDL);
 
 const CONTENT_CROSS_SOURCE_KEY_INDEX = "content_item_cross_source_key_idx";
 
+/**
+ * Composite index matching the newest-first catalog list ordering
+ * (published_at DESC, created_at DESC, id DESC) so ORDER BY + LIMIT list
+ * queries read rows pre-sorted instead of using a TEMP B-TREE.
+ */
+const CONTENT_ITEM_LIST_ORDER_INDEX = "content_item_published_created_id_idx";
+
+const CONTENT_ITEM_LIST_ORDER_INDEX_DDL =
+  `CREATE INDEX IF NOT EXISTS ${CONTENT_ITEM_LIST_ORDER_INDEX} ON content_item (published_at DESC, created_at DESC, id DESC)`;
+
+/** Retention window for refresh feed results, in days (decision D8). */
+const REFRESH_FEED_RESULT_RETENTION_DAYS = 30;
+
+const REFRESH_FEED_RESULT_RETENTION_SECONDS = REFRESH_FEED_RESULT_RETENTION_DAYS * 86400;
+
+// started_at (like every catalog timestamp column) stores epoch MILLISECONDS:
+// schema defaults are `cast(unixepoch('subsecond') * 1000 as integer)` and the
+// 0002 backfill copies the ms published_at verbatim. unixepoch() is seconds,
+// hence the *1000. Parameterized so the window stays one bound value. The
+// NOT IN guard keeps each feed's newest row regardless of age: a long-dead
+// feed whose every attempt is over-age must retain its last attempt for the
+// feed-health dashboard (latest-window ordering mirrors listFeedHealth).
+const REFRESH_FEED_RESULT_RETENTION_DELETE_SQL = `DELETE FROM refresh_feed_result
+WHERE started_at < (cast(unixepoch() - ? as integer) * 1000)
+  AND id NOT IN (
+    SELECT newest.id FROM refresh_feed_result AS newest
+    WHERE newest.feed_id = refresh_feed_result.feed_id
+    ORDER BY newest.started_at DESC, newest.id DESC
+    LIMIT 1
+  )`;
+
+const REFRESH_FEED_RESULT_RETENTION_COUNT_SQL = `SELECT count(*) AS n FROM refresh_feed_result
+WHERE started_at < (cast(unixepoch() - ? as integer) * 1000)
+  AND id NOT IN (
+    SELECT newest.id FROM refresh_feed_result AS newest
+    WHERE newest.feed_id = refresh_feed_result.feed_id
+    ORDER BY newest.started_at DESC, newest.id DESC
+    LIMIT 1
+  )`;
+
 export interface CatalogCounts {
   readonly creators: number;
   readonly feeds: number;
@@ -222,9 +262,25 @@ const contentCrossSourceKeyStep: CatalogMigrationStep = {
   run: runContentCrossSourceKey,
 };
 
+const contentItemListOrderIndexStep: CatalogMigrationStep = {
+  id: "content_item_list_order_idx",
+  description:
+    "Create the content_item list-order composite index (published_at DESC, created_at DESC, id DESC) so newest-first list queries avoid a TEMP B-TREE sort.",
+  run: runContentItemListOrderIndex,
+};
+
+const refreshFeedResultRetentionStep: CatalogMigrationStep = {
+  id: "refresh_feed_result_retention",
+  description:
+    "Delete refresh_feed_result rows whose started_at is older than 30 days while keeping each feed's newest row, so per-feed refresh histories stay bounded (D8) without erasing long-dead feeds' last attempt.",
+  run: runRefreshFeedResultRetention,
+};
+
 const catalogMigrationSteps: readonly CatalogMigrationStep[] = [
   creatorCrossSourceMergeStep,
   contentCrossSourceKeyStep,
+  contentItemListOrderIndexStep,
+  refreshFeedResultRetentionStep,
 ];
 
 function runCreatorCrossSourceMerge(db: Database, apply: boolean): readonly string[] {
@@ -346,6 +402,56 @@ function runContentCrossSourceKey(db: Database, apply: boolean): readonly string
   );
 
   return details;
+}
+
+/**
+ * Create the composite content_item list-order index. Pure DDL over columns
+ * that exist in every schema produced by the bootstrap SQL migrations
+ * (published_at since 0000, created_at since 0000), so a re-run converges by
+ * the index-existence check alone.
+ */
+function runContentItemListOrderIndex(db: Database, apply: boolean): readonly string[] {
+  if (indexExists(db, CONTENT_ITEM_LIST_ORDER_INDEX)) {
+    return [`already converged: index ${CONTENT_ITEM_LIST_ORDER_INDEX} exists`];
+  }
+
+  if (!apply) {
+    return [
+      `create index ${CONTENT_ITEM_LIST_ORDER_INDEX} on content_item (published_at DESC, created_at DESC, id DESC)`,
+      "no writes performed (dry run)",
+    ];
+  }
+
+  db.exec(CONTENT_ITEM_LIST_ORDER_INDEX_DDL);
+  return [
+    `created index ${CONTENT_ITEM_LIST_ORDER_INDEX} on content_item (published_at DESC, created_at DESC, id DESC)`,
+  ];
+}
+
+/**
+ * One-time 30-day prune of refresh_feed_result (D8) that keeps each feed's
+ * newest row regardless of age. Idempotent twice over: the migration id
+ * records the step, and the predicate is re-runnable — a re-run deletes
+ * nothing because the kept newest rows are excluded by the NOT IN guard and
+ * every other row is either pruned already or inside the window. Databases so
+ * old that the refresh tables do not exist yet have nothing to prune — that
+ * state is reported instead of failing the step.
+ */
+function runRefreshFeedResultRetention(db: Database, apply: boolean): readonly string[] {
+  if (!tableExists(db, "refresh_feed_result")) {
+    return ["refresh_feed_result table does not exist yet; nothing to prune"];
+  }
+
+  if (!apply) {
+    const staleCount = readSingleNumber(db, REFRESH_FEED_RESULT_RETENTION_COUNT_SQL, REFRESH_FEED_RESULT_RETENTION_SECONDS);
+    return [
+      `would delete ${staleCount} refresh_feed_result row(s) older than ${REFRESH_FEED_RESULT_RETENTION_DAYS} days`,
+      "no writes performed (dry run)",
+    ];
+  }
+
+  const deleted = db.query(REFRESH_FEED_RESULT_RETENTION_DELETE_SQL).run(REFRESH_FEED_RESULT_RETENTION_SECONDS).changes;
+  return [`deleted ${deleted} refresh_feed_result row(s) older than ${REFRESH_FEED_RESULT_RETENTION_DAYS} days`];
 }
 
 interface ContentItemKeyRow {

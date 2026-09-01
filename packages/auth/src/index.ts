@@ -11,8 +11,8 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 // (cross-site cookies need SameSite=None); HTTP -> lax, non-secure.
 const secureCookies = env.BETTER_AUTH_URL.startsWith("https://");
 
-export function createAuth() {
-  const db = createDb();
+export async function createAuth() {
+  const db = await createDb();
 
   return betterAuth({
     database: drizzleAdapter(db, {
@@ -38,4 +38,4 @@ export function createAuth() {
   });
 }
 
-export const auth = createAuth();
+export const auth = await createAuth();
