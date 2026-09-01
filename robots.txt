@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://feedelity.dbuild.dev/sitemap.xml
