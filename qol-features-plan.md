@@ -1,5 +1,7 @@
 # FeedElity QOL Features Plan (F1–F9)
 
+> **Status: executed.** Merged via PR #2 (`89d2f3d`..`5520be7`); all phases implemented with one exception: **F8 content-list virtualization shipped and was then disabled** (`contentListVirtualizationEnabled = false` in `apps/web/src/components/app-shell-content-column.tsx`, commit `a798283`, "TO BE FIXED") — keyboard j/k uses the plain-list scroll path, not `scrollToIndex`. Also note retention pruning keeps each feed's newest row (commit `9744931`), which diverges from the plain single-DELETE described below. Baseline figures are plan-time snapshots.
+
 ## Overview
 
 Eleven-phase implementation plan for nine approved QOL features on the FeedElity monorepo (Bun + SolidJS web + Hono/oRPC server + Drizzle/libSQL + docker nginx):

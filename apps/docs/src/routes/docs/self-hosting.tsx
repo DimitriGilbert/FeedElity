@@ -8,7 +8,7 @@ export const Route = createFileRoute("/docs/self-hosting")({
     buildSeo({
       title: "Self-Hosting Guide - FeedElity Docs",
       description:
-        "Deploy FeedElity on your own server. Docker Compose, environment variables, database options, backup, and updating.",
+        "Deploy FeedElity on your own server. Docker Compose, environment variables, database persistence, backup, updates, and running without Docker.",
       pathname: "/docs/self-hosting",
       type: "article",
     }),
@@ -24,8 +24,8 @@ function SelfHostingPage() {
         </h1>
         <p className="mt-4 leading-relaxed text-neutral-400">
           FeedElity is designed to be self-hosted. This guide covers deployment
-          with Docker Compose, environment configuration, database options,
-          platform deployment, backup, and updates.
+          with Docker Compose, environment configuration, database persistence,
+          backup, updates, and running without Docker.
         </p>
 
         <section className="mt-10">
@@ -44,8 +44,8 @@ function SelfHostingPage() {
               modern Docker Engine)
             </li>
             <li>
-              At least 512 MB RAM and 1 GB of disk space for the application;
-              more if you run the local database container
+              At least 512 MB RAM and 1 GB of disk space for the application
+              and its database
             </li>
           </ul>
         </section>
@@ -54,64 +54,54 @@ function SelfHostingPage() {
           <h2 className="text-2xl font-semibold tracking-tight text-neutral-100">
             Docker Deployment
           </h2>
+          <p className="mt-4 leading-relaxed text-neutral-400">
+            The Compose stack runs two services, both built from source:
+          </p>
+          <ul className="mt-4 list-inside list-disc space-y-2 text-neutral-400">
+            <li>
+              <span className="text-neutral-200">web</span> &mdash; nginx
+              serving the built Solid app, published on port{" "}
+              <span className="text-neutral-200">31000</span>.
+            </li>
+            <li>
+              <span className="text-neutral-200">server</span> &mdash; the Hono
+              API server, published on port{" "}
+              <span className="text-neutral-200">31001</span>.
+            </li>
+          </ul>
 
           <section className="mt-6">
             <h3 className="text-lg font-medium text-neutral-200">
-              With Local Database
+              Step-by-Step
             </h3>
-            <p className="mt-3 leading-relaxed text-neutral-400">
-              The simplest setup runs a libSQL container alongside the app.
-              This uses a Docker volume for data persistence.
-            </p>
             <pre className="mt-4 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3 font-mono text-sm text-neutral-300">
-              <code>git clone https://github.com/anomalyco/FeedElity.git&#10;cd FeedElity&#10;cp .env.docker.example .env</code>
+              <code>git clone https://github.com/DimitriGilbert/FeedElity.git&#10;cd FeedElity&#10;cp docker/.env.example .env</code>
             </pre>
             <p className="mt-3 text-sm text-neutral-500">
               Edit{" "}
-              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">.env</code> and
-              generate a secure{" "}
-              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">BETTER_AUTH_SECRET</code>:
+              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">.env</code> at
+              the repo root and set the three{" "}
+              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">FEEDELITY_*</code>{" "}
+              variables (see the{" "}
+              <a href="#environment-variables" className="text-neutral-200 underline decoration-neutral-600 underline-offset-2 transition-colors hover:text-neutral-50">
+                Environment Variables
+              </a>{" "}
+              section below). Generate a secure secret with:
             </p>
             <pre className="mt-2 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3 font-mono text-sm text-neutral-300">
-              <code>openssl rand -hex 32</code>
+              <code>openssl rand -base64 48</code>
             </pre>
             <p className="mt-3 text-sm text-neutral-500">
-              Start everything with the local-db profile:
+              Then build and start:
             </p>
             <pre className="mt-2 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3 font-mono text-sm text-neutral-300">
-              <code>docker compose --profile local-db up -d</code>
+              <code>docker compose up -d --build</code>
             </pre>
             <p className="mt-3 text-sm text-neutral-500">
-              The app will be available at{" "}
-              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">http://localhost</code> (port
-              80 by default, configurable via{" "}
-              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">WEB_PORT</code>).
+              There are no pre-built images to pull &mdash; the containers are
+              always built from your checkout. The app will be available at{" "}
+              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">http://localhost:31000</code>.
             </p>
-          </section>
-
-          <section className="mt-8">
-            <h3 className="text-lg font-medium text-neutral-200">
-              With External Database
-            </h3>
-            <p className="mt-3 leading-relaxed text-neutral-400">
-              You can use Turso cloud or any libSQL-compatible server as your
-              database. Set the{" "}
-              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">DATABASE_URL</code>{" "}
-              environment variable to the external connection string.
-            </p>
-            <p className="mt-3 text-sm text-neutral-500">
-              In your{" "}
-              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">.env</code> file:
-            </p>
-            <pre className="mt-2 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3 font-mono text-sm text-neutral-300">
-              <code>DATABASE_URL=libsql://your-db-name-your-org.turso.io?authToken=your-token</code>
-            </pre>
-            <p className="mt-3 text-sm text-neutral-500">
-              Then start without the local-db profile:
-            </p>
-            <pre className="mt-2 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3 font-mono text-sm text-neutral-300">
-              <code>docker compose up -d</code>
-            </pre>
           </section>
 
           <section className="mt-8">
@@ -119,16 +109,23 @@ function SelfHostingPage() {
               Data Persistence
             </h3>
             <p className="mt-3 leading-relaxed text-neutral-400">
-              When using the local database container, FeedElity stores data in
-              a Docker volume named{" "}
-              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">libsql-data</code>.
+              The server stores its libSQL database file at{" "}
+              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">/data/local.db</code>{" "}
+              inside the container, persisted through a Docker volume named{" "}
+              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">feedelity-data</code>.
               This volume persists across container restarts and rebuilds.
             </p>
             <p className="mt-3 text-sm text-neutral-500">
-              To inspect the volume:
+              On first start, the server seeds the database from your local dev
+              snapshot (<code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">./local.db</code> at
+              the repo root, bind-mounted read-only). Every subsequent start
+              reuses the existing database untouched, so your data survives
+              restarts. If no snapshot exists, the server starts with an empty
+              database. To inspect the volume (the Compose project is named{" "}
+              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">feedelity</code>):
             </p>
             <pre className="mt-2 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3 font-mono text-sm text-neutral-300">
-              <code>docker volume inspect FeedElity_libsql-data</code>
+              <code>docker volume inspect feedelity_feedelity-data</code>
             </pre>
           </section>
         </section>
@@ -154,22 +151,21 @@ function SelfHostingPage() {
             </li>
             <li>
               <span className="text-neutral-200">Configure environment variables.</span>{" "}
-              Add all required variables from the{" "}
+              Add all three{" "}
+              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">FEEDELITY_*</code>{" "}
+              variables from the{" "}
               <a href="#environment-variables" className="text-neutral-200 underline decoration-neutral-600 underline-offset-2 transition-colors hover:text-neutral-50">
                 Environment Variables
               </a>{" "}
-              section below. Set{" "}
-              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">BETTER_AUTH_URL</code> and{" "}
-              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">CORS_ORIGIN</code> to
-              your domain.
+              section below, with{" "}
+              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">FEEDELITY_PUBLIC_URL</code> and{" "}
+              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">FEEDELITY_CORS_ORIGIN</code> set
+              to your domain.
             </li>
             <li>
-              <span className="text-neutral-200">Enable the local-db profile if needed.</span>{" "}
-              If you want the platform to run the libSQL container, make sure
-              the{" "}
-              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">local-db</code>{" "}
-              profile is active. Some platforms let you specify compose profiles
-              in their UI.
+              <span className="text-neutral-200">Allow time for the build.</span>{" "}
+              Images are built from source, so the first deployment includes a
+              full build of the web app and server.
             </li>
             <li>
               <span className="text-neutral-200">Set up TLS.</span>{" "}
@@ -178,9 +174,7 @@ function SelfHostingPage() {
             </li>
             <li>
               <span className="text-neutral-200">Deploy.</span>{" "}
-              The platform builds and starts the containers. The web service
-              exposes port 80 by default (or{" "}
-              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">WEB_PORT</code>).
+              The web service exposes port 31000 and the server port 31001.
             </li>
           </ol>
         </section>
@@ -190,11 +184,12 @@ function SelfHostingPage() {
             Environment Variables
           </h2>
           <p className="mt-4 leading-relaxed text-neutral-400">
-            All configuration is done through environment variables. Copy{" "}
-            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">.env.docker.example</code>{" "}
+            Copy{" "}
+            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">docker/.env.example</code>{" "}
             to{" "}
-            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">.env</code> as
-            a starting point.
+            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">.env</code> at
+            the repo root. Compose reads exactly three variables from this file
+            and injects them into the server container:
           </p>
 
           <div className="mt-6 overflow-x-auto rounded-lg border border-neutral-800">
@@ -208,178 +203,82 @@ function SelfHostingPage() {
                     Description
                   </th>
                   <th className="whitespace-nowrap px-4 py-3 font-medium text-neutral-200">
-                    Default
-                  </th>
-                  <th className="whitespace-nowrap px-4 py-3 font-medium text-neutral-200">
                     Required
                   </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-800/50">
                 <tr>
-                  <td className="px-4 py-3 font-mono text-xs text-neutral-300">
-                    RUNTIME_MODE
+                  <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-neutral-300">
+                    FEEDELITY_AUTH_SECRET
                   </td>
                   <td className="px-4 py-3 text-neutral-400">
-                    Application runtime mode
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-neutral-500">
-                    production
-                  </td>
-                  <td className="px-4 py-3 text-neutral-400">No</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-3 font-mono text-xs text-neutral-300">
-                    DATABASE_URL
-                  </td>
-                  <td className="px-4 py-3 text-neutral-400">
-                    libSQL connection string. Use{" "}
+                    Random string of at least 32 characters used to sign auth
+                    tokens and cookies. Generate with{" "}
                     <code className="rounded bg-neutral-800 px-1 py-0.5 text-neutral-300">
-                      http://db:8080
-                    </code>{" "}
-                    for local container, or a Turso cloud URL for external
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-neutral-500">
-                    http://db:8080
-                  </td>
-                  <td className="px-4 py-3 text-neutral-400">Yes</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-3 font-mono text-xs text-neutral-300">
-                    BETTER_AUTH_SECRET
-                  </td>
-                  <td className="px-4 py-3 text-neutral-400">
-                    Secret key for auth session encryption. Must be at least 32
-                    characters. Generate with{" "}
-                    <code className="rounded bg-neutral-800 px-1 py-0.5 text-neutral-300">
-                      openssl rand -hex 32
+                      openssl rand -base64 48
                     </code>
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-neutral-500">
-                    &mdash;
-                  </td>
-                  <td className="px-4 py-3 text-neutral-400">Yes</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-3 font-mono text-xs text-neutral-300">
-                    BETTER_AUTH_URL
-                  </td>
-                  <td className="px-4 py-3 text-neutral-400">
-                    Public URL where the app is accessible. Used by better-auth
-                    for cookie domain and redirects
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-neutral-500">
-                    http://localhost
+                    . Keep it stable: changing it logs everyone out and
+                    invalidates sessions. The server fails to start without it.
                   </td>
                   <td className="px-4 py-3 text-neutral-400">Yes</td>
                 </tr>
                 <tr>
-                  <td className="px-4 py-3 font-mono text-xs text-neutral-300">
-                    CORS_ORIGIN
+                  <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-neutral-300">
+                    FEEDELITY_PUBLIC_URL
                   </td>
                   <td className="px-4 py-3 text-neutral-400">
-                    Allowed origin for CORS requests. Must match the public URL
-                    of your deployment
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-neutral-500">
-                    http://localhost
+                    The full public URL browsers use to reach the web app,
+                    including scheme and port (for example{" "}
+                    <code className="rounded bg-neutral-800 px-1 py-0.5 text-neutral-300">
+                      http://localhost:31000
+                    </code>
+                    ). better-auth uses this as its base URL and for cookie and
+                    CORS decisions.
                   </td>
                   <td className="px-4 py-3 text-neutral-400">Yes</td>
                 </tr>
                 <tr>
-                  <td className="px-4 py-3 font-mono text-xs text-neutral-300">
-                    PORT
+                  <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-neutral-300">
+                    FEEDELITY_CORS_ORIGIN
                   </td>
                   <td className="px-4 py-3 text-neutral-400">
-                    Internal port for the Hono API server
+                    Comma-separated list of origins allowed to call the API
+                    (CORS and better-auth trusted origins). Always include the
+                    web app origin.
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs text-neutral-500">
-                    3002
-                  </td>
-                  <td className="px-4 py-3 text-neutral-400">No</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-3 font-mono text-xs text-neutral-300">
-                    NODE_ENV
-                  </td>
-                  <td className="px-4 py-3 text-neutral-400">
-                    Node environment. Set to production for deployment
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-neutral-500">
-                    production
-                  </td>
-                  <td className="px-4 py-3 text-neutral-400">No</td>
-                </tr>
-                <tr>
-                  <td className="px-4 py-3 font-mono text-xs text-neutral-300">
-                    WEB_PORT
-                  </td>
-                  <td className="px-4 py-3 text-neutral-400">
-                    External port exposed by the nginx web container
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-neutral-500">
-                    80
-                  </td>
-                  <td className="px-4 py-3 text-neutral-400">No</td>
+                  <td className="px-4 py-3 text-neutral-400">Yes</td>
                 </tr>
               </tbody>
             </table>
           </div>
+
+          <p className="mt-6 leading-relaxed text-neutral-400">
+            Two more variables are fixed inside the server container and do not
+            need to be configured:{" "}
+            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">PORT=31001</code>{" "}
+            (the port the Hono server binds to) and{" "}
+            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">DATABASE_URL=file:/data/local.db</code>{" "}
+            (the libSQL database file in the persistent volume).
+          </p>
         </section>
 
         <section className="mt-12">
           <h2 className="text-2xl font-semibold tracking-tight text-neutral-100">
-            Database Options
+            Database
           </h2>
-          <div className="mt-4 space-y-4">
-            <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 px-5 py-4">
-              <p className="font-medium text-neutral-200">
-                Local libSQL Container
-              </p>
-              <p className="mt-2 text-sm text-neutral-400">
-                Enabled with the{" "}
-                <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
-                  --profile local-db
-                </code>{" "}
-                flag. Data is stored in a Docker volume on the host. Good for
-                single-server deployments. No external dependency.
-              </p>
-              <pre className="mt-3 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-950 px-4 py-3 font-mono text-sm text-neutral-300">
-                <code>docker compose --profile local-db up -d</code>
-              </pre>
-            </div>
-
-            <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 px-5 py-4">
-              <p className="font-medium text-neutral-200">
-                Turso Cloud
-              </p>
-              <p className="mt-2 text-sm text-neutral-400">
-                Set{" "}
-                <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
-                  DATABASE_URL
-                </code>{" "}
-                to your Turso connection string. Includes built-in backups,
-                replication, and no local storage management.
-              </p>
-              <pre className="mt-3 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-950 px-4 py-3 font-mono text-sm text-neutral-300">
-                <code>DATABASE_URL=libsql://my-db-my-org.turso.io?authToken=your-token</code>
-              </pre>
-            </div>
-
-            <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 px-5 py-4">
-              <p className="font-medium text-neutral-200">
-                Any libSQL-Compatible Server
-              </p>
-              <p className="mt-2 text-sm text-neutral-400">
-                FeedElity works with any server that speaks the libSQL protocol.
-                Point{" "}
-                <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
-                  DATABASE_URL
-                </code>{" "}
-                to your server endpoint.
-              </p>
-            </div>
-          </div>
+          <p className="mt-4 leading-relaxed text-neutral-400">
+            The stack ships with a file-backed libSQL database: the server
+            reads and writes{" "}
+            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">/data/local.db</code>{" "}
+            inside the container, persisted through the{" "}
+            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">feedelity-data</code>{" "}
+            Docker volume. There is no separate database service to run or
+            monitor. On first start the database is seeded from the{" "}
+            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">./local.db</code>{" "}
+            dev snapshot in your checkout (if present); afterwards the volume
+            copy is the single source of truth.
+          </p>
         </section>
 
         <section className="mt-12">
@@ -387,21 +286,19 @@ function SelfHostingPage() {
             Updating
           </h2>
           <p className="mt-4 leading-relaxed text-neutral-400">
-            Pull the latest images and restart the services:
+            There are no pre-built images to pull &mdash; images are built
+            locally from your checkout. To update, pull the latest code and
+            rebuild:
           </p>
           <pre className="mt-4 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3 font-mono text-sm text-neutral-300">
-            <code>docker compose pull&#10;docker compose up -d</code>
+            <code>git pull&#10;docker compose up -d --build</code>
           </pre>
           <p className="mt-3 text-sm text-neutral-500">
-            If you are building from source instead of using pre-built images,
-            pull the latest code first:
-          </p>
-          <pre className="mt-2 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3 font-mono text-sm text-neutral-300">
-            <code>git pull&#10;docker compose build&#10;docker compose up -d</code>
-          </pre>
-          <p className="mt-3 text-sm text-neutral-500">
-            Database schema changes are applied through Drizzle migrations. If
-            a release includes schema changes, run:
+            The containers do not apply database migrations automatically. If a
+            release includes schema changes, run Drizzle Kit from a checkout
+            with <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">DATABASE_URL</code> set
+            (Drizzle Kit reads it from{" "}
+            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">apps/server/.env</code>):
           </p>
           <pre className="mt-2 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3 font-mono text-sm text-neutral-300">
             <code>bun run db:migrate</code>
@@ -412,43 +309,45 @@ function SelfHostingPage() {
           <h2 className="text-2xl font-semibold tracking-tight text-neutral-100">
             Backup
           </h2>
+          <p className="mt-3 leading-relaxed text-neutral-400">
+            Back up the Docker volume that holds the database file (
+            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">local.db</code>):
+          </p>
+          <pre className="mt-3 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3 font-mono text-sm text-neutral-300">
+            <code>docker run --rm -v feedelity_feedelity-data:/data -v $(pwd):/backup alpine tar czf /backup/feedelity-db-backup-$(date +%Y%m%d).tar.gz -C /data .</code>
+          </pre>
+          <p className="mt-3 text-sm text-neutral-500">
+            To restore from a backup:
+          </p>
+          <pre className="mt-2 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3 font-mono text-sm text-neutral-300">
+            <code>docker run --rm -v feedelity_feedelity-data:/data -v $(pwd):/backup alpine sh -c "cd /data && tar xzf /backup/feedelity-db-backup-YYYYMMDD.tar.gz"</code>
+          </pre>
+          <p className="mt-3 text-sm text-neutral-500">
+            Stop the stack before restoring so the server is not writing to the
+            database file while you replace it.
+          </p>
+        </section>
 
-          <section className="mt-4">
-            <h3 className="text-lg font-medium text-neutral-200">
-              Local Database Backup
-            </h3>
-            <p className="mt-3 leading-relaxed text-neutral-400">
-              When using the local libSQL container, back up the Docker volume:
-            </p>
-            <pre className="mt-3 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3 font-mono text-sm text-neutral-300">
-              <code>docker run --rm -v FeedElity_libsql-data:/data -v $(pwd):/backup alpine tar czf /backup/feedelity-db-backup-$(date +%Y%m%d).tar.gz -C /data .</code>
-            </pre>
-            <p className="mt-3 text-sm text-neutral-500">
-              To restore from a backup:
-            </p>
-            <pre className="mt-2 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3 font-mono text-sm text-neutral-300">
-              <code>docker run --rm -v FeedElity_libsql-data:/data -v $(pwd):/backup alpine sh -c "cd /data && tar xzf /backup/feedelity-db-backup-YYYYMMDD.tar.gz"</code>
-            </pre>
-          </section>
-
-          <section className="mt-6">
-            <h3 className="text-lg font-medium text-neutral-200">
-              Turso Cloud Backup
-            </h3>
-            <p className="mt-3 leading-relaxed text-neutral-400">
-              Turso handles backups automatically. You can also create manual
-              snapshots through the Turso CLI or dashboard. Refer to the{" "}
-              <a
-                href="https://docs.turso.tech"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-neutral-200 underline decoration-neutral-600 underline-offset-2 transition-colors hover:text-neutral-50"
-              >
-                Turso documentation
-              </a>{" "}
-              for details.
-            </p>
-          </section>
+        <section className="mt-12">
+          <h2 className="text-2xl font-semibold tracking-tight text-neutral-100">
+            Running Without Docker
+          </h2>
+          <p className="mt-4 leading-relaxed text-neutral-400">
+            For a single-machine setup without Docker, the repository ships a
+            start/stop manager:
+          </p>
+          <pre className="mt-4 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3 font-mono text-sm text-neutral-300">
+            <code>bun run serve&#10;# or: bun run feedelity</code>
+          </pre>
+          <p className="mt-3 text-sm text-neutral-500">
+            This builds the workspace, then serves the web client on port{" "}
+            <span className="text-neutral-200">42666</span> and the API server
+            on port <span className="text-neutral-200">42667</span> (both
+            configurable via <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">--client-port</code>{" "}
+            and <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">--server-port</code>).
+            The same script stops a running instance when invoked again, and the
+            client proxies API requests to the server.
+          </p>
         </section>
 
         <section className="mt-12">
@@ -456,7 +355,7 @@ function SelfHostingPage() {
             Architecture Overview
           </h2>
           <p className="mt-4 leading-relaxed text-neutral-400">
-            The Docker Compose setup runs three services:
+            The Docker Compose setup runs two services:
           </p>
           <ul className="mt-4 list-inside list-disc space-y-2 text-neutral-400">
             <li>
@@ -464,22 +363,21 @@ function SelfHostingPage() {
               serving the static Solid frontend. Proxies{" "}
               <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
                 /rpc/
-              </code>{" "}
-              and{" "}
+              </code>
+              ,{" "}
               <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
                 /api/
+              </code>
+              , and{" "}
+              <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
+                /api-reference/
               </code>{" "}
               requests to the server service.
             </li>
             <li>
               <span className="text-neutral-200">server</span> &mdash; Bun
               runtime hosting the Hono API server with oRPC procedures and
-              better-auth.
-            </li>
-            <li>
-              <span className="text-neutral-200">db</span> &mdash; libSQL
-              server container (optional, only started with the local-db
-              profile).
+              better-auth, backed by the libSQL file in the persistent volume.
             </li>
           </ul>
           <p className="mt-4 text-sm text-neutral-500">

@@ -1,5 +1,7 @@
 # Missing UI Functionality Inventory
 
+> **Status (2026-09): point-in-time snapshot — mostly outdated.** Since this inventory was written, the redesign and QoL passes implemented most of the listed gaps: the add-source flow, opened/played wiring (including playback auto-mark near the end), discoverable settings (gear in the creator column, settings in the viewer column), subscribe controls, hide-played, load-more, playlist sort honored, dev-tools gating, and Library/dashboard differentiation. Still open at time of writing: mobile pane navigation and a Strapi import UI. The body is kept as a historical record.
+
 ## Executive summary
 
 The FeedElity rewrite is backend-capable but UI-incomplete compared with the legacy application. The current Solid/Hono/oRPC rewrite has a cleaner architecture, authenticated overlay APIs, manual refresh services, playlists, settings storage, catalog browsing, and source-normalized playback. However, several behaviors that users could see or trigger in the old UI are either absent, weakly exposed, or compressed into narrow sections of the new shell.

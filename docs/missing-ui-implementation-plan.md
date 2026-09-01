@@ -1,5 +1,7 @@
 # Missing UI Implementation Plan
 
+> **Status: superseded/implemented.** Phases covering the add-source flow, subscriptions/catalog views, opened/played wiring, settings, and load-more landed in the later redesign and QoL passes. Do not re-execute; kept for history.
+
 Planner output for subagent-orchestration. This plan is implementation-ready but must be executed by an orchestrator using implementer → validator → fixer loops. Do not modify application code while planning.
 
 ## Non-negotiable product and UI constraints

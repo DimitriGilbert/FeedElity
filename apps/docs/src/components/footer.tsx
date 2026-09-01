@@ -47,7 +47,7 @@ function Footer() {
         <Separator className="my-10" />
 
         <div className="flex flex-col items-center justify-between gap-4 text-xs text-neutral-600 sm:flex-row">
-          <p>Open source under the MIT License.</p>
+          <p>FeedElity &mdash; private project.</p>
           <p>
             &copy; {new Date().getFullYear()} FeedElity contributors.
           </p>

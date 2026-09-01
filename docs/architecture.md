@@ -1,8 +1,10 @@
 # FeedElity Architecture
 
 Overview of the codebase as of August 2026. Planning documents live elsewhere:
-`final-from-scratch-plan.md` (execution plan), `prd-from-scratch.md` (PRD), `research/`
-(old-app inventory). This document describes what is actually built.
+`final-from-scratch-plan.md` (execution plan), `prd-from-scratch.md` (PRD),
+`qol-features-plan.md` / `ux-fixes-plan.md` (follow-up feature and UX plans,
+referenced from code comments), `research/` (old-app inventory). This document
+describes what is actually built.
 
 ## Monorepo layout
 
@@ -12,7 +14,7 @@ Bun + Turborepo monorepo (`bun run check-types` / `bun run build` for verificati
 | --- | --- |
 | `apps/web` | Solid web frontend (three-column reader shell). TanStack Router/Query, Tailwind, `@orpc/client` RPC. |
 | `apps/server` | Hono server. Mounts better-auth (`/api/auth/*`), oRPC RPC endpoint (`/rpc`), OpenAPI docs (`/api-reference`). |
-| `apps/desktop` | Electrobun desktop app. `src/bun/local-backend.ts` embeds the Hono server module in a local Bun server so the desktop app talks to the same API in-process. |
+| `apps/desktop` | Electrobun desktop app. `src/bun/local-backend.ts` embeds the Hono server module in a local Bun server (port 3217) so the desktop app talks to the same API in-process, or runs in `desktop-remote` mode (`FEELITY_DESKTOP_MODE=remote`) against a configured remote server URL instead of starting the embedded backend. |
 | `apps/docs` | Static marketing/docs site (TanStack Router, Vite). Not part of the product runtime. |
 | `packages/api` | Domain layer: source adapters, services (ingestion, refresh), repositories, oRPC routers, Strapi migration. |
 | `packages/db` | Drizzle schema + SQLite/libSQL connection (`src/connection.ts`), SQL migration bootstrap (`src/bootstrap.ts`). |
@@ -43,6 +45,11 @@ built from `env.DATABASE_URL`.
 - `content_item` — one row per remote video: `creator_id` FK, source identity
   (`source_type` + `source_external_id`, unique), `title`, `published_at`
   (indexed), `thumbnail_url`, `duration_seconds`, `canonical_url`, etc.
+  `cross_source_key` (indexed `content_item_cross_source_key_idx`) groups
+  cross-source mirrors of one video, computed by `contentCrossSourceKey()` in
+  `packages/api/src/domain/catalog.ts` (creator `name_key` + normalized title);
+  newest-first list pages also read pre-sorted through the composite
+  `content_item_published_created_id_idx` index.
 - `content_source` — per-item playback mirrors (embed URL, native media URL,
   `priority`; unique per `(content_item, priority)` and `(source_type, canonical_url)`).
 - `feed_content` — join table feed ↔ content_item with per-link external id.
@@ -53,9 +60,12 @@ source identity of its own. The same human publishing on YouTube and Odysee is o
 `creator` row with two `feed` rows; `content_item.source_type` records where each
 video came from; `content_source` holds alternative playback mirrors per video.
 Duplicate creator rows that used to exist per-source were merged by
-`scripts/db-repair/` (pure merge planner in `merge-plan.ts`, dry-run gated CLI in
-`repair.ts`), and `scripts/repair-local-creator-sources.ts` performs related local
-repairs (duplicate merges, identity canonicalization, restoring legacy MySQL feeds).
+`scripts/db-repair/repair.ts` (dry-run gated CLI) using the pure merge planner
+`packages/db/src/creator-merge-plan.ts` (`buildMergePlan`), which lives in
+`packages/db` beside the mirrored `cross-source-key.ts` key helper so both stay
+unit-tested without depending on `packages/api`; `scripts/repair-local-creator-sources.ts`
+performs related local repairs (duplicate merges, identity canonicalization,
+restoring legacy MySQL feeds).
 
 A creator's source types are derived on read — `loadSourceTypesForCreator()` /
 `loadSourceTypesByCreatorId()` in `packages/api/src/repositories/catalog.ts`
@@ -156,13 +166,26 @@ better-auth's `auth.api.getSession` against request headers.
   `catalog.creators|feeds|contentItems|contentDetail` (`catalog.creators`
   accepts `sort: "name" | "lastUpdate"` — default `name`; `lastUpdate`
   orders by `last_content_published_at` desc NULLs last with
-  display_name/id tiebreakers — and defaults to limit 100),
-  `refresh.status` (read-only run status).
+  display_name/id tiebreakers — and defaults to limit 100;
+  `catalog.contentItems` also takes an optional `collectionId` filter that
+  applies only when the caller's session supplies the owning user, so
+  anonymous calls stay unscoped), `refresh.status` (read-only run status).
 - Protected: `refresh.startAll|runAll|runCreator|runFeed`,
   `creatorMetadata.start|status` (metadata refresh job),
-  `ingestion.addSource|batchAddSources`, all `overlays.*`
-  (subscriptions, content statuses, playlists, collections, settings),
-  `migration.runImport`.
+  `ingestion.addSource|batchAddSources`, `migration.runImport`, and all
+  `overlays.*`: subscriptions (`subscriptions`, `subscribeToCreator`,
+  `unsubscribeFromCreator`, `subscribedContentItems`, `bulkUnsubscribe`,
+  `unreadCounts`, `feedHealth`, `markCreatorContentOpened`,
+  `markAllContentOpened`), content statuses (`contentStatuses`,
+  `markContentOpened|markContentPlayed`, `toggleContentOpened`,
+  `toggleContentPlayed`, `toggleContentFavorite`, `favoriteContentItems`,
+  `contentHistory`, `savePlaybackPosition`), playlists (`playlists`,
+  `createPlaylist|updatePlaylist|deletePlaylist`, `playlistItems`,
+  `addPlaylistItem|removePlaylistItem|reorderPlaylistItems`), collections
+  (`collections`, `createCollection|updateCollection|deleteCollection`,
+  `collectionMembers`, `addCollectionMember|removeCollectionMember`), settings
+  (`settings`, `saveSetting|deleteSetting`), and user-data portability
+  (`exportUserData|importUserData`).
 
 Cross-user isolation: every overlay procedure passes
 `context.session.user.id` into repository functions that filter on it, and
@@ -173,13 +196,26 @@ The Hono server (`apps/server/src/index.ts`) mounts the RPC handler at
 
 ## Web frontend (`apps/web/src/`)
 
-Routes: `/` → `AppShell mode="catalog"` (anonymous browsing works);
-`/dashboard` → `AppShell mode="library"`; `/login` for auth forms.
+Routes are a single layout route, `routes/_shell.tsx`, which renders
+`<AppShell mode={mode()}>` with the mode derived from the pathname —
+`/dashboard*` is `library`, anything else is `catalog` (anonymous browsing
+works) — and persists it to localStorage; a one-time mount redirect reopens a
+signed-in user's last section. `_shell.index.tsx` and `_shell.dashboard.tsx`
+render null by design; the dashboard route keeps the `beforeLoad` that sends
+anonymous visitors to `/login`, which hosts the auth forms.
 The typed oRPC client is `src/utils/orpc.ts` (`createORPCClient` over
 `RPCLink` with cookie credentials).
 
-`src/components/app-shell.tsx` renders the three-column layout with draggable
-pane resizers (fractions persisted to localStorage):
+The shell is no longer one file. `src/components/app-shell.tsx` owns
+composition and state and renders the three-column layout with draggable
+`pane-resizer.tsx` dividers (fractions persisted to localStorage);
+`app-shell.contract.ts` is the typed state/derivation layer (persisted
+localStorage keys, view modes, `toPlayableSources`, label formatters) shared
+by the components and their tests; `app-shell-rows.tsx` holds the shared
+creator/content row components; and `src/lib/` contains `auth-client.ts` /
+`auth-helpers.ts` (better-auth client and post-auth redirect resolution),
+`keyboard-shortcuts.ts` (pure shortcut keymap), and `youtube-player-bridge.ts`
+(contained YouTube IFrame postMessage playback tracker). The columns:
 
 1. **Creator/source column** — `CreatorSourceColumn` with tabs
    Library (subscribed creators) / Feeds (selected creator's feeds) /
@@ -204,6 +240,22 @@ Refresh UX: `startAll` runs in the background server-side; the shell polls
 content list only when `itemsCreatedCount` increases. Failures surface through
 `refresh-status-dialog.tsx`.
 
+Features layered onto the shell since the first cut: a hide-played toggle and
+content-list view modes (`catalog | subscribed | favorites | history-opened |
+played` — library mode defaults to `subscribed`), a YouTube no-cookie embed
+preference (setting key `playback.youtube.nocookie`), a "Copy stream URL"
+action in the viewer, playback-position saving through the YouTube bridge with
+a "Resume at" restore when an item is reopened, keyboard shortcuts (`j`/`k`
+move the active row, `Enter` opens it, `/` focuses creator search, `Escape`
+clears the selection, `f` toggles favorite, `g l` / `g c` switch
+library/catalog — `lib/keyboard-shortcuts.ts`), unread-count badges with
+per-creator and global mark-read, a feed-health dialog with bulk unsubscribe
+for failing feeds, and creator collection management (create/save/delete,
+membership) in the Collections tab. Device-local UI state (hide-played,
+content view mode, pane widths, shell mode, source filters) persists to
+localStorage; user-facing preferences (creator sort, reader density, YouTube
+privacy) persist as typed `user_setting` rows.
+
 ## Settings UI
 
 Lives in the viewer column: the gear button in the creator column header sets
@@ -212,7 +264,10 @@ Lives in the viewer column: the gear button in the creator column header sets
 "Reader density" control (setting key `reader.density`, comfortable/compact),
 a "Creator metadata" section with a force-refresh button that starts the
 `creatorMetadata.start` job and polls `creatorMetadata.status`, showing the
-updated/unchanged/failed summary and per-feed failures, and an "Advanced
+updated/unchanged/failed summary and per-feed failures, a user-data section
+that downloads/restores the account's subscriptions, watched history,
+playlists, collections, and settings as one portable JSON file
+(`client.overlays.exportUserData` / `importUserData`), and an "Advanced
 settings" editor for raw `user_setting` keys
 (`client.overlays.saveSetting` / `deleteSetting`).
 
@@ -220,6 +275,17 @@ settings" editor for raw `user_setting` keys
 
 Strapi export JSON → `packages/api/src/migration/`
 (`strapi-export.ts` validates, `catalog-import.ts` + `overlay-import.ts`
-persist, `run-migration.ts` orchestrates with fingerprinted idempotency).
-Driven by `scripts/import-legacy-strapi.ts`. Migrated users must set a new
-password via `auth.setupMigratedPassword`.
+persist, `run-migration.ts` orchestrates with fingerprinted idempotency and
+exports `runStrapiExportMigration` / `runImportMigration`).
+`scripts/import-legacy-strapi.ts` drives it by querying the old app's MySQL
+database and building a Strapi-shaped export from the rows
+(`old-mysql-export.ts`), which the validated pipeline then imports. Migrated
+users must set a new password via `auth.setupMigratedPassword`.
+
+A separate user-data portability flow lives beside it: `user-data-schema.ts`
+defines the portable envelope (natural keys only — creators by `name_key`,
+content by `(source_type, source_external_id)`), and `user-data-export.ts` /
+`user-data-import.ts` back the `overlays.exportUserData` / `importUserData`
+procedures and the settings UI, so a user can download and restore their
+subscriptions, statuses, playlists, collections, and settings as one JSON
+file.

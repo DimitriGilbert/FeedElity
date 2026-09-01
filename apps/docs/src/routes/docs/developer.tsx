@@ -41,7 +41,7 @@ function DeveloperPage() {
             <li>
               <span className="text-neutral-200">Frontend</span> &mdash; Solid
               in <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">apps/web</code>.
-              Uses TanStack Router for routing and Vinxi for bundling.
+              Uses TanStack Solid Router for routing and Vite for bundling.
             </li>
             <li>
               <span className="text-neutral-200">Backend</span> &mdash; Hono
@@ -82,22 +82,30 @@ function DeveloperPage() {
           <pre className="mt-4 overflow-x-auto rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3 font-mono text-sm text-neutral-300">
             <code>{`FeedElity/
 ├── apps/
-│   ├── web/          Solid frontend (TanStack Router + Vinxi)
+│   ├── web/          Solid frontend (TanStack Solid Router + Vite)
 │   ├── server/       Hono API server (oRPC + better-auth)
 │   ├── desktop/      Electrobun desktop wrapper
-│   └── docs/         Documentation site (TanStack Router + Vinxi)
+│   └── docs/         Documentation site (TanStack Start + React + Vite)
 ├── packages/
 │   ├── api/          oRPC routers, services, repositories, source adapters
 │   ├── db/           Drizzle ORM schema, database client, migrations
 │   ├── auth/         better-auth configuration and helpers
 │   ├── env/          Shared environment variable validation
-│   └── config/       Shared TypeScript, ESLint, and Tailwind configs
-├── docker/           Dockerfiles for web, server, nginx, libSQL
+│   └── config/       Shared TypeScript config
+├── docker/           Docker assets (Dockerfile, nginx config, entrypoint)
 ├── scripts/          Utility scripts
 ├── turbo.json        Turborepo pipeline configuration
 ├── bts.jsonc         Better-T-Stack scaffold source of truth
 └── package.json      Root workspace definition`}</code>
           </pre>
+          <p className="mt-3 text-sm text-neutral-500">
+            Tailwind CSS is wired per app through{" "}
+            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
+              @tailwindcss/vite
+            </code>{" "}
+            rather than through a shared package, and the repo has no ESLint
+            configuration.
+          </p>
           <div className="mt-6 space-y-3">
             <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 px-5 py-4">
               <p className="font-mono text-sm font-medium text-neutral-200">
@@ -120,8 +128,9 @@ function DeveloperPage() {
                 (user, session, account, verification), catalog (creator, feed,
                 contentItem, contentSource, feedContent, refreshRun,
                 refreshFeedResult), and overlays (subscription, contentStatus,
-                playlist, playlistItem, userSetting, migrationRun,
-                migrationMapping). Exports a shared database client.
+                playlist, playlistItem, creatorCollection, collectionMember,
+                userSetting, migrationRun, migrationMapping). Exports a shared
+                database client.
               </p>
             </div>
             <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 px-5 py-4">
@@ -292,6 +301,16 @@ function DeveloperPage() {
                   </tr>
                   <tr>
                     <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-neutral-300">
+                      creatorCollection / collectionMember
+                    </td>
+                    <td className="px-4 py-3 text-neutral-400">
+                      User-defined creator collections with ordered members.
+                      Members reference both the collection and the creator;
+                      deleting a collection cascades to its members.
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-neutral-300">
                       userSetting
                     </td>
                     <td className="px-4 py-3 text-neutral-400">
@@ -353,11 +372,12 @@ function DeveloperPage() {
               <code>{`appRouter = {
   healthCheck,                // Public
   session: { current },       // Public (returns null if unauthenticated)
-  auth: { setupMigratedPassword },
+  auth: { setupMigratedPassword },  // Public - migrated-user password setup
   catalog: {
     creators,                 // Public - list creators with search/filter
     feeds,                    // Public - list feeds
-    contentItems,             // Public - list content items
+    contentItems,             // Public - list content items (accepts an
+                              //   optional session-scoped collectionId filter)
     contentDetail,            // Public - single content item with sources
   },
   refresh: {
@@ -367,17 +387,28 @@ function DeveloperPage() {
     runCreator,               // Protected - refresh one creator
     runFeed,                  // Protected - refresh one feed
   },
+  creatorMetadata: {
+    start,                    // Protected - start creator metadata refresh
+    status,                   // Protected - metadata refresh run status
+  },
   ingestion: {
     addSource,                // Protected - add single source URL
     batchAddSources,          // Protected - add multiple source URLs
   },
   overlays: {
     subscriptions,            // Protected - list user subscriptions
+    subscribedContentItems,   // Protected - items from subscribed creators
     subscribeToCreator,       // Protected - subscribe
     unsubscribeFromCreator,   // Protected - unsubscribe
+    bulkUnsubscribe,          // Protected - unsubscribe multiple creators
+    unreadCounts,             // Protected - per-creator unread counts
+    feedHealth,               // Protected - per-feed success/failure streaks
+    markCreatorContentOpened, // Protected - mark one creator's items opened
+    markAllContentOpened,     // Protected - mark everything opened
     contentStatuses,          // Protected - list all user statuses
     markContentOpened,        // Protected - mark opened
     markContentPlayed,        // Protected - mark played
+    savePlaybackPosition,     // Protected - upsert playback position
     toggleContentOpened,      // Protected - toggle opened
     toggleContentPlayed,      // Protected - toggle played
     toggleContentFavorite,    // Protected - toggle favorite
@@ -394,6 +425,15 @@ function DeveloperPage() {
     settings,                 // Protected - list user settings
     saveSetting,              // Protected
     deleteSetting,            // Protected
+    exportUserData,           // Protected - export user data as JSON
+    importUserData,           // Protected - import user data from JSON
+    collections,              // Protected - list creator collections
+    createCollection,         // Protected
+    updateCollection,         // Protected
+    deleteCollection,         // Protected
+    collectionMembers,        // Protected - list members of a collection
+    addCollectionMember,      // Protected
+    removeCollectionMember,   // Protected
   },
   migration: {
     runImport,                // Protected - import from Strapi export JSON
@@ -536,6 +576,9 @@ function DeveloperPage() {
   resolveInput(input: DetectedSourceInput): Promise<SourceAdapterResult<ResolvedSourceInput>>;
   normalizeCatalogPayload(input: ResolvedSourceInput, payload: string): SourceAdapterResult<NormalizedCatalogPayload>;
   fetchCatalog(input: ResolvedSourceInput): Promise<SourceAdapterResult<NormalizedCatalogPayload>>;
+  fetchCreatorMetadata?(
+    input: FetchCreatorMetadataInput,
+  ): Promise<SourceAdapterResult<CreatorMetadata>>;
 }`}</code>
             </pre>
             <ul className="mt-3 list-inside list-disc space-y-2 text-neutral-400">
@@ -562,6 +605,15 @@ function DeveloperPage() {
                 <span className="text-neutral-200">fetchCatalog</span> &mdash;
                 Fetches data from the remote source and normalizes it in one
                 step. Combines HTTP fetch and normalization.
+              </li>
+              <li>
+                <span className="text-neutral-200">
+                  fetchCreatorMetadata (optional)
+                </span>{" "}
+                &mdash; Fetches creator metadata fields (display name, image,
+                description, canonical URL) beyond what the catalog payload
+                provides. Adapters that cannot determine these fields may omit
+                the method.
               </li>
             </ul>
           </section>
@@ -627,8 +679,9 @@ function DeveloperPage() {
                 <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
                   packages/api/src/sources/
                 </code>
-                . Implement the full SourceAdapter interface with detect,
-                resolveInput, normalizeCatalogPayload, and fetchCatalog.
+                . Implement the SourceAdapter interface with detect,
+                resolveInput, normalizeCatalogPayload, and fetchCatalog;
+                fetchCreatorMetadata is optional.
               </li>
               <li>
                 <span className="text-neutral-200">Write fixture-backed tests.</span>{" "}
@@ -699,9 +752,9 @@ function DeveloperPage() {
                   overlays.ts
                 </code>{" "}
                 &mdash; User-owned overlay tables (subscription, contentStatus,
-                playlist, playlistItem, userSetting, migrationRun,
-                migrationMapping) with cross-references to catalog and auth
-                tables.
+                playlist, playlistItem, creatorCollection, collectionMember,
+                userSetting, migrationRun, migrationMapping) with
+                cross-references to catalog and auth tables.
               </li>
             </ul>
             <p className="mt-3 text-sm text-neutral-500">
@@ -721,7 +774,7 @@ function DeveloperPage() {
 bun run db:migrate    # Apply pending migrations to the database
 bun run db:push       # Push schema directly (dev only, no migration files)
 bun run db:studio     # Open Drizzle Studio to inspect data
-bun run db:local      # Start local libSQL server on port 5000`}</code>
+bun run db:local      # Start local libSQL server on port 8080`}</code>
             </pre>
           </section>
 
@@ -896,6 +949,14 @@ bun run db:local      # Start local libSQL server on port 5000`}</code>
                 </tr>
                 <tr>
                   <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-neutral-300">
+                    bun run test
+                  </td>
+                  <td className="px-4 py-3 text-neutral-400">
+                    Run all test suites through Turborepo
+                  </td>
+                </tr>
+                <tr>
+                  <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-neutral-300">
                     bun run build:desktop
                   </td>
                   <td className="px-4 py-3 text-neutral-400">
@@ -916,6 +977,33 @@ bun run db:local      # Start local libSQL server on port 5000`}</code>
             implement the behavior, then repeat. Tests verify behavior through
             public interfaces &mdash; API procedures, domain services, source
             adapter contracts, migration commands, or rendered UI behavior.
+          </p>
+          <p className="mt-4 leading-relaxed text-neutral-400">
+            Run every suite with{" "}
+            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
+              bun run test
+            </code>
+            , which fans out through Turborepo. Each package uses{" "}
+            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
+              bun test
+            </code>{" "}
+            directly; the web app runs{" "}
+            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
+              bun test --conditions browser
+            </code>
+            . Suites live alongside the code they cover, for example{" "}
+            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
+              packages/api/src/routers/*.test.ts
+            </code>
+            ,{" "}
+            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
+              packages/db/src/*.test.ts
+            </code>
+            , and{" "}
+            <code className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
+              apps/web/src/*.test.ts
+            </code>
+            .
           </p>
           <ul className="mt-4 list-inside list-disc space-y-2 text-neutral-400">
             <li>

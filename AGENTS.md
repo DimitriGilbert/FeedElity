@@ -7,7 +7,8 @@ FeedElity is a personal-first, video-oriented RSS client rewrite built on the ex
 - `bun install` - Install workspace dependencies
 - `bun run check-types` - Check TypeScript types across the monorepo with Turbo
 - `bun run build` - Build all apps/packages with Turbo
-- `bun run dev` - Start all dev targets through Turbo
+- `bun run test` - Run package/app tests through Turbo
+- `bun run dev` - Start the web and server dev targets through Turbo (`dev:all` includes desktop and docs)
 - `bun run dev:web` - Start only the Solid web app
 - `bun run dev:server` - Start only the Hono server
 - `bun run dev:desktop` - Start the Electrobun desktop app with HMR
@@ -22,11 +23,11 @@ Do not start long-running dev servers unless the user explicitly asks for it. Fo
 
 ## Project Shape
 
-- This repo is already bootstrapped with Better-T-Stack. Treat `bts.jsonc` as the stack source of truth.
+- This repo is already bootstrapped with Better-T-Stack. `bts.jsonc` records the original scaffold and still matches the core stack, but it does not cover later additions: the `apps/docs` documentation site, the Docker deployment, and the desktop release tooling.
 - Use Bun, Solid, Hono, oRPC, better-auth, Drizzle, SQLite/libSQL, Electrobun, and Turborepo.
 - Work inside the existing monorepo layout: `apps/*` and `packages/*`.
 - Do not create a new top-level `client/` app.
-- The old app at `../Feedelity` is only a behavioral and migration reference. Do not import its Strapi client, generated types, event-bus shell, or low-code component structure.
+- The old Strapi app (previously at `../Feedelity`; it may no longer exist on disk) is only a behavioral and migration reference. Do not import its Strapi client, generated types, event-bus shell, or low-code component structure. `research/` holds the recorded behavior inventory.
 
 ## Rewrite Plan
 
@@ -106,5 +107,5 @@ Do not start long-running dev servers unless the user explicitly asks for it. Fo
 
 - Run `bun run check-types` after TypeScript changes when feasible.
 - Run `bun run build` for substantial changes or before handing off orchestration phases.
-- Run relevant tests once test scripts exist for the touched package/app.
+- Run relevant tests for the touched package/app (`bun run test` runs every suite through Turbo).
 - If a command cannot be run because of environment limitations, report that explicitly with the reason.

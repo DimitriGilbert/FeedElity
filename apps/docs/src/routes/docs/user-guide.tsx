@@ -177,8 +177,8 @@ function UserGuidePage() {
                 <p className="mt-2 text-sm text-neutral-400">
                   Respects stored refresh cadence metadata. Only fetches feeds
                   that are due for a refresh based on their schedule. Use this
-                  for routine checks. Available for all sources, a single
-                  creator, or a single feed.
+                  for routine checks. Available for all sources or for a single
+                  creator.
                 </p>
               </div>
               <div className="rounded-lg border border-neutral-800 bg-neutral-900/50 px-5 py-4">
@@ -195,16 +195,14 @@ function UserGuidePage() {
             <ul className="mt-4 list-inside list-disc space-y-2 text-neutral-400">
               <li>
                 <span className="text-neutral-200">Refresh all</span> &mdash;
-                Triggers a refresh across every feed in your subscribed sources.
+                Triggers a refresh across every feed known to the server (the
+                whole catalog), not just the creators you subscribe to.
               </li>
               <li>
                 <span className="text-neutral-200">Refresh creator</span>
                 &mdash; Refreshes only the feeds belonging to a specific
-                creator.
-              </li>
-              <li>
-                <span className="text-neutral-200">Refresh feed</span> &mdash;
-                Refreshes a single feed.
+                creator, using the per-creator refresh control in the left
+                column.
               </li>
             </ul>
             <p className="mt-3 text-sm text-neutral-500">
@@ -212,6 +210,19 @@ function UserGuidePage() {
               shows how many feeds were requested, skipped, succeeded, and
               failed, along with counts of discovered, created, and updated
               content items.
+            </p>
+          </section>
+
+          <section className="mt-6">
+            <h3 className="text-lg font-medium text-neutral-200">
+              Feed Health
+            </h3>
+            <p className="mt-3 leading-relaxed text-neutral-400">
+              The feed health dashboard shows how every feed is behaving: each
+              feed's current success or failure streak and the last time a
+              refresh succeeded. Feeds that keep failing can be unsubscribed in
+              bulk straight from the dashboard, so a broken source does not sit
+              in your subscriptions forever.
             </p>
           </section>
         </section>
@@ -247,6 +258,13 @@ function UserGuidePage() {
                 &mdash; Switch to the subscribed-content view to see items from
                 all your subscribed creators in a unified list.
               </li>
+              <li>
+                <span className="text-neutral-200">Unread counts</span> &mdash;
+                Each subscribed creator shows an unread badge for items you have
+                not opened yet. Mark a single creator as read from their
+                controls, or use the mark-all-as-read action to clear every
+                unread badge at once.
+              </li>
             </ul>
           </section>
 
@@ -271,6 +289,19 @@ function UserGuidePage() {
                 browse all your favorited content in one place.
               </li>
             </ul>
+          </section>
+
+          <section className="mt-6">
+            <h3 className="text-lg font-medium text-neutral-200">
+              Creator Collections
+            </h3>
+            <p className="mt-3 leading-relaxed text-neutral-400">
+              Collections let you group creators into your own sets, independent
+              of your subscriptions. The Collections tab in the left column lets
+              you create, rename, and delete collections and add or remove
+              creators from them. Selecting a collection focuses on its
+              creators' content.
+            </p>
           </section>
         </section>
 
@@ -309,8 +340,10 @@ function UserGuidePage() {
                     played
                   </td>
                   <td className="px-4 py-3 text-neutral-400">
-                    You watched or consumed the content. Mark manually from the
-                    content list or viewer to track what you have completed.
+                    You watched or consumed the content. Set automatically when
+                    playback nears the end (within 30 seconds of the end or past
+                    90% of the video) or ends, and still toggleable manually
+                    from the content list or viewer.
                   </td>
                 </tr>
                 <tr>
@@ -329,6 +362,11 @@ function UserGuidePage() {
             Use the <span className="text-neutral-300">hide played</span> toggle
             in the content list to filter out items you have already marked as
             played. Status badges are displayed on each content item in the list.
+          </p>
+          <p className="mt-4 leading-relaxed text-neutral-400">
+            Your watch history is browsable: the library includes Opened and
+            Played views that list the items you have opened or completed, so
+            you can catch up on what you started or re-find what you watched.
           </p>
         </section>
 
@@ -361,6 +399,101 @@ function UserGuidePage() {
             available, use the source switcher in the viewer to change the
             playback source without leaving the content item.
           </p>
+          <ul className="mt-4 list-inside list-disc space-y-2 text-neutral-400">
+            <li>
+              <span className="text-neutral-200">Resume playback</span> &mdash;
+              Your playback position is saved automatically. Reopening a
+              partially watched video offers to resume where you left off
+              ("Resume at ...").
+            </li>
+            <li>
+              <span className="text-neutral-200">Copy stream URL</span> &mdash;
+              A button in the viewer copies the selected source's media URL to
+              the clipboard, handy for opening a video in an external player.
+            </li>
+          </ul>
+        </section>
+
+        <section className="mt-12">
+          <h2 className="text-2xl font-semibold tracking-tight text-neutral-100">
+            Keyboard Shortcuts
+          </h2>
+          <p className="mt-4 leading-relaxed text-neutral-400">
+            The app shell is fully navigable from the keyboard. Shortcuts are
+            disabled while you are typing in a text field or a dialog is open.
+          </p>
+          <div className="mt-4 overflow-x-auto rounded-lg border border-neutral-800">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-neutral-800 bg-neutral-900/50">
+                  <th className="whitespace-nowrap px-4 py-3 font-medium text-neutral-200">
+                    Key
+                  </th>
+                  <th className="px-4 py-3 font-medium text-neutral-200">
+                    Action
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-800/50">
+                <tr>
+                  <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-neutral-300">
+                    j / k
+                  </td>
+                  <td className="px-4 py-3 text-neutral-400">
+                    Move the selection down / up in the content list.
+                  </td>
+                </tr>
+                <tr>
+                  <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-neutral-300">
+                    Enter
+                  </td>
+                  <td className="px-4 py-3 text-neutral-400">
+                    Open the selected content item in the viewer.
+                  </td>
+                </tr>
+                <tr>
+                  <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-neutral-300">
+                    /
+                  </td>
+                  <td className="px-4 py-3 text-neutral-400">
+                    Focus the creator search field.
+                  </td>
+                </tr>
+                <tr>
+                  <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-neutral-300">
+                    Escape
+                  </td>
+                  <td className="px-4 py-3 text-neutral-400">
+                    Clear the current selection or close the open panel.
+                  </td>
+                </tr>
+                <tr>
+                  <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-neutral-300">
+                    f
+                  </td>
+                  <td className="px-4 py-3 text-neutral-400">
+                    Toggle favorite on the selected content item.
+                  </td>
+                </tr>
+                <tr>
+                  <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-neutral-300">
+                    g then l
+                  </td>
+                  <td className="px-4 py-3 text-neutral-400">
+                    Go to the Library.
+                  </td>
+                </tr>
+                <tr>
+                  <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-neutral-300">
+                    g then c
+                  </td>
+                  <td className="px-4 py-3 text-neutral-400">
+                    Go to the Catalog.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </section>
 
         <section className="mt-12">
@@ -385,8 +518,8 @@ function UserGuidePage() {
             </li>
             <li>
               <span className="text-neutral-200">Reorder items</span> &mdash;
-              Drag or manually reorder items in a playlist when using manual
-              sort mode.
+              Move items up or down with the reorder buttons when the playlist
+              uses manual sort mode.
             </li>
             <li>
               <span className="text-neutral-200">Remove items</span> &mdash;
@@ -426,6 +559,24 @@ function UserGuidePage() {
               Account settings let you configure app-level preferences. Settings
               are stored as key-value pairs scoped to your account. Changes are
               saved immediately and persist across sessions.
+            </p>
+            <p className="mt-3 text-sm text-neutral-500">
+              Layout preferences &mdash; the hide-played toggle, creator and
+              content source filters, pane widths, and your view mode &mdash;
+              are kept on your device and also persist across sessions.
+            </p>
+          </section>
+
+          <section className="mt-6">
+            <h3 className="text-lg font-medium text-neutral-200">
+              Export &amp; Import
+            </h3>
+            <p className="mt-3 leading-relaxed text-neutral-400">
+              Settings can export all of your user data &mdash; subscriptions,
+              history, playlists, collections, and settings &mdash; to a single
+              JSON file, and import it back. Importing the same file again is
+              safe: the round-trip is idempotent, so repeated imports do not
+              create duplicates.
             </p>
           </section>
 

@@ -33,7 +33,7 @@ FeedElity/
 ├── packages/
 │   ├── api/            oRPC procedures, source adapters, domain services
 │   ├── auth/           better-auth configuration and session handling
-│   ├── db/             Drizzle schema, migrations, repository functions
+│   ├── db/             Drizzle schema, migrations, connection/bootstrap
 │   ├── env/            Shared environment variable schemas
 │   └── config/         Shared TypeScript configuration
 ├── docs/               Design docs, UI plans, diagnostics
@@ -59,6 +59,7 @@ FeedElity/
 ### Prerequisites
 
 - [Bun](https://bun.sh) >= 1.3
+- [Turso CLI](https://docs.turso.tech/cli) (only for `bun run db:local`)
 
 ### Install and run
 
@@ -69,8 +70,8 @@ bun run db:push     # apply the schema
 bun run dev
 ```
 
-- Web app: http://localhost:3001
-- API server: http://localhost:3002
+- Web app: http://localhost:30001
+- API server: http://localhost:30002
 
 Re-run `db:push` after pulling schema changes. For committed migrations, use `db:generate` then `db:migrate`.
 
@@ -86,7 +87,7 @@ bun run dev:desktop    # desktop app with HMR
 
 | Mode | Use case | Backend | Database |
 |---|---|---|---|
-| `local` | Browser development | Local server at localhost:3002 | Shared `local.db` |
+| `local` | Browser development | Local server at localhost:30002 | Shared `local.db` |
 | `web` | Deployed web build | Configured remote server | Remote |
 | `desktop-local` | Desktop app, default | Embedded Bun/Hono on 127.0.0.1:3217 | Local SQLite |
 | `desktop-remote` | Desktop app, shared server | Configured remote server | Remote |
@@ -99,22 +100,32 @@ Desktop remote mode:
 FEELITY_DESKTOP_REMOTE_SERVER_URL=https://api.example.com bun --filter desktop run dev:hmr:remote
 ```
 
+## Deployment
+
+Docker self-hosting is built in: the root `Dockerfile` and `docker-compose.yml` run the web app on port 31000 and the API server on 31001, configured through `docker/.env.example` (`FEEDELITY_AUTH_SECRET`, `FEEDELITY_PUBLIC_URL`, `FEEDELITY_CORS_ORIGIN`). See the [self-hosting guide](https://feedelity.dbuild.dev/docs/self-hosting) for details. For a non-Docker production-style run on one machine, `bun run serve` starts a managed client/server pair.
+
 ## Scripts
 
 | Command | What it does |
 |---|---|
-| `bun run dev` | Start all dev targets |
+| `bun run dev` | Start the web + server dev targets |
+| `bun run dev:all` | Start all dev targets (web, server, desktop, docs) |
 | `bun run build` | Build everything |
 | `bun run check-types` | TypeScript check across the monorepo |
 | `bun run test` | Run tests |
 | `bun run db:push` | Push schema to local dev database |
 | `bun run db:generate` | Generate a Drizzle migration |
 | `bun run db:migrate` | Run committed migrations |
+| `bun run db:repair` | Apply catalog data migrations (idempotent, data-level repairs) |
 | `bun run db:studio` | Open Drizzle Studio |
-| `bun run db:local` | Start the local SQLite dev database |
+| `bun run db:local` | Start the local SQLite dev database (Turso CLI) |
 | `bun run dev:desktop` | Desktop app with HMR |
 | `bun run build:desktop` | Build stable desktop app |
 | `bun run build:desktop:canary` | Build canary desktop app |
+| `bun run publish:desktop` | Publish a desktop release |
+| `bun run dev:docs` | Docs site dev server |
+| `bun run deploy:docs` | Build and deploy the docs site |
+| `bun run serve` | Production-style local runner (client 42666, server 42667) |
 
 Desktop platform builds:
 

@@ -1,5 +1,7 @@
 # UX Fixes Plan — FeedElity (5 demands: selection visibility, viewer creator filter, compact controls, zero full-app reloads, multi-source creators)
 
+> **Status: executed.** All phases implemented and merged via PR #1 (`fix/ux-five-demands`). Baseline figures and line numbers below are plan-time snapshots.
+
 All paths are relative to the repo root `/home/didi/workspace/FeedElity` unless prefixed otherwise. Line numbers refer to the current baseline (pre-plan) and are hints, not contracts — re-locate symbols if lines drifted after earlier phases.
 
 ## Overview

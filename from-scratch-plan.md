@@ -1,5 +1,7 @@
 # Feedelity From-Scratch Rewrite Plan
 
+> **SUPERSEDED.** This early plan was replaced by `final-from-scratch-plan.md` before implementation. Unlike this document, the final plan does **not** introduce a top-level `client/` app — the app lives in `apps/*` and `packages/*`. Kept for history only.
+
 This rewrite starts from scratch inside the bootstrapped `client/` app.
 Do not carry over the existing Strapi client/UI code, generated Strapi types, event-bus shell, or low-code component structure.
 The goal is parity with the current app plus completion of the placeholder features, using a clean architecture that can later be executed by subagent-orchestration.

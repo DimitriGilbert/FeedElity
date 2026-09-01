@@ -1,5 +1,7 @@
 # FeedElity Web UI Redesign — Orchestration Plan
 
+> **Status: completed.** All 8 phases landed (the left pane even gained a fourth "collections" tab beyond this plan). Kept for history.
+
 ## Overview
 
 Redesign the FeedElity 3-pane RSS client UI to address 8 user complaints: box-in-box border aesthetic, relocated add-source/refresh controls, multi-source video display, icon-button conversions, resizable snap panes, settings as display-pane takeover, left-pane tab system, and collapsible middle-pane controls. The redesign must preserve all existing data flows, API wiring, authenticated guards, and anonymous browsing. All 1345 lines of contract tests in `app-shell.test.ts` will be updated to match the new CSS classes and structural patterns.
